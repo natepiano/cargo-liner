@@ -6,7 +6,6 @@ use ratatui::layout::Rect;
 use ratatui::style::Color;
 use ratatui::style::Style;
 use ratatui::text::Line;
-use ratatui::widgets::Widget;
 use tui_pane::label_color;
 use tui_pane::text_default;
 
@@ -28,18 +27,40 @@ pub(super) enum ValueColumn {
     Memory,
 }
 
+/// A row supplies resource readings or has no resource readings for this frame.
+#[derive(Clone, Copy)]
+enum RowValueResources<'a> {
+    Available(&'a RowResourceReading),
+    Unavailable,
+}
+
+/// A column supplies text or requires resource readings that the frame lacks.
+#[derive(Debug, Eq, PartialEq)]
+enum ValueText {
+    Available {
+        text:      String,
+        alignment: Alignment,
+    },
+    ResourcesUnavailable,
+}
+
 impl ValueColumn {
-    fn reading(
-        self,
-        row: &TrackedRow,
-        reading: Option<&RowResourceReading>,
-    ) -> Option<(String, Alignment)> {
-        let text = match self {
-            Self::Duration => return Some((row.process.duration(), Alignment::Left)),
-            Self::Cpu => measurement_text(reading?.resources.cpu, census::scan::cpu_label),
-            Self::Memory => measurement_text(reading?.resources.memory, memory_label),
+    fn reading(self, row: &TrackedRow, reading: RowValueResources<'_>) -> ValueText {
+        let (text, alignment) = match (self, reading) {
+            (Self::Duration, _) => (row.process.duration(), Alignment::Left),
+            (Self::Cpu | Self::Memory, RowValueResources::Unavailable) => {
+                return ValueText::ResourcesUnavailable;
+            },
+            (Self::Cpu, RowValueResources::Available(reading)) => (
+                measurement_text(reading.resources.cpu, census::scan::cpu_label),
+                Alignment::Right,
+            ),
+            (Self::Memory, RowValueResources::Available(reading)) => (
+                measurement_text(reading.resources.memory, memory_label),
+                Alignment::Right,
+            ),
         };
-        Some((text, Alignment::Right))
+        ValueText::Available { text, alignment }
     }
 }
 
@@ -115,7 +136,10 @@ pub(super) fn draw_live_values(
                     .readings
                     .iter()
                     .find(|reading| &reading.invocation == invocation && reading.pid == *pid);
-                let Some((text, alignment)) = column.reading(row, reading) else {
+                let resources =
+                    reading.map_or(RowValueResources::Unavailable, RowValueResources::Available);
+                let ValueText::Available { text, alignment } = column.reading(row, resources)
+                else {
                     continue;
                 };
                 Line::styled(
@@ -132,7 +156,7 @@ pub(super) fn draw_live_values(
                 Line::styled(memory_label(*bytes), Style::default().fg(text_default()))
             },
         };
-        line.render(area, buffer);
+        super::draw_text_widget(line, area, buffer);
     }
 }
 
@@ -145,6 +169,27 @@ mod tests {
     use super::*;
     use crate::census::scan::OriginStart;
     use crate::render::tests;
+
+    #[test]
+    fn value_columns_name_missing_resources_and_available_text() {
+        let row = TrackedRow::from(tests::invocation(4100, &["build"]));
+        for (column, expected) in [
+            (ValueColumn::Cpu, ValueText::ResourcesUnavailable),
+            (
+                ValueColumn::Duration,
+                ValueText::Available {
+                    text:      row.process.duration(),
+                    alignment: Alignment::Left,
+                },
+            ),
+            (ValueColumn::Memory, ValueText::ResourcesUnavailable),
+        ] {
+            assert_eq!(
+                column.reading(&row, RowValueResources::Unavailable),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn shorter_durations_erase_old_characters_and_keep_the_row_background() {

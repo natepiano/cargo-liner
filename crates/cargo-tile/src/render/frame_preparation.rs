@@ -154,6 +154,64 @@ impl PreparedFrameTables {
             paintings:  Rc::new(RefCell::new(HashMap::new())),
         }
     }
+
+    /// Reuse exact row preparations while removing rows from older snapshots.
+    fn reuse_process_rows(&mut self, before: &Self) {
+        let snapshots: HashMap<_, _> = self
+            .roster
+            .groups()
+            .iter()
+            .flat_map(super::TrackedGroup::rows)
+            .map(|row| (row.process.pid, row))
+            .collect();
+        let grids = Rc::make_mut(&mut self.grids);
+        Rc::make_mut(&mut grids.paint_revisions).reuse(
+            &self.roster,
+            &before.roster,
+            &before.grids.paint_revisions,
+        );
+        for (grid, previous) in [
+            (&mut grids.commands.0, &before.grids.commands.0),
+            (&mut grids.summary.0, &before.grids.summary.0),
+        ] {
+            if grid.view != previous.view || !Arc::ptr_eq(&grid.theme, &previous.theme) {
+                continue;
+            }
+            grid.prepared_rows = Rc::clone(&previous.prepared_rows);
+            let mut cached = grid.prepared_rows.borrow_mut();
+            let super::ProgressProcessRows {
+                ordinary,
+                progressing,
+                completion,
+                paintings,
+            } = &mut *cached;
+            paintings.retain(|identity, _| {
+                snapshots.get(&identity.pid).is_some_and(|row| {
+                    identity.invocation == row.process.invocation_id && !row.is_ended()
+                })
+            });
+            completion.retain(|pid, _| snapshots.contains_key(pid));
+            for rows in [ordinary, progressing] {
+                rows.by_pid.retain(|pid, rows| {
+                    rows.retain_mut(|row| {
+                        snapshots.get(pid).is_some_and(|source| {
+                            let valid = source.ink() == row.faded
+                                && completion.get(pid) == Some(&source.is_ended())
+                                && super::ProgressProcessRows::same_metadata(
+                                    &row.process.process,
+                                    &source.process,
+                                );
+                            if valid {
+                                row.process = source.snapshot();
+                            }
+                            valid
+                        })
+                    });
+                    !rows.is_empty()
+                });
+            }
+        }
+    }
 }
 
 /// Table preparation and the independently prepared summary foot for one draw.
@@ -366,6 +424,7 @@ impl PreparedTables {
             Rc::clone(&self.commands),
         );
         if let RetainedFrame::Prepared(previous) = &self.state {
+            tables.reuse_process_rows(&previous.tables);
             tables.paintings = Rc::clone(&previous.tables.paintings);
             tables
                 .paintings

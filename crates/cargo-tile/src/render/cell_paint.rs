@@ -1,11 +1,16 @@
 //! Replay a cell painting with its command visibility proof.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use ratatui::buffer::Cell;
 
 use super::Buffer;
 use super::CellMeasurementKey;
 use super::Color;
 use super::InvocationId;
+use super::PinnedGroup;
 use super::Rc;
 use super::Rect;
 use super::RowInk;
@@ -18,7 +23,6 @@ use super::placed_values::PlacedValueText;
 use crate::app::GridView;
 use crate::probe;
 use crate::probe::PaintStage;
-use crate::roster::ParentFamily;
 
 /// Rows read or written by the painter, including continuation-marker searches.
 #[derive(Default)]
@@ -28,6 +32,157 @@ pub(super) struct CellPaintReach {
     pub(super) header:    CellColumnHeader,
     pub(super) resources: Vec<super::RowResourceReading>,
     pub(super) values:    Vec<PlacedValueText>,
+    pub(super) table:     PaintedTableColumns,
+}
+
+/// Solved columns prove whether a frame policy changes this table's drawing.
+#[derive(Clone, Default)]
+pub(super) enum PaintedTableColumns {
+    #[default]
+    Absent,
+    Drawn {
+        area:    Rect,
+        columns: Vec<usize>,
+        widths:  Vec<u16>,
+        spacing: u16,
+    },
+}
+
+impl PaintedTableColumns {
+    pub(super) fn of(area: Rect, layout: &super::CellTableLayout) -> Self {
+        Self::Drawn {
+            area,
+            columns: layout.columns.clone(),
+            widths: layout.column_widths.clone(),
+            spacing: layout.column_spacing,
+        }
+    }
+
+    fn matches(
+        &self,
+        grid: &super::FrameTableColumnGrid,
+        rows: &[&TrackedRow],
+        pinned: super::PinnedGroup<'_>,
+    ) -> bool {
+        match self {
+            Self::Absent => rows.is_empty(),
+            Self::Drawn {
+                area,
+                columns,
+                widths,
+                spacing,
+            } => {
+                let layout =
+                    super::CellTableLayout::for_table(grid, *area, Color::Reset, rows, pinned);
+                *columns == layout.columns
+                    && *widths == layout.column_widths
+                    && *spacing == layout.column_spacing
+            },
+        }
+    }
+}
+
+/// A row fragment belongs to one invocation and process.
+#[derive(Clone, Eq, Hash, PartialEq)]
+pub(super) struct RowFragmentIdentity {
+    pub(super) invocation: InvocationId,
+    pub(super) pid:        u32,
+}
+
+/// Exact text, columns, placement and destination permit reuse of one row's writes.
+pub(super) struct RowPaintingFragment {
+    area:        Rect,
+    buffer_area: Rect,
+    columns:     Vec<usize>,
+    widths:      Vec<u16>,
+    spacing:     u16,
+    cells:       super::PreparedRowCells,
+    before:      CellPaintSurface,
+    changes:     CellPaintPatch,
+}
+
+impl RowPaintingFragment {
+    pub(super) fn draw(
+        buffer: &mut Buffer,
+        area: Rect,
+        row: &super::LaidOutProcessRow<'_>,
+        layout: &super::CellTableLayout,
+    ) {
+        let identity = RowFragmentIdentity {
+            invocation: row.source.process.invocation_id.clone(),
+            pid:        row.source.process.pid,
+        };
+        if row.source.is_ended() {
+            layout
+                .prepared_rows
+                .borrow_mut()
+                .paintings
+                .remove(&identity);
+            Self::draw_text(buffer, area, row, layout);
+            return;
+        }
+        let buffer_area = buffer.area;
+        let mut prepared = layout.prepared_rows.borrow_mut();
+        let paintings = &mut prepared.paintings;
+        if let Some(previous) = paintings.get(&identity)
+            && previous.area == area
+            && previous.buffer_area == buffer_area
+            && previous.columns == layout.columns
+            && previous.widths == layout.column_widths
+            && previous.spacing == layout.column_spacing
+            && previous
+                .cells
+                .0
+                .iter()
+                .zip(&row.cells.0)
+                .all(|(before, after)| Rc::ptr_eq(before, after) || before == after)
+            && previous.before.matches(buffer)
+        {
+            previous.changes.apply(buffer);
+            #[cfg(test)]
+            super::tests::ROW_FRAGMENT_HITS.with(|hits| hits.set(hits.get() + 1));
+            return;
+        }
+        let before = CellPaintSurface::read(buffer, area);
+        Self::draw_text(buffer, area, row, layout);
+        let changes = CellPaintPatch::between(&before, buffer, &RetainedInk::default());
+        paintings.insert(
+            identity,
+            Self {
+                area,
+                buffer_area: buffer.area,
+                columns: layout.columns.clone(),
+                widths: layout.column_widths.clone(),
+                spacing: layout.column_spacing,
+                cells: row.cells.clone(),
+                before,
+                changes,
+            },
+        );
+    }
+
+    fn draw_text(
+        buffer: &mut Buffer,
+        area: Rect,
+        row: &super::LaidOutProcessRow<'_>,
+        layout: &super::CellTableLayout,
+    ) {
+        layout.draw_columns(
+            buffer,
+            area,
+            row.cells
+                .iter()
+                .enumerate()
+                .filter(|(column, _)| layout.columns.contains(column))
+                .map(|(column, cell)| {
+                    if super::numeric_column(column) && !cell.lines.is_empty() {
+                        Cow::Owned(cell.clone().right_aligned())
+                    } else {
+                        Cow::Borrowed(cell)
+                    }
+                }),
+        );
+    }
 }
 
 /// The table painter identifies its column header in source coordinates.
@@ -76,6 +231,13 @@ pub(super) struct CellPaintInputs {
 }
 
 impl CellPaintInputs {
+    pub(super) fn same_destination(&self, after: &Self) -> bool {
+        self.inner == after.inner
+            && self.buffer_area == after.buffer_area
+            && self.view == after.view
+            && self.ground == after.ground
+    }
+
     pub(super) fn describe_change(&self, after: &Self) -> String {
         macro_rules! changed {
             ($field:ident) => {
@@ -117,102 +279,127 @@ impl PaintedCompletion {
     }
 }
 
-/// Frozen row inputs prevent a new roster revision from changing a retained painting.
+/// A token stays equal only while all static painting dependencies stay equal.
+#[derive(Clone, Debug, Default)]
+pub(super) struct RowPaintRevision(Rc<()>);
+
+impl PartialEq for RowPaintRevision {
+    fn eq(&self, other: &Self) -> bool { Rc::ptr_eq(&self.0, &other.0) }
+}
+impl Eq for RowPaintRevision {}
+
+/// The frame owns exact painting revisions without retaining older process snapshots.
+#[derive(Clone)]
+pub(super) struct RowPaintRevisions {
+    rows: HashMap<RowFragmentIdentity, RowPaintRevision>,
+}
+
+impl RowPaintRevisions {
+    pub(super) fn new(roster: &VisibleRoster) -> Self {
+        Self {
+            rows: roster
+                .groups()
+                .iter()
+                .flat_map(TrackedGroup::rows)
+                .map(|row| {
+                    (
+                        RowFragmentIdentity {
+                            invocation: row.process.invocation_id.clone(),
+                            pid:        row.process.pid,
+                        },
+                        RowPaintRevision::default(),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    pub(super) fn reuse(
+        &mut self,
+        roster: &VisibleRoster,
+        before: &VisibleRoster,
+        previous: &Self,
+    ) {
+        let old_rows: HashMap<_, _> = before
+            .groups()
+            .iter()
+            .flat_map(TrackedGroup::rows)
+            .map(|row| ((&row.process.invocation_id, row.process.pid), row))
+            .collect();
+        for row in roster.groups().iter().flat_map(TrackedGroup::rows) {
+            let identity = RowFragmentIdentity {
+                invocation: row.process.invocation_id.clone(),
+                pid:        row.process.pid,
+            };
+            if let Some(old) = old_rows.get(&(&row.process.invocation_id, row.process.pid))
+                && Self::same_readings(old, row)
+                && let Some(revision) = previous.rows.get(&identity)
+            {
+                self.rows.insert(identity, revision.clone());
+            }
+        }
+    }
+
+    /// Live resource values have their own exact comparison after table planning.
+    fn same_readings(before: &TrackedRow, after: &TrackedRow) -> bool {
+        let a = &before.process;
+        let b = &after.process;
+        PaintedCompletion::of(before) == PaintedCompletion::of(after)
+            && before.family() == after.family()
+            && before.parent_family() == after.parent_family()
+            && super::progress_ownership(before) == super::progress_ownership(after)
+            && (Rc::ptr_eq(&before.snapshot(), &after.snapshot())
+                || (a.invocation_id == b.invocation_id
+                    && a.pid == b.pid
+                    && a.path == b.path
+                    && a.directory_identity == b.directory_identity
+                    && a.parent == b.parent
+                    && a.provenance == b.provenance
+                    && a.state == b.state
+                    && a.nested == b.nested
+                    && a.command == b.command
+                    && super::managed_text(a) == super::managed_text(b)
+                    && (a.origin_start == b.origin_start || a.start() == b.start())))
+    }
+
+    fn revision(&self, row: &TrackedRow) -> RowPaintRevision {
+        let identity = RowFragmentIdentity {
+            invocation: row.process.invocation_id.clone(),
+            pid:        row.process.pid,
+        };
+        self.rows
+            .get(&identity)
+            .map_or_else(RowPaintRevision::default, Clone::clone)
+    }
+}
+
+/// A row painting keeps its identity and revision instead of a process snapshot.
 struct PaintedRowSource {
-    snapshot:           Rc<super::InvocationSnapshot>,
-    completion:         PaintedCompletion,
-    family:             super::FamilyHead,
-    parent_family:      ParentFamily,
-    progress_ownership: super::InvocationProgressOwnership,
+    identity:   RowFragmentIdentity,
+    revision:   RowPaintRevision,
+    completion: PaintedCompletion,
 }
 
 impl PaintedRowSource {
-    fn read(row: &TrackedRow) -> Self {
+    fn read(row: &TrackedRow, revisions: &RowPaintRevisions) -> Self {
         Self {
-            snapshot:           row.snapshot(),
-            completion:         PaintedCompletion::of(row),
-            family:             row.family(),
-            parent_family:      row.parent_family(),
-            progress_ownership: super::progress_ownership(row),
+            identity:   RowFragmentIdentity {
+                invocation: row.process.invocation_id.clone(),
+                pid:        row.process.pid,
+            },
+            revision:   revisions.revision(row),
+            completion: PaintedCompletion::of(row),
         }
     }
 
-    fn matches(&self, row: &TrackedRow) -> bool {
-        let before = &self.snapshot.process;
-        let after = &row.process;
-        let matches = self.completion == PaintedCompletion::of(row)
-            && self.family == row.family()
-            && self.parent_family == row.parent_family()
-            && self.progress_ownership == super::progress_ownership(row)
-            && (Rc::ptr_eq(&self.snapshot, &row.snapshot())
-                || (before.invocation_id == after.invocation_id
-                    && before.pid == after.pid
-                    && before.path == after.path
-                    && before.directory_identity == after.directory_identity
-                    && before.parent == after.parent
-                    && before.provenance == after.provenance
-                    && before.state == after.state
-                    && before.nested == after.nested
-                    && before.command == after.command
-                    && super::managed_text(before) == super::managed_text(after)
-                    && (before.origin_start == after.origin_start
-                        || before.start() == after.start())));
-        if !matches {
-            probe::source_rejection(|| self.describe_change(row));
+    fn matches(&self, row: &TrackedRow, revisions: &RowPaintRevisions) -> bool {
+        let unchanged = self.identity.invocation == row.process.invocation_id
+            && self.identity.pid == row.process.pid
+            && self.revision == revisions.revision(row);
+        if !unchanged {
+            probe::source_rejection(|| format!("row {} paint revision changed", self.identity.pid));
         }
-        matches
-    }
-    fn describe_change(&self, row: &TrackedRow) -> String {
-        let before = &self.snapshot.process;
-        let after = &row.process;
-        macro_rules! displayed {
-            ($field:ident, $after:expr) => {
-                if self.$field != $after {
-                    return format!(
-                        "row {} {}: {:?} -> {:?}",
-                        before.pid,
-                        stringify!($field),
-                        self.$field,
-                        $after
-                    );
-                }
-            };
-        }
-        displayed!(completion, PaintedCompletion::of(row));
-        displayed!(family, row.family());
-        displayed!(parent_family, row.parent_family());
-        displayed!(progress_ownership, super::progress_ownership(row));
-        macro_rules! changed {
-            ($field:ident) => {
-                if before.$field != after.$field {
-                    return format!(
-                        "row {} {}: {:?} -> {:?}",
-                        before.pid,
-                        stringify!($field),
-                        before.$field,
-                        after.$field
-                    );
-                }
-            };
-        }
-        changed!(invocation_id);
-        changed!(pid);
-        changed!(path);
-        changed!(directory_identity);
-        changed!(parent);
-        changed!(provenance);
-        changed!(state);
-        changed!(nested);
-        changed!(command);
-        let managed_before = super::managed_text(before);
-        let managed_after = super::managed_text(after);
-        if managed_before != managed_after {
-            return format!("managed: {managed_before:?} -> {managed_after:?}");
-        }
-        if before.start() != after.start() {
-            return format!("start: {:?} -> {:?}", before.start(), after.start());
-        }
-        format!("row {} source changed", before.pid)
+        unchanged
     }
 }
 
@@ -224,12 +411,76 @@ enum CellSourceDetails {
     Summary(Vec<&'static str>),
 }
 
+/// A painting keeps column decisions without retaining frame preparation.
+struct PaintedColumnGrid {
+    theme:                    Arc<super::Theme>,
+    slots:                    Vec<usize>,
+    separation:               super::DirectorySeparation,
+    parent_content:           super::ParentColumnContent,
+    parent_links:             super::AncestryParentLinks,
+    row_progress:             Vec<InvocationId>,
+    intrinsic_widths:         [u16; super::TABLE_HEADERS.len()],
+    value_widths:             [u16; super::TABLE_HEADERS.len()],
+    trailing_clearance:       [u16; super::TABLE_HEADERS.len()],
+    command_title_width:      u16,
+    longest_command_width:    u16,
+    longest_subcommand_width: u16,
+    continuation_clearance:   u16,
+    table_budgets:            Vec<super::TableWidthBudget>,
+    policy:                   super::CellMeasurementPolicy,
+    empty_tail_columns:       Vec<usize>,
+    state_column:             super::TableStateColumn,
+    kind:                     super::TableKind,
+    view:                     super::CommandView,
+}
+
+impl PaintedColumnGrid {
+    fn same_column_inputs(&self, grid: &super::FrameTableColumnGrid) -> bool {
+        self.intrinsic_widths == grid.intrinsic_widths
+            && self.trailing_clearance
+                == std::array::from_fn(|column| grid.trailing_column_clearance(column))
+            && self.command_title_width == grid.command_title_width
+            && self.longest_command_width == grid.longest_command_width
+            && self.longest_subcommand_width == grid.longest_subcommand_width
+            && self.continuation_clearance == grid.continuation_clearance
+            && self.table_budgets == grid.table_budgets
+            && self.policy == super::CellMeasurementPolicy::of(grid)
+    }
+
+    fn of(grid: &super::FrameTableColumnGrid) -> Self {
+        Self {
+            theme:                    std::sync::Arc::clone(&grid.theme),
+            slots:                    grid.slots.clone(),
+            separation:               grid.separation,
+            parent_content:           grid.parent_content,
+            parent_links:             grid.parent_links.clone(),
+            row_progress:             grid.row_progress.clone(),
+            intrinsic_widths:         grid.intrinsic_widths,
+            value_widths:             grid.value_widths,
+            trailing_clearance:       std::array::from_fn(|column| {
+                grid.trailing_column_clearance(column)
+            }),
+            command_title_width:      grid.command_title_width,
+            longest_command_width:    grid.longest_command_width,
+            longest_subcommand_width: grid.longest_subcommand_width,
+            continuation_clearance:   grid.continuation_clearance,
+            table_budgets:            grid.table_budgets.clone(),
+            policy:                   super::CellMeasurementPolicy::of(grid),
+            empty_tail_columns:       grid.empty_tail_columns.clone(),
+            state_column:             grid.state_column,
+            kind:                     grid.kind,
+            view:                     grid.view.clone(),
+        }
+    }
+}
+
 /// A painting retains its row inputs and the frame's column decisions.
 pub(super) struct CellPaintSource {
     details:   CellSourceDetails,
     rows:      Vec<PaintedRowSource>,
-    grid:      super::FrameTableColumnGrid,
+    grid:      PaintedColumnGrid,
     resources: Vec<PaintedResourceReading>,
+    table:     PaintedTableColumns,
 }
 
 /// A painting is valid for the current source, with the readings its live values show.
@@ -310,9 +561,13 @@ impl CellPaintSource {
         let grid = Self::grid(grids, content);
         Self {
             details:   Self::details(roster, content),
-            rows:      rows.iter().map(|row| PaintedRowSource::read(row)).collect(),
-            grid:      grid.clone(),
+            rows:      rows
+                .iter()
+                .map(|row| PaintedRowSource::read(row, &grids.paint_revisions))
+                .collect(),
+            grid:      PaintedColumnGrid::of(grid),
             resources: Vec::new(),
+            table:     PaintedTableColumns::Absent,
         }
     }
 
@@ -323,6 +578,7 @@ impl CellPaintSource {
     }
 
     pub(super) fn record_resources(&mut self, reach: &CellPaintReach) {
+        self.table = reach.table.clone();
         self.resources = reach
             .resources
             .iter()
@@ -366,20 +622,55 @@ impl CellPaintSource {
         grids: &super::FrameColumnGrids,
     ) -> CellSourceMatch {
         let grid = Self::grid(grids, content);
-        if !self.layout_matches(grid) || self.details != Self::details(roster, content) {
+        if !self.layout_matches(grid) {
+            return CellSourceMatch::Changed;
+        }
+        if self.details != Self::details(roster, content) {
+            probe::source_rejection(|| "source details changed".to_owned());
             return CellSourceMatch::Changed;
         }
         let rows = Self::rows(roster, content);
-        if self.rows.len() != rows.len()
-            || !self
-                .rows
-                .iter()
-                .zip(&rows)
-                .all(|(before, row)| before.matches(row))
+        if self.rows.len() != rows.len() {
+            probe::source_rejection(|| {
+                format!("source row count: {} -> {}", self.rows.len(), rows.len())
+            });
+            return CellSourceMatch::Changed;
+        }
+        if !self
+            .rows
+            .iter()
+            .zip(&rows)
+            .all(|(before, row)| before.matches(row, &grids.paint_revisions))
         {
             return CellSourceMatch::Changed;
         }
+        if !self.grid.same_column_inputs(grid) && !self.table_columns_match(roster, content, grid) {
+            probe::source_rejection(|| "layout column decisions changed".to_owned());
+            return CellSourceMatch::Changed;
+        }
         self.resources_match(&rows, grid)
+    }
+
+    fn table_columns_match(
+        &self,
+        roster: &VisibleRoster,
+        content: &super::TileContent,
+        grid: &super::FrameTableColumnGrid,
+    ) -> bool {
+        match content {
+            super::TileContent::Group(_) => with_painted_rows(roster, content, |rows| {
+                let pinned = rows
+                    .first()
+                    .map_or(PinnedGroup::Unpinned, |row| PinnedGroup::Lead(&row.process));
+                self.table
+                    .matches(&super::table_grid_after_ancestry(grid, 0), rows, pinned)
+            }),
+            super::TileContent::Summary => {
+                self.table
+                    .matches(grid, &super::summary_rows(roster), PinnedGroup::Unpinned)
+            },
+            super::TileContent::Empty(_) => true,
+        }
     }
 
     fn layout_matches(&self, grid: &super::FrameTableColumnGrid) -> bool {
@@ -406,23 +697,21 @@ impl CellPaintSource {
         compare!(slots, values);
         compare!(separation, values);
         compare!(parent_content, values);
-        if before.parent_links.hidden != grid.parent_links.hidden {
-            probe::source_rejection(|| {
-                format!(
-                    "hidden parents: {:?} -> {:?}",
-                    before.parent_links.hidden, grid.parent_links.hidden
-                )
-            });
+        for row in &self.rows {
+            let id = &row.identity.invocation;
+            if before.parent_links.hidden.contains(id) != grid.parent_links.hidden.contains(id) {
+                probe::source_rejection(|| "layout hidden parent changed".to_owned());
+                return false;
+            }
+            if before.row_progress.contains(id) != grid.row_progress.contains(id) {
+                probe::source_rejection(|| "layout row progress changed".to_owned());
+                return false;
+            }
+        }
+        if before.value_widths[super::MEMORY_COLUMN] != grid.value_widths[super::MEMORY_COLUMN] {
+            probe::source_rejection(|| "layout memory width changed".to_owned());
             return false;
         }
-        compare!(row_progress, values);
-        compare!(intrinsic_widths, values);
-        compare!(value_widths, values);
-        compare!(command_title_width, values);
-        compare!(longest_command_width, values);
-        compare!(longest_subcommand_width, values);
-        compare!(continuation_clearance, values);
-        compare!(table_budgets, values);
         compare!(empty_tail_columns, values);
         compare!(state_column, values);
         compare!(kind, values);
@@ -738,6 +1027,54 @@ pub(super) fn with_painted_rows<T>(
 }
 
 impl PaintedCellContents {
+    pub(super) fn dispose_previous(previous: Option<Self>) {
+        let _timer = probe::paint_timer(PaintStage::Disposal);
+        if let Some(previous) = previous {
+            previous.dispose();
+        }
+    }
+
+    pub(super) fn dispose(self) {
+        let Self {
+            inputs,
+            source,
+            before,
+            changes,
+            commands,
+            values,
+            ink,
+            header: _,
+        } = self;
+        let timer = probe::paint_timer(PaintStage::DisposalInputs);
+        drop(inputs);
+        drop(timer);
+        let CellPaintSource {
+            rows,
+            grid,
+            details,
+            resources,
+            table,
+        } = source;
+        let timer = probe::paint_timer(PaintStage::DisposalSource);
+        drop((grid, details, resources, table));
+        drop(timer);
+        let timer = probe::paint_timer(PaintStage::DisposalSnapshots);
+        drop(rows);
+        drop(timer);
+        let timer = probe::paint_timer(PaintStage::DisposalSurface);
+        drop(before);
+        drop(timer);
+        let timer = probe::paint_timer(PaintStage::DisposalPatch);
+        drop(changes);
+        drop(timer);
+        let timer = probe::paint_timer(PaintStage::DisposalText);
+        drop((commands, values));
+        drop(timer);
+        let timer = probe::paint_timer(PaintStage::DisposalInk);
+        drop(ink);
+        drop(timer);
+    }
+
     pub(super) fn recolor(&mut self, rows: &[&TrackedRow]) {
         for layer in &mut self.ink.layers {
             let ink = layer.source.ink(rows);
@@ -942,29 +1279,348 @@ mod cell_paint_tests {
     use crate::census::scan::OriginStart;
     use crate::constants::BYTES_PER_GIBIBYTE;
     use crate::render;
+    use crate::render::Ancestor;
+    use crate::render::AncestryWalk;
     use crate::render::Buffer;
     use crate::render::CaptureLookup;
     use crate::render::CaptureRead;
     use crate::render::Cells;
     use crate::render::Color;
+    use crate::render::CommandText;
     use crate::render::CommandView;
     use crate::render::FreeDiskSpace;
+    use crate::render::InvocationId;
     use crate::render::Phase;
     use crate::render::Progress;
     use crate::render::Rect;
     use crate::render::Roster;
     use crate::render::RunState;
     use crate::render::SccacheStats;
+    use crate::render::TableRowEnd;
     use crate::render::TileCells;
     use crate::render::TileContent;
     use crate::render::VisibleParent;
+    use crate::render::WorkingDirectoryIdentity;
     use crate::render::frame_preparation::PreparedTables;
     use crate::render::tests;
     use crate::render::tests::CELL_CONTENT_PAINTS;
 
     #[test]
+    fn painting_sources_release_frame_preparation() {
+        let mut app = tests::argument_toggle_app();
+        let stats = SccacheStats::default();
+        let mut tables = PreparedTables::default();
+        let content = TileContent::Group(app.roster.visible(&[]).groups()[0].id.clone());
+        let prepared = tables.for_frame(
+            &mut app.roster,
+            &[],
+            CommandView::long(),
+            80,
+            FreeDiskSpace::Unavailable,
+        );
+        let cells = Cells::from_prepared(prepared, &stats);
+        let rows = std::rc::Rc::strong_count(&cells.grids.commands.0.prepared_rows);
+        let plans = std::rc::Rc::strong_count(&cells.grids.commands.0.prepared_plans);
+        let snapshot = cells.roster.groups()[0].lead.snapshot();
+        let snapshot_owners = std::rc::Rc::strong_count(&snapshot);
+        let source = super::CellPaintSource::read(&cells.roster, &content, &cells.grids);
+        assert_eq!(
+            std::rc::Rc::strong_count(&snapshot),
+            snapshot_owners,
+            "painting sources do not retain process snapshots"
+        );
+        assert_eq!(
+            std::rc::Rc::strong_count(&cells.grids.commands.0.prepared_rows),
+            rows
+        );
+        assert_eq!(
+            std::rc::Rc::strong_count(&cells.grids.commands.0.prepared_plans),
+            plans
+        );
+        assert!(matches!(
+            source.matches(&cells.roster, &content, &cells.grids),
+            super::CellSourceMatch::Unchanged(_)
+        ));
+    }
+
+    #[test]
+    fn roster_revisions_reuse_prepared_process_rows() {
+        let mut app = tests::argument_toggle_app();
+        let stats = SccacheStats::default();
+        let mut tables = PreparedTables::default();
+        let content = TileContent::Group(app.roster.visible(&[]).groups()[0].id.clone());
+        let view = CommandView::long();
+        let area = Rect::new(0, 0, 160, 80);
+        let first = Cells::from_prepared(
+            tables.for_frame(&mut app.roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            &stats,
+        );
+        first.prepare_frame(|| vec![(content.clone(), area)]);
+        first.draw(&mut Buffer::empty(area), &content, area, Color::Black);
+        app.roster.observe_memory_shares(CompileMemoryShares {
+            shared_compiler_cache: BYTES_PER_GIBIBYTE,
+            unattributed:          0,
+        });
+        let next = Cells::from_prepared(
+            tables.for_frame(&mut app.roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            &stats,
+        );
+        assert!(std::rc::Rc::ptr_eq(
+            &first.grids.commands.0.prepared_rows,
+            &next.grids.commands.0.prepared_rows
+        ));
+        assert!(std::rc::Rc::ptr_eq(
+            &first.grids.summary.0.prepared_rows,
+            &next.grids.summary.0.prepared_rows
+        ));
+        next.prepare_frame(|| vec![(content.clone(), area)]);
+        let mut actual = Buffer::empty(area);
+        next.draw(&mut actual, &content, area, Color::Black);
+        let mut fresh = Buffer::empty(area);
+        render::frame_draw_contents_and_values(
+            &mut fresh,
+            &next.roster,
+            &content,
+            area,
+            Color::Black,
+            &next.grids,
+        );
+        assert_eq!(actual, fresh);
+    }
+
+    #[test]
+    fn summary_height_changes_validate_cached_progress() {
+        let mut roster = Roster::new();
+        let groups = (0..5)
+            .map(|index| {
+                let mut process = tests::invocation(8100 + index, &["build"]);
+                process.path = format!("/project/{index}");
+                process.directory_identity =
+                    WorkingDirectoryIdentity::Absolute(process.path.clone().into());
+                process.state =
+                    CaptureLookup::Registered(CaptureRead::Progress(RunState::Working {
+                        phase:    Phase::Building,
+                        progress: Progress {
+                            done:  10 + index as usize,
+                            total: 100,
+                        },
+                    }));
+                tests::cargo_group(process)
+            })
+            .collect();
+        roster.observe(groups, Instant::now());
+        let stats = SccacheStats::default();
+        for rebuild in [false, true] {
+            let mut tables = PreparedTables::default();
+            let view = CommandView::long();
+            for height in [6, 10] {
+                let area = Rect::new(0, 0, 160, height);
+                let frame_height = if rebuild { height } else { 80 };
+                let cells = Cells::from_prepared(
+                    tables.for_frame(
+                        &mut roster,
+                        &[],
+                        view,
+                        frame_height,
+                        FreeDiskSpace::Unavailable,
+                    ),
+                    &stats,
+                );
+                cells.prepare_frame(|| vec![(TileContent::Summary, area)]);
+                let mut actual = Buffer::empty(area);
+                cells.draw(&mut actual, &TileContent::Summary, area, Color::Black);
+                let fresh_cells = Cells::for_frame(
+                    roster.visible(&[]),
+                    view,
+                    &stats,
+                    FreeDiskSpace::Unavailable,
+                    frame_height,
+                );
+                let mut fresh = Buffer::empty(area);
+                fresh_cells.draw(&mut fresh, &TileContent::Summary, area, Color::Black);
+                assert_eq!(actual, fresh, "summary height {height}");
+            }
+        }
+    }
+
+    #[test]
+    fn geometry_repaints_reuse_unchanged_source_snapshots() {
+        let mut app = tests::argument_toggle_app();
+        let stats = SccacheStats::default();
+        let mut tables = PreparedTables::default();
+        let content = TileContent::Group(app.roster.visible(&[]).groups()[0].id.clone());
+        let identity = super::super::CellRowIdentity::from(&content);
+        let first = Cells::from_prepared(
+            tables.for_frame(
+                &mut app.roster,
+                &[],
+                CommandView::long(),
+                80,
+                FreeDiskSpace::Unavailable,
+            ),
+            &stats,
+        );
+        let area = Rect::new(0, 0, 160, 30);
+        first.draw(&mut Buffer::empty(area), &content, area, Color::Black);
+        let snapshot = first.roster.groups()[0].lead.snapshot();
+        let revision = first.paintings.borrow()[&identity].source.rows[0]
+            .revision
+            .clone();
+        let metadata = std::rc::Rc::clone(
+            &first
+                .grids
+                .commands
+                .0
+                .prepared_rows
+                .borrow()
+                .ordinary
+                .by_pid[&4100][0]
+                .cells
+                .0[crate::render::PID_COLUMN],
+        );
+        let mut group = current_lead_group(&mut app.roster);
+        group.lead.resource_use.cpu = Measurement::Reading(34.0);
+        app.roster.observe(vec![group], Instant::now());
+        let next = Cells::from_prepared(
+            tables.for_frame(
+                &mut app.roster,
+                &[],
+                CommandView::long(),
+                80,
+                FreeDiskSpace::Unavailable,
+            ),
+            &stats,
+        );
+        assert!(!std::rc::Rc::ptr_eq(
+            &snapshot,
+            &next.roster.groups()[0].lead.snapshot()
+        ));
+        let area = Rect { height: 28, ..area };
+        let mut actual = Buffer::empty(area);
+        let snapshot_owners = std::rc::Rc::strong_count(&next.roster.groups()[0].lead.snapshot());
+        next.draw(&mut actual, &content, area, Color::Black);
+        assert_eq!(
+            revision,
+            next.paintings.borrow()[&identity].source.rows[0].revision
+        );
+        assert_eq!(
+            std::rc::Rc::strong_count(&next.roster.groups()[0].lead.snapshot()),
+            snapshot_owners
+        );
+        let fresh_cells = Cells::for_frame(
+            app.roster.visible(&[]),
+            CommandView::long(),
+            &stats,
+            FreeDiskSpace::Unavailable,
+            80,
+        );
+        let mut fresh = Buffer::empty(area);
+        fresh_cells.draw(&mut fresh, &content, area, Color::Black);
+        assert_eq!(actual, fresh);
+        assert!(
+            next.grids.commands.0.prepared_rows.borrow().ordinary.by_pid[&4100]
+                .iter()
+                .any(|row| std::rc::Rc::ptr_eq(&metadata, &row.cells.0[crate::render::PID_COLUMN]))
+        );
+        assert_command_change_gets_a_new_revision(
+            &mut app.roster,
+            &mut tables,
+            &stats,
+            &content,
+            area,
+            &revision,
+        );
+    }
+
+    fn assert_command_change_gets_a_new_revision(
+        roster: &mut Roster,
+        tables: &mut PreparedTables,
+        stats: &SccacheStats,
+        content: &TileContent,
+        area: Rect,
+        revision: &super::RowPaintRevision,
+    ) {
+        let mut group = current_lead_group(roster);
+        group.lead.command = CommandText::of("cargo", &["test", "--all-targets"]);
+        roster.observe(vec![group], Instant::now());
+        let cells = Cells::from_prepared(
+            tables.for_frame(
+                roster,
+                &[],
+                CommandView::long(),
+                80,
+                FreeDiskSpace::Unavailable,
+            ),
+            stats,
+        );
+        let mut actual = Buffer::empty(area);
+        cells.draw(&mut actual, content, area, Color::Black);
+        let identity = super::super::CellRowIdentity::from(content);
+        assert_ne!(
+            revision,
+            &cells.paintings.borrow()[&identity].source.rows[0].revision
+        );
+        let fresh = Cells::for_frame(
+            roster.visible(&[]),
+            CommandView::long(),
+            stats,
+            FreeDiskSpace::Unavailable,
+            80,
+        );
+        let mut expected = Buffer::empty(area);
+        fresh.draw(&mut expected, content, area, Color::Black);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn source_rejections_name_details_and_row_count() {
+        let mut app = tests::argument_toggle_app();
+        let stats = SccacheStats::default();
+        let mut tables = PreparedTables::default();
+        let content = TileContent::Group(app.roster.visible(&[]).groups()[0].id.clone());
+        let prepared = tables.for_frame(
+            &mut app.roster,
+            &[],
+            CommandView::long(),
+            80,
+            FreeDiskSpace::Unavailable,
+        );
+        let cells = Cells::from_prepared(prepared, &stats);
+        for reason in ["source details changed", "source row count:"] {
+            let mut source = super::CellPaintSource::read(&cells.roster, &content, &cells.grids);
+            if reason == "source details changed" {
+                source.details = super::CellSourceDetails::Empty;
+            } else {
+                source.rows.pop();
+            }
+            let work = crate::probe::measure_paint(|| {
+                assert!(matches!(
+                    source.matches(&cells.roster, &content, &cells.grids),
+                    super::CellSourceMatch::Changed
+                ));
+            });
+            assert!(
+                work.first_rejection.starts_with(reason),
+                "{}",
+                work.first_rejection
+            );
+        }
+    }
+
+    #[test]
     fn roster_revisions_keep_only_unchanged_cell_paintings() {
-        for (summary, changed_command) in [(false, false), (true, false), (false, true)] {
+        assert_source_row_transitions_reuse_fragments();
+        for (summary, changed_command, added_group, changed_other_ancestry) in [
+            (false, false, false, false),
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+            (false, false, false, true),
+        ] {
+            if changed_other_ancestry {
+                assert_other_hidden_parent_revision();
+                continue;
+            }
             let mut app = tests::argument_toggle_app();
             let stats = SccacheStats::default();
             let mut tables = PreparedTables::default();
@@ -980,15 +1636,20 @@ mod cell_paint_tests {
             let area = Rect::new(0, 0, 160, 80);
             let original = Buffer::empty(area);
             let mut first = original.clone();
+            cells.prepare_frame(|| vec![(content.clone(), area)]);
             cells.draw(&mut first, &content, area, Color::Black);
-            if changed_command {
-                let visible = app.roster.visible(&[]);
-                let before = &visible.groups()[0];
-                let mut process = before.lead.process.clone();
-                process.command =
-                    super::super::CommandText::of("cargo", &["test", "--all-targets"]);
-                let mut group = tests::cargo_group(process);
-                group.ancestry = before.ancestry().clone();
+            if added_group {
+                let group = current_lead_group(&mut app.roster);
+                app.roster.observe(
+                    vec![
+                        group,
+                        tests::cargo_group(tests::invocation(9900, &["check"])),
+                    ],
+                    Instant::now(),
+                );
+            } else if changed_command {
+                let mut group = current_lead_group(&mut app.roster);
+                group.lead.command = CommandText::of("cargo", &["test", "--all-targets"]);
                 app.roster.observe(vec![group], Instant::now());
             } else {
                 app.roster.observe_memory_shares(CompileMemoryShares {
@@ -1000,6 +1661,7 @@ mod cell_paint_tests {
                 tables.for_frame(&mut app.roster, &[], view, 80, FreeDiskSpace::Unavailable);
             let cells = Cells::from_prepared(prepared, &stats);
             let mut actual = original.clone();
+            cells.prepare_frame(|| vec![(content.clone(), area)]);
             CELL_CONTENT_PAINTS.with(|count| count.set(0));
             cells.draw(&mut actual, &content, area, Color::Black);
             CELL_CONTENT_PAINTS.with(|count| {
@@ -1038,11 +1700,178 @@ mod cell_paint_tests {
             DisplayRevision::HiddenCpuSameTotal,
             DisplayRevision::ProgressOwnership,
             DisplayRevision::CpuShorterValue,
+            DisplayRevision::CpuNarrowerValue,
             DisplayRevision::MemoryWider,
             DisplayRevision::CompilerStarts,
+            DisplayRevision::IntrinsicCommandWidth,
+            DisplayRevision::RowEndPolicy,
         ] {
             assert_display_revision(change);
         }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum SourceRowChange {
+        Insert,
+        Remove,
+        Reorder,
+        Hidden,
+    }
+
+    fn assert_source_row_transitions_reuse_fragments() {
+        for change in [
+            SourceRowChange::Insert,
+            SourceRowChange::Remove,
+            SourceRowChange::Reorder,
+            SourceRowChange::Hidden,
+        ] {
+            let mut before = tests::cargo_group(tests::invocation(4100, &["build"]));
+            before.rest = (4101..4105)
+                .map(|pid| tests::invocation(pid, &["check"]))
+                .collect();
+            let mut after = before.clone();
+            match change {
+                SourceRowChange::Insert | SourceRowChange::Hidden => {
+                    after.rest.push(tests::invocation(4105, &["check"]));
+                },
+                SourceRowChange::Remove => {
+                    after.rest.remove(1);
+                },
+                SourceRowChange::Reorder => {
+                    after.rest[1].path = "/project/other".to_owned();
+                },
+            }
+            let mut roster = Roster::new();
+            roster.observe(vec![before], Instant::now());
+            let stats = SccacheStats::default();
+            let mut tables = PreparedTables::default();
+            let view = CommandView::long();
+            let first = Cells::from_prepared(
+                tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
+                &stats,
+            );
+            let content = TileContent::Group(first.roster.groups()[0].id.clone());
+            let area = Rect::new(
+                0,
+                0,
+                160,
+                if matches!(change, SourceRowChange::Hidden) {
+                    4
+                } else {
+                    16
+                },
+            );
+            first.prepare_frame(|| vec![(content.clone(), area)]);
+            first.draw(&mut Buffer::empty(area), &content, area, Color::Black);
+            roster.observe(vec![after], Instant::now());
+            let next = Cells::from_prepared(
+                tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
+                &stats,
+            );
+            next.prepare_frame(|| vec![(content.clone(), area)]);
+            tests::ROW_FRAGMENT_HITS.with(|hits| hits.set(0));
+            let mut actual = Buffer::empty(area);
+            next.draw(&mut actual, &content, area, Color::Black);
+            if matches!(change, SourceRowChange::Insert | SourceRowChange::Hidden) {
+                tests::ROW_FRAGMENT_HITS.with(|hits| assert!(hits.get() > 0, "{change:?}"));
+            }
+            let fresh = Cells::for_frame(
+                roster.visible(&[]),
+                view,
+                &stats,
+                FreeDiskSpace::Unavailable,
+                80,
+            );
+            fresh.prepare_frame(|| vec![(content.clone(), area)]);
+            let mut expected = Buffer::empty(area);
+            fresh.draw(&mut expected, &content, area, Color::Black);
+            assert_eq!(actual, expected, "{change:?}");
+        }
+    }
+
+    fn current_lead_group(roster: &mut Roster) -> CargoGroup {
+        let visible = roster.visible(&[]);
+        let before = &visible.groups()[0];
+        let mut group = tests::cargo_group(before.lead.process.clone());
+        group.ancestry = before.ancestry().clone();
+        group
+    }
+
+    fn assert_other_hidden_parent_revision() {
+        let mut app = tests::argument_toggle_app();
+        let visible = app.roster.visible(&[]);
+        let before = &visible.groups()[0];
+        let mut group = tests::cargo_group(before.lead.process.clone());
+        group.ancestry = before.ancestry().clone();
+        let content = TileContent::Group(before.id.clone());
+        let mut other = tests::invocation(9900, &["check"]);
+        other.parent = VisibleParent::Ancestor(9800);
+        let mut other = tests::cargo_group(other);
+        other.ancestry = AncestryWalk::Ended(vec![Ancestor {
+            pid:            9800,
+            command:        CommandText::from_display_line("bash --login"),
+            passes_through: false,
+        }]);
+        app.roster.observe(vec![group, other], Instant::now());
+        let stats = SccacheStats::default();
+        let mut tables = PreparedTables::default();
+        let view = CommandView::long();
+        let area = Rect::new(0, 0, 160, 80);
+        let original = Buffer::empty(area);
+        let cells = Cells::from_prepared(
+            tables.for_frame(&mut app.roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            &stats,
+        );
+        cells.prepare_frame(|| vec![(content.clone(), area)]);
+        let mut first = original.clone();
+        cells.draw(&mut first, &content, area, Color::Black);
+        let widths = cells.grids.commands.0.intrinsic_widths;
+        assert_eq!(
+            cells.grids.commands.0.parent_links.hidden,
+            [] as [InvocationId; 0]
+        );
+        let groups = app
+            .roster
+            .visible(&[])
+            .groups()
+            .iter()
+            .map(|group| CargoGroup {
+                lead:     group.lead.process.clone(),
+                rest:     Vec::new(),
+                ancestry: if group.lead.process.pid == 9900 {
+                    AncestryWalk::Ended(Vec::new())
+                } else {
+                    group.ancestry().clone()
+                },
+            })
+            .collect();
+        app.roster.observe(groups, Instant::now());
+        let cells = Cells::from_prepared(
+            tables.for_frame(&mut app.roster, &[], view, 80, FreeDiskSpace::Unavailable),
+            &stats,
+        );
+        assert_eq!(cells.grids.commands.0.parent_links.hidden.len(), 1);
+        assert_eq!(cells.grids.commands.0.intrinsic_widths, widths);
+        cells.prepare_frame(|| vec![(content.clone(), area)]);
+        let mut actual = original.clone();
+        CELL_CONTENT_PAINTS.with(|count| count.set(0));
+        cells.draw(&mut actual, &content, area, Color::Black);
+        CELL_CONTENT_PAINTS.with(|count| {
+            assert_eq!(count.get(), 0, "only changed cell sources need painting");
+        });
+        let mut fresh = original;
+        render::frame_draw_contents_and_values(
+            &mut fresh,
+            &cells.roster,
+            &content,
+            area,
+            Color::Black,
+            &cells.grids,
+        );
+        assert_eq!(
+            actual, fresh,
+            "retained paintings match the current visible source"
+        );
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -1057,8 +1886,11 @@ mod cell_paint_tests {
         HiddenCpuSameTotal,
         ProgressOwnership,
         CpuShorterValue,
+        CpuNarrowerValue,
         MemoryWider,
         CompilerStarts,
+        IntrinsicCommandWidth,
+        RowEndPolicy,
     }
 
     /// Whether a revision changes what the cell shows.
@@ -1128,6 +1960,7 @@ mod cell_paint_tests {
     /// Apply one revision to the group drawn second.
     fn revise(change: DisplayRevision, after: &mut CargoGroup) {
         match change {
+            DisplayRevision::IntrinsicCommandWidth | DisplayRevision::RowEndPolicy => {},
             DisplayRevision::Subsecond => {
                 after.lead.origin_start = OriginStart::Process {
                     epoch:   1_790_000_000,
@@ -1167,6 +2000,9 @@ mod cell_paint_tests {
             DisplayRevision::CpuShorterValue => {
                 after.lead.resource_use.cpu = Measurement::Reading(9.5);
             },
+            DisplayRevision::CpuNarrowerValue => {
+                after.lead.resource_use.cpu = Measurement::Reading(9.4);
+            },
             DisplayRevision::MemoryWider => {
                 after.lead.resource_use.memory = Measurement::Reading(BYTES_PER_GIBIBYTE * 10);
             },
@@ -1197,6 +2033,7 @@ mod cell_paint_tests {
                 | DisplayRevision::HiddenCpuAcrossBoundary
                 | DisplayRevision::ProgressOwnership
                 | DisplayRevision::CpuShorterValue
+                | DisplayRevision::CpuNarrowerValue
                 | DisplayRevision::MemoryWider
                 | DisplayRevision::CompilerStarts
         ) {
@@ -1229,6 +2066,20 @@ mod cell_paint_tests {
             tables.for_frame(&mut roster, &[], view, 80, FreeDiskSpace::Unavailable),
             &stats,
         );
+        if matches!(change, DisplayRevision::RowEndPolicy) {
+            cells.grids.commands.0.row_end.set(TableRowEnd::Reserved);
+            cells
+                .grids
+                .commands
+                .0
+                .frame_row_end
+                .set(TableRowEnd::Reserved);
+        }
+        let mut cells = cells;
+        if matches!(change, DisplayRevision::IntrinsicCommandWidth) {
+            cells.grids.commands.0.intrinsic_widths[render::COMMAND_COLUMN] += 32;
+            cells.grids.commands.0.layouts.borrow_mut().clear();
+        }
         // Each frame starts from the grid the painting was recorded over.
         let mut actual = original.clone();
         CELL_CONTENT_PAINTS.with(|count| count.set(0));
@@ -1296,6 +2147,17 @@ mod cell_paint_tests {
         );
         let mut first = original.clone();
         cells.draw(&mut first, &content, area, ground);
+        assert!(
+            cells
+                .grids
+                .commands
+                .0
+                .prepared_rows
+                .borrow()
+                .paintings
+                .is_empty(),
+            "the retained fade painting needs no second row image"
+        );
         let before_ink = roster.visible(&[]).groups()[0].lead.painted_ink();
         roster.advance(now + Duration::from_millis(2625), Duration::from_secs(3));
         assert_ne!(
@@ -1415,10 +2277,16 @@ mod cell_paint_tests {
         );
         let mut actual = original;
         CELL_CONTENT_PAINTS.with(|count| count.set(0));
-        cells.draw(&mut actual, &content, area, ground);
+        let work = crate::probe::measure_paint(|| {
+            cells.draw(&mut actual, &content, area, ground);
+        });
         CELL_CONTENT_PAINTS.with(|count| {
             assert_eq!(count.get(), 0, "a CPU value change keeps the painting");
         });
+        assert!(
+            work.live_values_cpu_ns > 0,
+            "retained live values record CPU time"
+        );
         let rows = tests::buffer_rows(&actual);
         let (row, column) = rows
             .iter()

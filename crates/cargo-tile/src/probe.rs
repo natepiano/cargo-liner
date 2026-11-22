@@ -138,6 +138,17 @@ pub(crate) struct PaintWork {
     pub(crate) recording_visits:         usize,
     pub(crate) capture_cpu_ns:           u64,
     pub(crate) table_preparation_cpu_ns: u64,
+    pub(crate) text_drawing_cpu_ns:      u64,
+    pub(crate) live_values_cpu_ns:       u64,
+    pub(crate) retention_cpu_ns:         u64,
+    disposal_inputs_cpu_ns:              u64,
+    disposal_snapshots_cpu_ns:           u64,
+    disposal_source_cpu_ns:              u64,
+    disposal_surface_cpu_ns:             u64,
+    disposal_patch_cpu_ns:               u64,
+    disposal_text_cpu_ns:                u64,
+    disposal_ink_cpu_ns:                 u64,
+    disposal_cpu_ns:                     u64,
     patch_cpu_ns:                        u64,
     ink_binding_cpu_ns:                  u64,
     preparation_cpu_ns:                  u64,
@@ -197,6 +208,17 @@ pub(crate) enum PaintStage {
     Recording,
     Capture,
     TablePreparation,
+    TextDrawing,
+    LiveValues,
+    Retention,
+    DisposalInputs,
+    DisposalSnapshots,
+    DisposalSource,
+    DisposalSurface,
+    DisposalPatch,
+    DisposalText,
+    DisposalInk,
+    Disposal,
     Patch,
     InkBinding,
 
@@ -234,6 +256,17 @@ impl Drop for PaintTimer {
             PaintStage::Recording => work.recording_cpu_ns += elapsed,
             PaintStage::Capture => work.capture_cpu_ns += elapsed,
             PaintStage::TablePreparation => work.table_preparation_cpu_ns += elapsed,
+            PaintStage::TextDrawing => work.text_drawing_cpu_ns += elapsed,
+            PaintStage::LiveValues => work.live_values_cpu_ns += elapsed,
+            PaintStage::Retention => work.retention_cpu_ns += elapsed,
+            PaintStage::DisposalInputs => work.disposal_inputs_cpu_ns += elapsed,
+            PaintStage::DisposalSnapshots => work.disposal_snapshots_cpu_ns += elapsed,
+            PaintStage::DisposalSource => work.disposal_source_cpu_ns += elapsed,
+            PaintStage::DisposalSurface => work.disposal_surface_cpu_ns += elapsed,
+            PaintStage::DisposalPatch => work.disposal_patch_cpu_ns += elapsed,
+            PaintStage::DisposalText => work.disposal_text_cpu_ns += elapsed,
+            PaintStage::DisposalInk => work.disposal_ink_cpu_ns += elapsed,
+            PaintStage::Disposal => work.disposal_cpu_ns += elapsed,
             PaintStage::Patch => work.patch_cpu_ns += elapsed,
             PaintStage::InkBinding => work.ink_binding_cpu_ns += elapsed,
             PaintStage::Preparation => work.preparation_cpu_ns += elapsed,
@@ -245,9 +278,32 @@ impl Drop for PaintTimer {
 
 /// Start one callback work scope.
 pub(crate) fn paint_timer(stage: PaintStage) -> PaintTimer {
+    static TIMING: OnceLock<PaintTiming> = OnceLock::new();
+    #[cfg(test)]
+    if TEST_PAINT_PROBE.get() == TestPaintProbe::Enabled {
+        return paint_timer_for(stage, PaintTiming::Detailed);
+    }
+    let timing = *TIMING.get_or_init(|| {
+        if std::env::var("CARGO_TILE_PAINT_TIMING").as_deref() == Ok("detailed") {
+            PaintTiming::Detailed
+        } else {
+            PaintTiming::Outer
+        }
+    });
+    paint_timer_for(stage, timing)
+}
+
+/// Outer timing excludes clocks inside individual paint operations.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PaintTiming {
+    Outer,
+    Detailed,
+}
+
+fn paint_timer_for(stage: PaintStage, timing: PaintTiming) -> PaintTimer {
     PaintTimer {
         stage,
-        started: if on() {
+        started: if on() && timing == PaintTiming::Detailed {
             PaintTimerState::Started(thread_cpu_ns())
         } else {
             PaintTimerState::Disabled
@@ -672,10 +728,23 @@ fn describe_paint_work(line: &mut String, work: &PaintWork) {
     );
     let _ = write!(
         line,
-        " table_preparation_cpu_ns={} text_drawing_cpu_ns={}",
+        " disposal_snapshots_cpu_ns={} disposal_inputs_cpu_ns={} disposal_source_cpu_ns={} disposal_surface_cpu_ns={} disposal_patch_cpu_ns={} disposal_text_cpu_ns={} disposal_ink_cpu_ns={}",
+        work.disposal_snapshots_cpu_ns,
+        work.disposal_inputs_cpu_ns,
+        work.disposal_source_cpu_ns,
+        work.disposal_surface_cpu_ns,
+        work.disposal_patch_cpu_ns,
+        work.disposal_text_cpu_ns,
+        work.disposal_ink_cpu_ns
+    );
+    let _ = write!(
+        line,
+        " live_values_cpu_ns={} retention_cpu_ns={} disposal_cpu_ns={} table_preparation_cpu_ns={} text_drawing_cpu_ns={}",
+        work.live_values_cpu_ns,
+        work.retention_cpu_ns,
+        work.disposal_cpu_ns,
         work.table_preparation_cpu_ns,
-        work.capture_cpu_ns
-            .saturating_sub(work.table_preparation_cpu_ns),
+        work.text_drawing_cpu_ns,
     );
 }
 
@@ -744,6 +813,20 @@ mod tests {
     use super::describe;
     use super::slot;
 
+    #[test]
+    fn outer_frame_timing_excludes_paint_clocks() {
+        for timing in [super::PaintTiming::Outer, super::PaintTiming::Detailed] {
+            let work = super::measure_paint(|| {
+                let timer = super::paint_timer_for(super::PaintStage::TextDrawing, timing);
+                drop(timer);
+            });
+            match timing {
+                super::PaintTiming::Outer => assert_eq!(work.text_drawing_cpu_ns, 0),
+                super::PaintTiming::Detailed => assert!(work.text_drawing_cpu_ns > 0),
+            }
+        }
+    }
+
     /// Each phase keeps its own slot and its own column, and the columns
     /// run in the order every frame log has written them.
     #[test]
@@ -761,6 +844,18 @@ mod tests {
             .into_iter()
             .map(|phase| (phase, slot(phase).swap(0, Ordering::Relaxed)))
             .collect();
+
+        for (capture, preparation, recording) in [(100, 20, 30), (50, 50, 0), (100, 0, 100)] {
+            let work = super::PaintWork {
+                capture_cpu_ns: capture,
+                table_preparation_cpu_ns: preparation,
+                recording_cpu_ns: recording,
+                ..super::PaintWork::default()
+            };
+            let mut line = String::new();
+            super::describe_paint_work(&mut line, &work);
+            assert!(line.ends_with("text_drawing_cpu_ns=0"), "{line}");
+        }
 
         assert_eq!(
             describe("frame", Duration::from_millis(20), &phases),
