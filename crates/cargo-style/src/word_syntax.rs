@@ -199,7 +199,7 @@ pub(crate) fn item_starts(words: &[String]) -> BTreeSet<usize> {
 }
 
 /// The matched delimiter pairs, following the Python stack rules.
-fn delimiter_ends(words: &[String]) -> BTreeMap<usize, usize> {
+pub(crate) fn delimiter_ends(words: &[String]) -> BTreeMap<usize, usize> {
     let mut stack = Vec::new();
     let mut ends = BTreeMap::new();
     for (index, value) in words.iter().enumerate() {

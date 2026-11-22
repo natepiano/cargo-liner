@@ -19,7 +19,6 @@ use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Paragraph;
-use unicode_width::UnicodeWidthChar;
 use unicode_width::UnicodeWidthStr;
 
 use crate::Action;
@@ -39,6 +38,8 @@ use crate::SettingsRowIdentity;
 use crate::SettingsRowKind;
 use crate::SettingsRowPayload;
 use crate::Viewport;
+use crate::constants::ELISION;
+use crate::wrap;
 
 /// Command produced by [`SettingsPane::handle_text_input`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -498,6 +499,16 @@ impl SettingsPane {
     /// change the live offset afterward; clicks keep using this draw's offset
     /// until the next call paints the updated content.
     pub fn render_lines(&mut self, frame: &mut Frame, lines: Vec<Line<'_>>) {
+        self.render_lines_at_width(frame, lines, self.viewport.content_area().width);
+    }
+
+    /// Limit paint width and keep the full viewport available for input.
+    pub(crate) fn render_lines_at_width(
+        &mut self,
+        frame: &mut Frame,
+        lines: Vec<Line<'_>>,
+        width: u16,
+    ) {
         let inner = self.viewport.content_area();
         let offset = self.viewport.scroll_offset();
         let visible_lines: Vec<_> = lines
@@ -505,7 +516,11 @@ impl SettingsPane {
             .skip(offset)
             .take(usize::from(inner.height))
             .collect();
-        frame.render_widget(Paragraph::new(visible_lines), inner);
+        let paint_area = Rect {
+            width: width.min(inner.width),
+            ..inner
+        };
+        frame.render_widget(Paragraph::new(visible_lines), paint_area);
         self.drawn_scroll_offset = DrawnScrollOffset::Drawn(offset);
     }
 
@@ -527,6 +542,7 @@ impl SettingsPane {
                     context.options,
                     context.options.inline_error_style,
                 ),
+                ValueOverflow::ElideWord,
             );
         } else if self.is_editing() && context.selection != PaneSelectionState::Unselected {
             let edited_text = render_editor_text(self.edited_text(), self.edit_cursor());
@@ -536,21 +552,13 @@ impl SettingsPane {
                 context,
                 &edited_text,
                 patch_selection(context.selection, context.options, Style::default()),
+                ValueOverflow::KeepEditorText,
             );
         } else {
             match row.kind {
                 SettingsRowKind::Section => {},
-                SettingsRowKind::Toggle => {
-                    push_toggle_row(
-                        lines,
-                        line_targets,
-                        &row.value,
-                        context,
-                        row.suffix.as_deref(),
-                    );
-                },
-                SettingsRowKind::Stepper => {
-                    push_stepper_row(lines, line_targets, context, &row.value);
+                SettingsRowKind::Toggle | SettingsRowKind::Stepper => {
+                    push_control_row(lines, line_targets, context, row);
                 },
                 SettingsRowKind::Value => {
                     let value_style = if row.value.starts_with("Not configured.") {
@@ -566,7 +574,14 @@ impl SettingsPane {
                         || row.value.clone(),
                         |suffix| format!("{}{suffix}", row.value),
                     );
-                    push_wrapped_setting_value(lines, line_targets, context, &value, value_style);
+                    push_wrapped_setting_value(
+                        lines,
+                        line_targets,
+                        context,
+                        &value,
+                        value_style,
+                        ValueOverflow::ElideWord,
+                    );
                 },
             }
         }
@@ -760,88 +775,125 @@ fn push_settings_header(
     line_targets.push(SettingsLineTarget::Decoration);
 }
 
-fn push_toggle_row(
+fn push_control_row(
     lines: &mut Vec<Line<'static>>,
     line_targets: &mut Vec<SettingsLineTarget>,
-    value: &str,
     context: &SettingsLineContext<'_>,
-    suffix: Option<&str>,
+    row: &SettingsRow,
 ) {
-    let is_on = value == "ON";
-    let toggle_style = if is_on {
-        context.options.success_style.add_modifier(Modifier::BOLD)
-    } else {
-        context.options.error_style.add_modifier(Modifier::BOLD)
-    };
-    let row_style = patch_selection(
+    let content_width = context.options.content_width;
+    let label_style = patch_selection(
         context.selection,
         context.options,
         context.options.label_style,
     );
-    lines.push(Line::from(vec![
-        Span::styled(context.label.to_owned(), row_style),
-        Span::styled(
-            "< ",
-            patch_selection(
-                context.selection,
-                context.options,
-                context.options.muted_style,
-            ),
-        ),
-        Span::styled(
-            value.to_owned(),
-            patch_selection(context.selection, context.options, toggle_style),
-        ),
-        Span::styled(
-            " >",
-            patch_selection(
-                context.selection,
-                context.options,
-                context.options.muted_style,
-            ),
-        ),
-        Span::styled(suffix.unwrap_or_default().to_owned(), row_style),
-    ]));
-    line_targets.push(SettingsLineTarget::Row(context.target));
+    let minimum_value_width = minimum_control_value_width(&row.value, content_width);
+    let (start_marker, end_marker) = match content_width.saturating_sub(minimum_value_width) {
+        4.. => ("< ", " >"),
+        2..=3 => ("<", ">"),
+        _ => ("", ""),
+    };
+    let marker_width = start_marker.len() + end_marker.len();
+    let label_limit = content_width.saturating_sub(minimum_value_width + marker_width);
+    let label_text = context.label.trim_end();
+    // Use label padding first. Move the control only if the label and value cannot fit together.
+    let label = if context.label.width() <= label_limit {
+        context.label
+    } else if label_text.width() < label_limit {
+        wrap::split_at_cells(context.label, label_limit).0
+    } else {
+        let (visible_label, _) = wrap::split_at_cells(label_text, content_width);
+        lines.push(Line::from(Span::styled(
+            visible_label.to_owned(),
+            label_style,
+        )));
+        line_targets.push(SettingsLineTarget::Row(context.target));
+        ""
+    };
+    let label_width = label.width();
+    let control_width = content_width.saturating_sub(label_width);
+    let value_width = control_width.saturating_sub(marker_width);
+    let marker_style = patch_selection(
+        context.selection,
+        context.options,
+        context.options.muted_style,
+    );
+    let value_style = patch_selection(
+        context.selection,
+        context.options,
+        control_style(row, context.options),
+    );
+    let continuation_prefix = " ".repeat(label_width + start_marker.len());
+    let values = wrap_text_to_width(&row.value, value_width, ValueOverflow::ElideWord);
+    let last = values.len() - 1;
+    for (index, value) in values.into_iter().enumerate() {
+        let mut spans = if index == 0 {
+            vec![
+                Span::styled(label.to_owned(), label_style),
+                Span::styled(start_marker, marker_style),
+            ]
+        } else {
+            vec![Span::styled(continuation_prefix.clone(), label_style)]
+        };
+        spans.push(Span::styled(value, value_style));
+        if index == last {
+            spans.push(Span::styled(end_marker, marker_style));
+        }
+        lines.push(Line::from(spans));
+        line_targets.push(SettingsLineTarget::Row(context.target));
+    }
+
+    if let Some(suffix) = row
+        .suffix
+        .as_deref()
+        .filter(|suffix| !suffix.trim().is_empty())
+        && let Some(last_line) = lines.last_mut()
+    {
+        if last_line.width() + suffix.width() <= content_width {
+            last_line
+                .spans
+                .push(Span::styled(suffix.to_owned(), label_style));
+        } else {
+            let prefix = " ".repeat(label_width);
+            for chunk in wrap_text_to_width(suffix, control_width, ValueOverflow::ElideWord) {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix.clone(), label_style),
+                    Span::styled(chunk, label_style),
+                ]));
+                line_targets.push(SettingsLineTarget::Row(context.target));
+            }
+        }
+    }
 }
 
-fn push_stepper_row(
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<SettingsLineTarget>,
-    context: &SettingsLineContext<'_>,
-    value: &str,
-) {
-    lines.push(Line::from(vec![
-        Span::styled(
-            context.label.to_owned(),
-            patch_selection(
-                context.selection,
-                context.options,
-                context.options.label_style,
-            ),
-        ),
-        Span::styled(
-            "< ",
-            patch_selection(
-                context.selection,
-                context.options,
-                context.options.muted_style,
-            ),
-        ),
-        Span::styled(
-            value.to_owned(),
-            patch_selection(context.selection, context.options, Style::default()),
-        ),
-        Span::styled(
-            " >",
-            patch_selection(
-                context.selection,
-                context.options,
-                context.options.muted_style,
-            ),
-        ),
-    ]));
-    line_targets.push(SettingsLineTarget::Row(context.target));
+/// Reserve enough cells for each word or path component that can fit.
+fn minimum_control_value_width(value: &str, content_width: usize) -> usize {
+    value
+        .split_whitespace()
+        .map(|word| {
+            let word_width = word.width();
+            if word_width <= content_width {
+                word_width
+            } else {
+                word.split(['/', '\\'])
+                    .map(UnicodeWidthStr::width)
+                    .filter(|width| *width <= content_width)
+                    .max()
+                    .unwrap_or(1)
+            }
+        })
+        .max()
+        .unwrap_or_default()
+}
+
+fn control_style(row: &SettingsRow, options: &SettingsRenderOptions<'_>) -> Style {
+    match row.kind {
+        SettingsRowKind::Toggle if row.value == "ON" => {
+            options.success_style.add_modifier(Modifier::BOLD)
+        },
+        SettingsRowKind::Toggle => options.error_style.add_modifier(Modifier::BOLD),
+        _ => Style::default(),
+    }
 }
 
 fn push_wrapped_setting_value(
@@ -850,84 +902,63 @@ fn push_wrapped_setting_value(
     context: &SettingsLineContext<'_>,
     value: &str,
     value_style: Style,
+    overflow: ValueOverflow,
 ) {
-    let row = WrappedValueRow {
-        prefix: context.label,
-        value,
-        prefix_style: patch_selection(
-            context.selection,
-            context.options,
-            context.options.label_style,
-        ),
-        value_style,
-        content_width: context.options.content_width,
-    };
-    push_wrapped_value_row(
-        lines,
-        line_targets,
-        SettingsLineTarget::Row(context.target),
-        &row,
+    let prefix_style = patch_selection(
+        context.selection,
+        context.options,
+        context.options.label_style,
     );
-}
-
-fn push_wrapped_value_row(
-    lines: &mut Vec<Line<'static>>,
-    line_targets: &mut Vec<SettingsLineTarget>,
-    target: SettingsLineTarget,
-    row: &WrappedValueRow<'_>,
-) {
-    let prefix_width = row.prefix.width();
-    let value_width = row.content_width.saturating_sub(prefix_width).max(1);
-    let wrapped = wrap_text_to_width(row.value, value_width);
+    let prefix_width = context.label.width();
+    let value_width = context.options.content_width.saturating_sub(prefix_width);
+    let wrapped = wrap_text_to_width(value, value_width, overflow);
     let continuation_prefix = " ".repeat(prefix_width);
 
     for (index, chunk) in wrapped.into_iter().enumerate() {
         let visible_prefix = if index == 0 {
-            row.prefix.to_string()
+            context.label.to_owned()
         } else {
             continuation_prefix.clone()
         };
         lines.push(Line::from(vec![
-            Span::styled(visible_prefix, row.prefix_style),
-            Span::styled(chunk, row.value_style),
+            Span::styled(visible_prefix, prefix_style),
+            Span::styled(chunk, value_style),
         ]));
-        line_targets.push(target);
+        line_targets.push(SettingsLineTarget::Row(context.target));
     }
 }
 
-struct WrappedValueRow<'a> {
-    prefix:        &'a str,
-    value:         &'a str,
-    prefix_style:  Style,
-    value_style:   Style,
-    content_width: usize,
+#[derive(Clone, Copy)]
+enum ValueOverflow {
+    /// Mark a word that exceeds the value column.
+    ElideWord,
+    /// Keep all text and the cursor in the editor.
+    KeepEditorText,
 }
 
-/// Wrap `value` to `width`, starting each of its lines afresh.
-fn wrap_text_to_width(value: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return vec![String::new()];
-    }
-    if value.trim().is_empty() {
+/// Wrap each input line to the value column width.
+fn wrap_text_to_width(value: &str, width: usize, overflow: ValueOverflow) -> Vec<String> {
+    if width == 0 || value.trim().is_empty() {
         return vec![String::new()];
     }
     value
         .lines()
-        .flat_map(|line| wrap_line_to_width(line, width))
+        .flat_map(|line| wrap_line_to_width(line, width, overflow))
         .collect()
 }
 
-/// Wrap one line of a value to `width`, breaking a word only when it
-/// is wider than the whole column.
-fn wrap_line_to_width(value: &str, width: usize) -> Vec<String> {
+/// Move whole words to the next line. Split long paths at their separators.
+fn wrap_line_to_width(value: &str, width: usize, overflow: ValueOverflow) -> Vec<String> {
     let mut wrapped = Vec::new();
     let mut current = String::new();
 
     for word in value.split_whitespace() {
-        let separator = if current.is_empty() { "" } else { " " };
-        let candidate = format!("{current}{separator}{word}");
-        if candidate.width() <= width {
-            current = candidate;
+        let gap = usize::from(!current.is_empty());
+        if current.width() + gap + word.width() <= width {
+            if gap > 0 {
+                current.push(' ');
+            }
+            current.push_str(word);
             continue;
         }
 
@@ -940,20 +971,7 @@ fn wrap_line_to_width(value: &str, width: usize) -> Vec<String> {
             continue;
         }
 
-        let mut segment = String::new();
-        for part in word.split_inclusive('/') {
-            if !segment.is_empty() && segment.width() + part.width() > width {
-                wrapped.push(std::mem::take(&mut segment));
-            }
-            for ch in part.chars() {
-                let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-                if !segment.is_empty() && segment.width() + char_width > width {
-                    wrapped.push(std::mem::take(&mut segment));
-                }
-                segment.push(ch);
-            }
-        }
-        current = segment;
+        push_long_word(&mut wrapped, &mut current, word, width, overflow);
     }
 
     if !current.is_empty() {
@@ -964,6 +982,63 @@ fn wrap_line_to_width(value: &str, width: usize) -> Vec<String> {
         wrapped.push(String::new());
     }
     wrapped
+}
+
+fn push_long_word(
+    wrapped: &mut Vec<String>,
+    current: &mut String,
+    word: &str,
+    width: usize,
+    overflow: ValueOverflow,
+) {
+    for part in word.split_inclusive(['/', '\\']) {
+        if part.width() <= width {
+            push_value_fragment(wrapped, current, part, width);
+            continue;
+        }
+        match overflow {
+            ValueOverflow::ElideWord => {
+                let (component, separator) = if part.ends_with(['/', '\\']) {
+                    part.split_at(part.len() - 1)
+                } else {
+                    (part, "")
+                };
+                let component = shorten_component(component, width);
+                push_value_fragment(wrapped, current, &component, width);
+                push_value_fragment(wrapped, current, separator, width);
+            },
+            ValueOverflow::KeepEditorText => {
+                if !current.is_empty() {
+                    wrapped.push(std::mem::take(current));
+                }
+                for grapheme in Span::raw(part).styled_graphemes(Style::default()) {
+                    push_value_fragment(wrapped, current, grapheme.symbol, width);
+                }
+            },
+        }
+    }
+}
+
+/// Add a fragment at a path boundary or in the editor.
+fn push_value_fragment(
+    wrapped: &mut Vec<String>,
+    current: &mut String,
+    fragment: &str,
+    width: usize,
+) {
+    if !current.is_empty() && current.width() + fragment.width() > width {
+        wrapped.push(std::mem::take(current));
+    }
+    current.push_str(fragment);
+}
+
+/// Cut only a component that cannot fit on its own line.
+fn shorten_component(component: &str, width: usize) -> String {
+    if component.width() <= width {
+        return component.to_owned();
+    }
+    let (prefix, _) = wrap::split_at_cells(component, width.saturating_sub(ELISION.width()));
+    format!("{prefix}{ELISION}")
 }
 
 fn render_editor_text(buf: &str, cursor: usize) -> String {
@@ -1210,7 +1285,11 @@ mod tests {
                 .with_suffix("  maps h/j/k/l to arrow navigation"),
         ];
 
-        let settings_render = pane.render_rows(&settings_rows, render_options());
+        let options = SettingsRenderOptions {
+            content_width: 64,
+            ..render_options()
+        };
+        let settings_render = pane.render_rows(&settings_rows, options);
         let line = settings_render.lines[0]
             .spans
             .iter()
@@ -1235,5 +1314,15 @@ mod tests {
             .collect::<String>();
 
         assert!(line.contains("ha_na"));
+
+        let word = "a".repeat(24);
+        pane.set_edit_buffer(word.clone(), word.len());
+        let rendered = pane.render_rows(&rows, render_options());
+        let value: String = rendered
+            .lines
+            .iter()
+            .map(|line| line.spans[1].content.as_ref())
+            .collect();
+        assert_eq!(value, format!("{word}_"));
     }
 }

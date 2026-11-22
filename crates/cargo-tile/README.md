@@ -611,9 +611,9 @@ the sweep, `>` and `<` set its pace, `+` and `-` size the blocks, `[` and `]`
 narrow and widen the band, `v` cycles how a block hands its cells back and `t`
 cycles what a cell is drawn with.
 
-Holding a key steers further per press the longer it is held. No lowercase
-letter any of the animations takes is one the grid needs, so `f` still freezes
-and `a` still gives the grid back. The steering keys work immediately when the
+Holding a key steers further per press the longer it is held. Space pauses or resumes
+the display. The status bar shows `paused` while the display is paused. Cargo keeps
+running. Press `a` to return to the grid. The steering keys work immediately when the
 attract screen was requested. If it appears on its own, they work once it has
 fully arrived; during an automatic fade in or out, the grid keeps the keyboard
 instead.

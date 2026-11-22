@@ -23,7 +23,10 @@ use crate::OverlayWheel;
 use crate::Pane;
 use crate::ScrollDirection;
 use crate::SettingsHost;
+use crate::ToastHit;
 use crate::dispatch_hit_test;
+use crate::framework;
+use crate::reconcile_focus_after_toast_change;
 use crate::wheel_framework_overlay;
 
 /// A terminal cell position relative to a tile's content origin.
@@ -92,6 +95,9 @@ pub trait TileGridHost: AppContext + 'static {
 
     /// The app pane id [`TileGridPane`] registers the grid under.
     const TILE_GRID_PANE: Self::AppPaneId;
+
+    /// Close a toast when the user clicks its close button.
+    const CLOSE_TOAST_ON_CLICK: bool = false;
 
     /// The app's grid, to focus and steer.
     fn tile_grid_mut(&mut self) -> &mut TileGrid<Self::TileId>;
@@ -189,7 +195,17 @@ pub fn handle_tile_click<A>(app: &mut A, position: Position)
 where
     A: TileGridHost + InputContext<Target = TilePick>,
 {
-    match dispatch_hit_test(app, position) {
+    let framework_hit = app.framework_hit(position);
+    if A::CLOSE_TOAST_ON_CLICK
+        && let Some(FrameworkHit::Toast(ToastHit::Close(id))) = framework_hit
+    {
+        if app.framework_mut().toasts.dismiss(id) {
+            reconcile_focus_after_toast_change(app);
+        }
+        return;
+    }
+
+    match framework::dispatch_with_framework_hit(app, position, framework_hit) {
         Some(TilePick::Cell(index)) => {
             let press = painted_press(app.tile_grid_mut().cell_hit(position), position);
             app.tile_grid_mut().focus_cell(index);

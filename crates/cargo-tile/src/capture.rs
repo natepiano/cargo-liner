@@ -33,7 +33,7 @@ pub(crate) fn stand_up(app: &mut App) {
 }
 
 /// Turn what startup found into toasts and the settings notice.
-fn report(app: &mut App, startup: io::Result<Startup>) {
+pub(super) fn report(app: &mut App, startup: io::Result<Startup>) {
     let startup = match startup {
         Ok(startup) => startup,
         Err(error) => {

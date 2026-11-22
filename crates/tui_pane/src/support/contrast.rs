@@ -1,9 +1,42 @@
 //! Terminal color conversion and contrast calculations for tests.
 
+use ratatui::buffer::Buffer;
+use ratatui::layout::Rect;
 use ratatui::style::Color;
 
 use crate::constants::XTERM_ANSI_COLORS;
 use crate::constants::XTERM_CUBE_LEVELS;
+
+/// Find the row by its text and check the contrast of its nonblank cells.
+pub(crate) fn assert_drawn_row_contrast(
+    buffer: &Buffer,
+    area: Rect,
+    expected_row: &str,
+    minimum: f64,
+    case: &str,
+) {
+    let row = (area.top()..area.bottom()).find(|&y| {
+        let text: String = (area.left()..area.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect();
+        let mut words = text.split_whitespace();
+        expected_row
+            .split_whitespace()
+            .all(|expected| words.next() == Some(expected))
+    });
+    assert!(row.is_some(), "{case}: missing row {expected_row:?}");
+    let ratio = row
+        .into_iter()
+        .flat_map(|y| (area.left()..area.right()).map(move |x| &buffer[(x, y)]))
+        .filter(|cell| !cell.symbol().trim().is_empty())
+        .map(|cell| crate::contrast_ratio(cell.fg, cell.bg).unwrap_or_default())
+        .reduce(f64::min)
+        .unwrap_or_default();
+    assert!(
+        ratio >= minimum,
+        "{case}: {ratio:.2}:1, minimum {minimum:.2}:1"
+    );
+}
 
 /// Convert a terminal color to RGB channels; treat `Color::Reset` as black.
 pub(crate) fn selection_rgb(color: Color) -> (u8, u8, u8) {

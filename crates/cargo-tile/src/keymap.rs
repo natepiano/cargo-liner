@@ -101,7 +101,29 @@ mod tests {
     use tui_pane::Framework;
 
     use super::build_keymap;
+    use crate::app::App;
     use crate::app::AppPaneId;
+
+    #[test]
+    fn the_default_keymap_binds_pause_to_space() -> Result<(), Box<dyn std::error::Error>> {
+        let app = App::new_for_test()?;
+        let text = tui_pane::keymap_toml(&app, &app.keymap);
+        let (_, global) = text
+            .split_once("[global]\n")
+            .ok_or("missing global keymap")?;
+        let pause = global
+            .lines()
+            .take_while(|line| !line.starts_with('['))
+            .filter_map(|line| line.split_once('='))
+            .find(|(action, _)| action.trim() == "pause");
+        assert_eq!(pause.map(|(_, bind)| bind.trim()), Some("\"space\""));
+        assert!(
+            text.lines()
+                .filter_map(|line| line.split_once('='))
+                .all(|(_, bind)| !bind.contains("\"f\""))
+        );
+        Ok(())
+    }
 
     #[test]
     fn the_shortcuts_bar_shows_both_display_keys() {
@@ -237,10 +259,10 @@ mod overlay_tests {
         "global.focus_down = down",
         "global.focus_left = left",
         "global.focus_right = right",
-        "global.freeze = f",
         "global.open_favorites = ctrl-o",
         "global.open_keymap = ctrl-k",
         "global.open_settings = s",
+        "global.pause = space",
         "global.quit = q",
         "global.randomize_attract = r",
         "global.remove_tile = -",

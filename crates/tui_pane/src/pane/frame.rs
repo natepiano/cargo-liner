@@ -1027,10 +1027,25 @@ mod tests {
 
     #[test]
     fn a_moving_pane_clipped_below_the_buffer_stops_at_its_last_row() {
-        let mut buffer = Buffer::empty(Rect::new(0, 0, 214, 93));
+        let area = Rect::new(0, 0, 214, 93);
+        let mut buffer = Buffer::empty(area);
         let frame = PaneFrame::shifted(Rect::new(43, 79, 40, 14), 1, Rect::new(43, 80, 40, 14));
-        draw_clipped(&mut buffer, frame, |_, _| {});
-        assert_eq!(buffer.area, Rect::new(0, 0, 214, 93));
+        draw_clipped(&mut buffer, frame, |target, inner| {
+            target.set_string(
+                inner.left(),
+                inner.bottom() - 2,
+                "previous row",
+                Style::default(),
+            );
+            target.set_string(
+                inner.left(),
+                inner.bottom() - 1,
+                "last row",
+                Style::default(),
+            );
+        });
+        let last_row = Rect::new(frame.rect().left(), area.bottom() - 1, 10, 1);
+        assert_eq!(rows(&buffer, last_row), [" last row "]);
     }
 
     #[test]

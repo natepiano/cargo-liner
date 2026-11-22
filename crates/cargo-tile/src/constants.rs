@@ -210,6 +210,10 @@ pub(crate) const FADE_ALPHA_STEP: u8 = 2;
 pub(crate) const CELL_ENTRY_FADE_LIMIT: u8 = 63;
 /// Time for delayed command text to brighten from three-quarter to full ink.
 pub(crate) const CELL_BRIGHTEN_DURATION: Duration = Duration::from_millis(250);
+/// Maximum number of row fade palettes retained on one thread.
+pub(crate) const MAX_CACHED_ROW_FADE_PALETTES: usize = 128;
+/// Minimum contrast for fading text with explicit foreground and background colors.
+pub(crate) const MINIMUM_FADED_TEXT_CONTRAST: f64 = 4.5;
 /// Contrast floor for a finished row through the first half of its fade.
 #[cfg(test)]
 pub(crate) const MIN_FINISHED_ROW_CONTRAST: f64 = 3.0;
@@ -281,7 +285,7 @@ pub(crate) const ANCESTRY_MIN_COMMAND_WIDTH: u16 = 8;
 pub(crate) const ARGUMENT_SEPARATOR: &str = "--";
 /// What the status line says while the attract screen is being shown
 /// because it was asked for. Stands alone for the same reason
-/// [`FROZEN_NOTE_LABEL`] does, and says the same kind of thing: the
+/// [`PAUSED_NOTE_LABEL`] does, and says the same kind of thing: the
 /// grid is still there, it is being drawn over.
 #[cfg(feature = "attract")]
 pub(crate) const ATTRACT_NOTE_LABEL: &str = "attract";
@@ -395,7 +399,7 @@ pub(crate) const FLAG_MARK: char = '-';
 /// What the status line says while the display is held still. It stands
 /// alone rather than labelling a value: there is nothing to report but
 /// that nothing is being reported.
-pub(crate) const FROZEN_NOTE_LABEL: &str = "frozen";
+pub(crate) const PAUSED_NOTE_LABEL: &str = "paused";
 /// Blank rows between one working directory's table and the next.
 pub(crate) const GROUP_GAP_HEIGHT: u16 = 1;
 /// Rows the working-directory header above each group's table occupies.
@@ -436,7 +440,7 @@ pub(crate) const PROCESS_IDLE_POLL_MILLIS: u64 = 2_000;
 pub(crate) const PROCESS_POLL_MILLIS: u64 = 250;
 /// What the status line says while every cell is spelling out its
 /// command lines in full. Stands alone like [`ATTRACT_NOTE_LABEL`] and
-/// [`FROZEN_NOTE_LABEL`], and says the thing the display cannot: a cell
+/// [`PAUSED_NOTE_LABEL`], and says the thing the display cannot: a cell
 /// whose rows wrap three deep in manifest paths is doing it because it
 /// was asked to, not because the commands grew.
 pub(crate) const PROCESS_TREE_NOTE_LABEL: &str = "processes";
@@ -585,8 +589,8 @@ pub(crate) enum ValuedOptionScope {
     CargoAndRustc,
     /// Cargo accepts the option in its own argument tail.
     Cargo,
-    /// Rustc and its lint-aware drivers accept the lint level and its value.
-    RustcLint,
+    /// Rustc and its drivers accept the option in compiler arguments.
+    Rustc,
     /// The nextest runner accepts these options before its argument separator.
     Nextest,
 }
@@ -596,7 +600,7 @@ impl ValuedOptionScope {
     pub(crate) const fn accepted_before_subcommand(self) -> bool {
         match self {
             Self::Global | Self::GlobalAndRustc => true,
-            Self::CargoAndRustc | Self::Cargo | Self::RustcLint | Self::Nextest => false,
+            Self::CargoAndRustc | Self::Cargo | Self::Rustc | Self::Nextest => false,
         }
     }
 }
@@ -606,7 +610,7 @@ pub(crate) const RUSTC_CRATE_NAME_FLAG: &str = "--crate-name";
 /// Select the crate name in one compiler argument.
 pub(crate) const RUSTC_CRATE_NAME_PREFIX: &str = "--crate-name=";
 
-/// The single arity table for command selection and command wrapping.
+/// Options that accept separate values during command selection and wrapping.
 pub(crate) const COMMAND_VALUED_OPTIONS: &[(&str, ValuedOptionScope)] = &[
     ("--color", ValuedOptionScope::GlobalAndRustc),
     ("--config", ValuedOptionScope::Global),
@@ -668,23 +672,26 @@ pub(crate) const COMMAND_VALUED_OPTIONS: &[(&str, ValuedOptionScope)] = &[
     ("--platform-filter", ValuedOptionScope::Nextest),
     ("--config-file", ValuedOptionScope::Nextest),
     ("--tool-config-file", ValuedOptionScope::Nextest),
-    ("-D", ValuedOptionScope::RustcLint),
-    ("-W", ValuedOptionScope::RustcLint),
-    ("-A", ValuedOptionScope::RustcLint),
-    ("-F", ValuedOptionScope::RustcLint),
-    ("--deny", ValuedOptionScope::RustcLint),
-    ("--warn", ValuedOptionScope::RustcLint),
-    ("--allow", ValuedOptionScope::RustcLint),
-    ("--forbid", ValuedOptionScope::RustcLint),
-    (RUSTC_CRATE_NAME_FLAG, ValuedOptionScope::RustcLint),
-    ("--edition", ValuedOptionScope::RustcLint),
+    ("-D", ValuedOptionScope::Rustc),
+    ("-W", ValuedOptionScope::Rustc),
+    ("-A", ValuedOptionScope::Rustc),
+    ("-F", ValuedOptionScope::Rustc),
+    ("--deny", ValuedOptionScope::Rustc),
+    ("--warn", ValuedOptionScope::Rustc),
+    ("--allow", ValuedOptionScope::Rustc),
+    ("--forbid", ValuedOptionScope::Rustc),
+    (RUSTC_CRATE_NAME_FLAG, ValuedOptionScope::Rustc),
+    ("--edition", ValuedOptionScope::Rustc),
+    ("-L", ValuedOptionScope::Rustc),
+    (RUSTC_OUT_DIR_FLAG, ValuedOptionScope::Rustc),
+    ("--check-cfg", ValuedOptionScope::Rustc),
 ];
 /// Separates a flag from a value assigned in the same argv entry.
 pub(crate) const ARGUMENT_ASSIGNMENT: char = '=';
 /// Joins displayed argv entries without changing their boundaries.
 pub(crate) const COMMAND_WORD_SEPARATOR: &str = " ";
-/// Programs and Cargo subcommands whose child arguments use rustc lint arity.
-pub(crate) const RUSTC_LINT_OWNERS: &[&str] = &["clippy", "rustc", "clippy-driver"];
+/// Programs and Cargo subcommands that accept rustc arguments.
+pub(crate) const RUSTC_ARGUMENT_OWNERS: &[&str] = &["clippy", "rustc", "clippy-driver"];
 /// Cargo flag naming a build profile.
 pub(crate) const CARGO_PROFILE_FLAG: &str = "--profile";
 /// Cargo's default development profile.
@@ -855,15 +862,9 @@ pub(crate) const RUSTUP_DIRNAME: &str = ".rustup";
 /// Environment variable moving the rustup home away from
 /// [`RUSTUP_DIRNAME`].
 pub(crate) const RUSTUP_HOME_ENV: &str = "RUSTUP_HOME";
-/// Exclusive-create lock beside the shim, held across state inspection
-/// and installation so concurrent installers cannot overwrite real cargo.
+/// Persistent file for the per-toolchain lock beside the shim.
 pub(crate) const SHIM_LOCK_NAME: &str = "cargo-tile-shim.lock";
-/// An abandoned exclusive-create lock persists after its owner exits,
-/// so exhausted retries must explain how to recover without racing it.
-pub(crate) const SHIM_LOCK_RECOVERY: &str =
-    "confirm no install is still running, remove this lock file, and run cargo-tile install again";
-/// Brief retries let a concurrent installer finish without waiting
-/// indefinitely for a lock left behind by a terminated process.
+/// Limit the wait for a competing operation to release the lock.
 pub(crate) const SHIM_LOCK_RETRY_ATTEMPTS: usize = 10;
 /// Match the favorites lock's short wait between competing writers.
 pub(crate) const SHIM_LOCK_RETRY_DELAY: Duration = Duration::from_millis(10);

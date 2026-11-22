@@ -320,6 +320,8 @@ pub use favorites_overlay::FavoritesOverlayPane;
 #[cfg(feature = "backdrop")]
 pub use favorites_overlay::dispatch_favorites_key;
 #[cfg(feature = "backdrop")]
+pub use favorites_overlay::draw_favorites_overlay;
+#[cfg(feature = "backdrop")]
 pub use favorites_overlay::favorites_resize_settled;
 #[cfg(feature = "backdrop")]
 pub use favorites_overlay::open_favorites;
@@ -352,6 +354,7 @@ pub use framework::clear_all_hover;
 pub use framework::dispatch_hit_test;
 pub use framework::focus_next;
 pub use framework::focus_prev;
+pub use framework::reconcile_focus_after_toast_change;
 pub use framework::render_panes;
 pub use framework::wheel_framework_overlay;
 pub use input::dispatch_focused_toasts;

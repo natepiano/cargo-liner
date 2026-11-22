@@ -7,6 +7,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
+use crossterm::event::KeyCode;
 use ratatui::Frame;
 use ratatui::layout::Position;
 use ratatui::layout::Rect;
@@ -69,6 +70,8 @@ use crate::tiles::TileGrid;
 #[path = "grid_view.rs"]
 mod grid_view;
 pub(crate) use grid_view::CellScroll;
+use grid_view::DisplayClock;
+pub(crate) use grid_view::DisplayFrameTime;
 pub(crate) use grid_view::GridView;
 
 use crate::app_global_action;
@@ -110,22 +113,22 @@ pub(crate) enum AppPaneId {
     Favorites,
 }
 
-/// The display can freeze without an attract screen.
+/// The display can pause without an attract screen.
 #[cfg(not(feature = "attract"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Updates {
     /// Apply new scans and animation steps.
     Live,
     /// Keep the current display.
-    Frozen,
+    Paused,
 }
 
 #[cfg(not(feature = "attract"))]
 impl Updates {
     pub(crate) const fn toggled(self) -> Self {
         match self {
-            Self::Live => Self::Frozen,
-            Self::Frozen => Self::Live,
+            Self::Live => Self::Paused,
+            Self::Paused => Self::Live,
         }
     }
 }
@@ -229,6 +232,7 @@ pub(crate) struct App {
     inline_error:                 Option<String>,
     /// When the app started, for the status line's uptime segment.
     pub(crate) started:           Instant,
+    display_clock:                DisplayClock,
     /// Whether the display is taking new work in or being held still.
     pub(crate) updates:           Updates,
     /// The attract screen shown over the grid while nothing is running.
@@ -271,6 +275,7 @@ impl App {
         let mut tiles = TileGrid::new();
         tiles.set_min_tile_height(MIN_CELL_HEIGHT);
         tiles.set_min_tile_width(MIN_CELL_WIDTH);
+        let started = Instant::now();
         let mut app = Self {
             framework,
             keymap: Rc::new(keymap),
@@ -287,7 +292,8 @@ impl App {
             sccache: SccacheStats::new(),
             free_disk_space: FreeDiskSpace::Unavailable,
             inline_error: None,
-            started: Instant::now(),
+            started,
+            display_clock: DisplayClock::new(started),
             updates: Updates::Live,
             #[cfg(feature = "attract")]
             attract: Attract::new(),
@@ -298,6 +304,34 @@ impl App {
         };
         app_global_action::refresh_toggle_hints(&mut app);
         Ok(app)
+    }
+
+    pub(crate) fn display_time(&self, now: Instant) -> Instant {
+        match self.updates {
+            Updates::Live => self.display_clock.at(now),
+            Updates::Paused => self.display_clock.held(),
+        }
+    }
+
+    pub(crate) fn sample_display_time(&mut self, now: Instant) -> Instant {
+        let time = self.display_clock.sample(now);
+        self.tiles.sample_motion(time);
+        time
+    }
+
+    pub(crate) const fn toggle_display_pause(&mut self, now: Instant) {
+        self.updates = self.updates.toggled();
+        match self.updates {
+            Updates::Live => self.display_clock.resume(now),
+            Updates::Paused => self.tiles.sample_motion(self.display_clock.held()),
+        }
+    }
+
+    pub(crate) const fn display_frame_time(&self) -> DisplayFrameTime {
+        match self.updates {
+            Updates::Live => DisplayFrameTime::Live,
+            Updates::Paused => DisplayFrameTime::Paused(self.display_clock.held()),
+        }
     }
 
     #[cfg(test)]
@@ -381,11 +415,7 @@ impl TerminalApp for App {
         cpu_observation::publish_frame();
     }
 
-    fn click(&mut self, position: Position) {
-        if matches!(self.grid_view, GridView::Grid) || self.framework.overlay().is_some() {
-            tui_pane::handle_tile_click(self, position);
-        }
-    }
+    fn click(&mut self, position: Position) { tui_pane::handle_tile_click(self, position); }
 
     fn scroll(&mut self, position: Position, direction: ScrollDirection) {
         if self.framework.overlay().is_some() || matches!(self.grid_view, GridView::Grid) {
@@ -411,8 +441,15 @@ impl TerminalApp for App {
         self.favorites_overlay.visual_deadline(now, frame_period)
     }
 
-    /// Open overlays receive their keys before the expanded cell receives navigation keys.
+    /// Give a visible toast first use of Esc.
     fn modal_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
+        if bind.code == KeyCode::Esc
+            && bind.mods.is_empty()
+            && self.framework.dismiss_visible_toast()
+        {
+            tui_pane::reconcile_focus_after_toast_change(self);
+            return KeyOutcome::Consumed;
+        }
         #[cfg(feature = "attract")]
         if tui_pane::dispatch_favorites_key(self, keymap, bind) == KeyOutcome::Consumed {
             return KeyOutcome::Consumed;
@@ -422,7 +459,8 @@ impl TerminalApp for App {
         if self.framework.overlay().is_some() {
             return KeyOutcome::Unhandled;
         }
-        grid_view::key(&mut self.grid_view, bind)
+        let display_time = self.display_time(Instant::now());
+        grid_view::key(&mut self.grid_view, bind, display_time)
     }
 
     /// An attract screen that is what the display is showing owns the
@@ -431,8 +469,8 @@ impl TerminalApp for App {
     /// spends on focus and on opening and closing a tile. A band that
     /// could not be steered because a grid nobody can see moved its
     /// focus ring would not be steerable at all. Only the keys it
-    /// actually binds are taken -- `q` still quits, `f` still freezes,
-    /// and `a` gives the grid back.
+    /// it binds take effect in the attract screen. Space still pauses the display.
+    /// Press `q` to quit or `a` to return to the grid.
     #[cfg(feature = "attract")]
     fn attract_key(&mut self, keymap: &Keymap<Self>, bind: &KeyBind) -> KeyOutcome {
         tui_pane::dispatch_attract_key(self, keymap, bind)
@@ -464,8 +502,13 @@ impl TileGridHost for App {
     type TileId = InvocationId;
 
     const TILE_GRID_PANE: AppPaneId = AppPaneId::Main;
+    const CLOSE_TOAST_ON_CLICK: bool = true;
 
-    fn tile_grid_mut(&mut self) -> &mut TileGrid { &mut self.tiles }
+    fn tile_grid_mut(&mut self) -> &mut TileGrid {
+        let input_time = self.display_time(Instant::now());
+        self.tiles.sample_motion(input_time);
+        &mut self.tiles
+    }
 }
 
 /// Each attract animation's keys hang off an [`AppPaneId::Attract`] of

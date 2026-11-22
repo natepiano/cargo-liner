@@ -20,6 +20,10 @@ pub(super) const STEPPER_DECORATION_WIDTH: usize = 4;
 pub(super) const SETTINGS_POPUP_WIDTH: u16 = 64;
 /// Title on the settings popup's top border.
 pub(super) const SETTINGS_TITLE: &str = " Settings ";
+/// Blank cells between settings text and the right border.
+pub(super) const VALUE_RIGHT_GAP: u16 = 1;
+/// Minimum contrast ratio for selected settings text.
+pub(super) const MIN_SELECTED_ROW_CONTRAST: f64 = 4.5;
 
 // `APPEARANCE_SECTION` through `UNRESOLVED_PATH` supply section and row labels.
 /// Section holding the four `[appearance]` steppers.

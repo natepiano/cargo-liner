@@ -36,6 +36,7 @@ use crate::progress::capture_roots::AccountCaptureDirectory;
 use crate::render::SummaryDiskSpace;
 use crate::root_scan::SharedCaptureDirectory;
 use crate::roster::MemorySharesChange;
+use crate::roster::RosterScanTime;
 use crate::sccache;
 use crate::sccache::SccacheServer;
 use crate::sccache::SccacheSummary;
@@ -207,16 +208,16 @@ impl PollWork<App> for Workers {
         #[cfg(not(feature = "attract"))]
         let mut dirty = false;
         dirty |= drain_appearances(app, &self.appearances);
-        // Frozen, every one of these is skipped: what a scan found,
-        // how far a fade has walked and where a travelling cell has
-        // reached are the whole of what moves on this screen. The
-        // channels are still emptied, so nothing queues up behind the
-        // freeze and the first scan after it describes the world as it
-        // is then rather than as it was when `f` was pressed.
-        if app.updates == Updates::Frozen {
+        // Discard scans while paused. The first accepted scan after resume is current.
+        if app.updates == Updates::Paused {
             discard_scans(&self.scans, &self.sccache_replies);
         } else {
-            if drain_scans(app, &self.scans) {
+            let display_time = app.sample_display_time(now);
+            let scan_time = RosterScanTime {
+                observed: now,
+                display:  display_time,
+            };
+            if drain_scans(app, &self.scans, scan_time) {
                 dirty = true;
             }
             // The scan above is what says whether a server is up, so
@@ -234,13 +235,13 @@ impl PollWork<App> for Workers {
             // steps or the moment, so the poll is what carries them.
             if app
                 .roster
-                .advance(now, app.loaded_config.config.tiles.fade())
+                .advance(display_time, app.loaded_config.config.tiles.fade())
             {
                 dirty = true;
             }
             // Advance motion even when two polls resolve to equal geometry.
             // Only a change from the last body paint requests another frame.
-            dirty |= app.grid_view.advance(now) == Repaint::Needed;
+            dirty |= app.grid_view.advance(display_time) == Repaint::Needed;
             self.grid_motion.settle_if_immediate(app);
             if app.tiles.tick() {
                 dirty = true;
@@ -275,15 +276,7 @@ fn drain_appearances(app: &mut App, appearances: &Receiver<Appearance>) -> bool 
     true
 }
 
-/// Empty both worker channels without reading anything out of them,
-/// for a display being held still.
-///
-/// The workers go on scanning while the screen is frozen -- stopping
-/// them would mean unfreezing to a world minutes stale, and restarting
-/// them is a cost paid at exactly the moment the reader wants to see
-/// something. Left alone the queues would instead grow for as long as
-/// the freeze lasts, and unfreezing would walk the display through
-/// every scan taken in between.
+/// Empty the worker channels while keeping the displayed observations.
 fn discard_scans(scans: &Receiver<Scan>, sccache_replies: &Receiver<SccacheSummary>) {
     while scans.try_recv().is_ok() {}
     while sccache_replies.try_recv().is_ok() {}
@@ -293,7 +286,7 @@ fn discard_scans(scans: &Receiver<Scan>, sccache_replies: &Receiver<SccacheSumma
 ///
 /// Only the newest matters: an older scan queued behind it describes a
 /// world that has already moved on.
-fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
+fn drain_scans(app: &mut App, scans: &Receiver<Scan>, scan_time: RosterScanTime) -> bool {
     let mut latest: Option<Scan> = None;
     while let Ok(scan) = scans.try_recv() {
         latest = Some(scan);
@@ -312,7 +305,7 @@ fn drain_scans(app: &mut App, scans: &Receiver<Scan>) -> bool {
     app.root_status = scan.root_status;
     #[cfg(test)]
     census::cpu_observation::accept(scan.cpu_scan_publication);
-    app.roster.observe(scan.groups, Instant::now())
+    app.roster.observe_at(scan.groups, scan_time)
         || status_changed
         || disk_changed
         || memory_changed == MemorySharesChange::Changed
@@ -337,14 +330,15 @@ fn drain_sccache(app: &mut App, replies: &Receiver<SccacheSummary>) -> bool {
 )]
 mod tests {
     use std::fs;
+    use std::time::Duration;
 
     use crossterm::event::KeyCode;
     use crossterm::event::KeyEvent;
     use crossterm::event::KeyModifiers;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    #[cfg(feature = "attract")]
     use ratatui::buffer::Buffer;
+    use ratatui::buffer::Cell;
     use ratatui::layout::Rect;
     use tempfile::TempDir;
     #[cfg(feature = "attract")]
@@ -355,9 +349,12 @@ mod tests {
     #[cfg(feature = "attract")]
     use tui_pane::SettingsApplicationOutcome;
     use tui_pane::TerminalApp;
+    use tui_pane::TileAction;
+    use tui_pane::VisualDeadline;
     use tui_pane::dispatch_key;
 
     use super::*;
+    use crate::app::GridView;
     use crate::birth_stamp::IdentityEvidence;
     use crate::birth_stamp::KernelObservation;
     use crate::birth_stamp::Observation;
@@ -376,6 +373,7 @@ mod tests {
     use crate::census::invocation_cpu_accounting::MeasurementAbsence;
     use crate::census::process_identity::CaptureMembership;
     use crate::census::process_identity::ProcessIdentity;
+    use crate::census::scan::AncestryWalk;
     use crate::census::scan::InvocationExecution;
     use crate::census::scan::InvocationResourceUse;
     use crate::census::scan::OriginStart;
@@ -456,7 +454,7 @@ fraying = "leading"
                 shared_directory:     capture.shared_directory,
             })
             .expect("retained scan receiver");
-        drain_scans(app, &scans)
+        drain_scans(app, &scans, RosterScanTime::live(Instant::now()))
     }
 
     /// A measured idle row isolates scan delivery from live process collection.
@@ -571,7 +569,11 @@ fraying = "leading"
                     shared_directory:     crate::root_scan::SharedCaptureDirectory::default(),
                 })
                 .expect("scan receiver is alive");
-            assert!(drain_scans(&mut app, &scans));
+            assert!(drain_scans(
+                &mut app,
+                &scans,
+                RosterScanTime::live(Instant::now())
+            ));
         }
         assert_eq!(app.roster.groups().len(), 2);
         assert!(app.roster.groups()[0].lead.is_ended());
@@ -580,6 +582,336 @@ fraying = "leading"
             app.roster.tiled_ids(&[]),
             vec![first.invocation_id, replacement.invocation_id]
         );
+    }
+
+    #[test]
+    fn space_pauses_and_unpauses_the_display() {
+        let mut app = App::new_for_test().expect("test app");
+        let mut terminal = Terminal::new(TestBackend::new(120, 24)).expect("terminal");
+        let (sender, scans) = mpsc::channel();
+        let mut workers = Workers::new(scans, mpsc::channel().1, GridMotion::Animated);
+        let keymap = std::rc::Rc::clone(&app.keymap);
+        let mut status = |app: &mut App| {
+            terminal
+                .draw(|frame| app.draw(frame, &keymap))
+                .expect("frame");
+            let buffer = terminal.backend().buffer();
+            (0..buffer.area.width)
+                .map(|x| buffer[(x, buffer.area.bottom() - 1)].symbol())
+                .collect::<String>()
+        };
+        let send_disk = |app: &App, free_disk_space| {
+            sender
+                .send(Scan {
+                    memory_shares: CompileMemoryShares::default(),
+                    free_disk_space,
+                    cpu_scan_publication: CpuScanPublication::Unobserved,
+                    groups: Vec::new(),
+                    sccache: SccacheServer::Stopped,
+                    root_status: app.root_status.clone(),
+                    shared_directory: app.shared_directory.clone(),
+                })
+                .expect("scan receiver is alive");
+        };
+
+        app.free_disk_space = FreeDiskSpace::Unavailable;
+        assert!(!status(&mut app).contains("paused"));
+        dispatch_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(status(&mut app).contains("paused"));
+        send_disk(&app, FreeDiskSpace::Available(1 << 30));
+        workers.poll(&mut app, Instant::now());
+        assert_eq!(app.free_disk_space, FreeDiskSpace::Unavailable);
+
+        dispatch_key(&mut app, key(KeyCode::Char(' ')));
+        assert!(!status(&mut app).contains("paused"));
+        workers.poll(&mut app, Instant::now());
+        assert_eq!(app.free_disk_space, FreeDiskSpace::Unavailable);
+        let current = FreeDiskSpace::Available(2 << 30);
+        send_disk(&app, current);
+        workers.poll(&mut app, Instant::now());
+        assert_eq!(app.free_disk_space, current);
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum PauseView {
+        Grid,
+        Opening,
+        Expanding,
+        Expanded,
+        Collapsing,
+    }
+
+    struct PauseFixture {
+        app:      App,
+        workers:  Workers,
+        scans:    Sender<Scan>,
+        terminal: Terminal<TestBackend>,
+        group:    CargoGroup,
+    }
+
+    impl PauseFixture {
+        fn new() -> Self {
+            let app = App::new_for_test().expect("test app");
+            let terminal = Terminal::new(TestBackend::new(160, 36)).expect("terminal");
+            let (scans, incoming) = mpsc::channel();
+            let workers = Workers::new(incoming, mpsc::channel().1, GridMotion::Animated);
+            let lead = scan_process(InvocationId::for_test(11), CaptureLookup::Unregistered);
+            let group = CargoGroup {
+                lead,
+                rest: Vec::new(),
+                ancestry: AncestryWalk::Ended(Vec::new()),
+            };
+            Self {
+                app,
+                workers,
+                scans,
+                terminal,
+                group,
+            }
+        }
+
+        fn send(&self, group: CargoGroup, free_disk_space: FreeDiskSpace) {
+            self.scans
+                .send(Scan {
+                    memory_shares: CompileMemoryShares::default(),
+                    free_disk_space,
+                    cpu_scan_publication: CpuScanPublication::Unobserved,
+                    groups: vec![group],
+                    sccache: SccacheServer::Stopped,
+                    root_status: self.app.root_status.clone(),
+                    shared_directory: self.app.shared_directory.clone(),
+                })
+                .expect("scan receiver is alive");
+        }
+
+        fn poll(&mut self, now: Instant) { self.workers.poll(&mut self.app, now); }
+
+        fn status_tick(&mut self, earliest: Instant) -> Result<Instant, &'static str> {
+            let VisualDeadline::At(deadline) = self.app.framework.status_visual_deadline() else {
+                return Err("status deadline was not scheduled");
+            };
+            let now = deadline.max(earliest);
+            assert_eq!(self.app.framework.tick_status(now), Repaint::Needed);
+            self.poll(now);
+            Ok(now)
+        }
+
+        fn draw(&mut self) -> Buffer {
+            let keymap = self.app.keymap();
+            self.terminal
+                .draw(|frame| self.app.draw(frame, &keymap))
+                .expect("frame");
+            self.terminal.backend().buffer().clone()
+        }
+
+        fn fading_amount(&self) -> u8 {
+            self.app
+                .roster
+                .groups()
+                .iter()
+                .flat_map(crate::roster::TrackedGroup::rows)
+                .find(|row| row.is_ended())
+                .expect("the fixture has a fading row")
+                .faded()
+        }
+
+        fn positions(&self) -> Vec<Rect> {
+            if let Some(cell) = self.app.grid_view.cell() {
+                return vec![cell.displayed()];
+            }
+            let area = self.terminal.backend().buffer().area;
+            self.app
+                .tiles
+                .placements(
+                    Rect {
+                        height: area.height - 1,
+                        ..area
+                    },
+                    self.app.loaded_config.config.tiles.growth(),
+                )
+                .iter()
+                .map(|placement| placement.frame.clip())
+                .collect()
+        }
+
+        fn place_view(&mut self, view: PauseView, started: Instant) -> Instant {
+            let travel = self.app.tiles.cell_travel_duration();
+            match view {
+                PauseView::Grid => {
+                    let growth = self.app.loaded_config.config.tiles.growth();
+                    self.app.tiles.apply(TileAction::Add, growth);
+                    assert!(self.app.tiles.has_pending_motion_for_test());
+                    started + travel / 2
+                },
+                PauseView::Opening => {
+                    self.app.grid_view.expand(started);
+                    assert!(matches!(self.app.grid_view, GridView::Opening { .. }));
+                    started
+                },
+                PauseView::Expanding => {
+                    self.app.grid_view.expand(started);
+                    self.draw();
+                    assert!(matches!(self.app.grid_view, GridView::Expanding { .. }));
+                    started + travel / 2
+                },
+                PauseView::Expanded | PauseView::Collapsing => {
+                    self.app.grid_view.expand(started);
+                    self.draw();
+                    let expanded = started + travel;
+                    self.poll(expanded);
+                    self.draw();
+                    assert!(matches!(self.app.grid_view, GridView::Expanded { .. }));
+                    if matches!(view, PauseView::Collapsing) {
+                        self.app.grid_view.collapse(expanded);
+                        assert!(matches!(self.app.grid_view, GridView::Collapsing { .. }));
+                        expanded + travel / 2
+                    } else {
+                        expanded
+                    }
+                },
+            }
+        }
+    }
+
+    fn body(buffer: &Buffer) -> &[Cell] {
+        &buffer.content[..usize::from(buffer.area.width) * usize::from(buffer.area.height - 1)]
+    }
+
+    fn body_text(buffer: &Buffer) -> String {
+        body(buffer)
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    #[test]
+    fn a_command_that_runs_through_pause_shows_its_full_elapsed_time() -> Result<(), &'static str> {
+        let mut fixture = PauseFixture::new();
+        let mut group = fixture.group.clone();
+        group.lead.execution = InvocationExecution::RegistrationOnly;
+        group.lead.origin_start = OriginStart::Registration {
+            epoch:   100,
+            elapsed: Duration::from_secs(7),
+        };
+        let pause_at = fixture.app.started + Duration::from_millis(10);
+        fixture.send(group.clone(), FreeDiskSpace::Unavailable);
+        fixture.poll(pause_at);
+        fixture.draw();
+        fixture.app.tiles.settle_for_test();
+        assert!(body_text(&fixture.draw()).contains("00:07"));
+        fixture.app.toggle_display_pause(pause_at);
+
+        group.lead.origin_start = OriginStart::Unavailable;
+        fixture.send(group.clone(), FreeDiskSpace::Unavailable);
+        fixture.status_tick(pause_at + Duration::from_secs(1))?;
+        assert!(body_text(&fixture.draw()).contains("00:07"));
+
+        let resume_at = pause_at + Duration::from_secs(30);
+        fixture.app.toggle_display_pause(resume_at);
+        fixture.send(group, FreeDiskSpace::Unavailable);
+        fixture.poll(resume_at);
+        assert_eq!(
+            fixture.app.roster.groups()[0].lead.process.duration(),
+            "00:37"
+        );
+        assert!(body_text(&fixture.draw()).contains("00:37"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_paused_grid_draws_the_same_cells_across_status_ticks() -> Result<(), &'static str> {
+        for view in [
+            PauseView::Grid,
+            PauseView::Opening,
+            PauseView::Expanding,
+            PauseView::Expanded,
+            PauseView::Collapsing,
+        ] {
+            let mut fixture = PauseFixture::new();
+            let disk = FreeDiskSpace::Available(1 << 30);
+            let mut live = fixture.group.clone();
+            let mut child = scan_process(InvocationId::for_test(12), CaptureLookup::Unregistered);
+            child.pid = 12;
+            child.parent = VisibleParent::Invocation {
+                id:  live.lead.invocation_id.clone(),
+                pid: live.lead.pid,
+            };
+            live.rest.push(child);
+            let initial = fixture.app.started + Duration::from_millis(10);
+            fixture.send(live, disk);
+            fixture.poll(initial);
+            for _ in 0..3 {
+                fixture.draw();
+                fixture.app.tiles.settle_for_test();
+            }
+            let started = initial + Duration::from_millis(10);
+            fixture.send(fixture.group.clone(), disk);
+            fixture.poll(started);
+            let held_at = fixture.place_view(view, started);
+            fixture.poll(held_at);
+            let before = if matches!(view, PauseView::Opening) {
+                None
+            } else {
+                Some(fixture.draw())
+            };
+            fixture.app.toggle_display_pause(held_at);
+            let held = fixture.draw();
+            let held_fade = fixture.fading_amount();
+            let positions = fixture.positions();
+            if let Some(before) = before {
+                assert_eq!(body(&held), body(&before), "{view:?} changed on pause");
+            }
+            let mut resumed_at = held_at;
+            for queued in [
+                FreeDiskSpace::Available(2 << 30),
+                FreeDiskSpace::Unavailable,
+            ] {
+                fixture.send(fixture.group.clone(), queued);
+                resumed_at = fixture.status_tick(resumed_at + Duration::from_secs(1))?;
+                assert_eq!(fixture.app.free_disk_space, disk);
+                assert_eq!(
+                    body(&fixture.draw()),
+                    body(&held),
+                    "{view:?} changed while paused"
+                );
+            }
+
+            fixture.app.toggle_display_pause(resumed_at);
+            fixture.poll(resumed_at);
+            assert_eq!(
+                body(&fixture.draw()),
+                body(&held),
+                "{view:?} jumped on resume"
+            );
+            let moved_at = resumed_at + fixture.app.loaded_config.config.tiles.fade() / 3;
+            fixture.poll(moved_at);
+            fixture.draw();
+            assert_eq!(fixture.app.free_disk_space, disk);
+            assert!(
+                fixture.fading_amount() > held_fade,
+                "{view:?} fade did not resume"
+            );
+            if !matches!(view, PauseView::Expanded) {
+                assert_ne!(
+                    fixture.positions(),
+                    positions,
+                    "{view:?} motion did not resume"
+                );
+            }
+
+            let next_disk = FreeDiskSpace::Available(3 << 30);
+            fixture.send(fixture.group.clone(), next_disk);
+            fixture.poll(moved_at);
+            assert_eq!(fixture.app.free_disk_space, next_disk);
+            let current = fixture.draw();
+            if matches!(view, PauseView::Grid | PauseView::Expanded) {
+                assert!(
+                    body_text(&current).contains("disk 3.0G"),
+                    "{view:?} kept the old footer"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
@@ -608,7 +940,10 @@ fraying = "leading"
                 })
                 .expect("scan receiver is alive");
 
-            assert_eq!(drain_scans(&mut app, &scans), changed);
+            assert_eq!(
+                drain_scans(&mut app, &scans, RosterScanTime::live(Instant::now())),
+                changed
+            );
             assert_eq!(app.free_disk_space, free_disk_space);
         }
     }
@@ -656,7 +991,10 @@ fraying = "leading"
                 })
                 .expect("scan receiver is alive");
 
-            assert_eq!(drain_scans(&mut app, &scans), redraw);
+            assert_eq!(
+                drain_scans(&mut app, &scans, RosterScanTime::live(Instant::now())),
+                redraw
+            );
             assert_eq!(&app.roster.groups()[0].lead.process, process);
         }
     }
@@ -840,7 +1178,11 @@ fraying = "leading"
             })
             .expect("scan receiver is alive");
 
-        assert!(drain_scans(&mut app, &scans));
+        assert!(drain_scans(
+            &mut app,
+            &scans,
+            RosterScanTime::live(Instant::now())
+        ));
         let received = app
             .roster
             .groups()
@@ -850,7 +1192,11 @@ fraying = "leading"
             .next()
             .expect("received process");
         assert_eq!(received.process, process);
-        assert!(!drain_scans(&mut app, &scans));
+        assert!(!drain_scans(
+            &mut app,
+            &scans,
+            RosterScanTime::live(Instant::now())
+        ));
     }
 
     #[test]
@@ -863,7 +1209,7 @@ fraying = "leading"
         );
         assert!(app.favorites_overlay.is_open());
 
-        dispatch_key(&mut app, key(KeyCode::Char('f')));
+        dispatch_key(&mut app, key(KeyCode::Char(' ')));
         dispatch_key(&mut app, key(KeyCode::Char('?')));
         assert_eq!(app.updates, Updates::Live);
         assert_eq!(app.framework.overlay(), None);
