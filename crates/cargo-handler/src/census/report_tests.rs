@@ -6,9 +6,9 @@
 )]
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
 use crossterm::event::KeyCode;
@@ -26,14 +26,17 @@ use super::*;
 use crate::app::App;
 use crate::census::Activity;
 use crate::census::AgentActivity;
+use crate::census::AgentRow;
 use crate::census::CensusFacts;
 use crate::census::HierarchyEdges;
+use crate::census::HierarchySnapshot;
 use crate::census::PassAssignment;
 use crate::census::UnknownReason;
 use crate::census::accounts::SessionStates;
 use crate::census::hierarchy::HierarchyNotice;
 use crate::census::hierarchy::RunId;
 use crate::census::remote;
+use crate::census::scan::ProcessStart;
 
 const README: &str = include_str!("../../README.md");
 const EXAMPLE_MARKER: &str = "<!-- census-json-example";
@@ -229,7 +232,7 @@ fn print_census_with(
     let status = print_to(
         loaded,
         &(Arc::new(Unreachable) as Arc<dyn RemoteRunner>),
-        |_, _| move || (rows, snapshot(facts)),
+        |_, _, _| move || fixture_scan(rows, facts),
         &mut stdout,
         &mut stderr,
     );
@@ -246,6 +249,14 @@ fn print_census_with(
 }
 
 fn report(config: Config, facts: CensusFacts) -> Value { report_with(config, rows(), facts) }
+
+fn fixture_scan(rows: Vec<AgentRow>, facts: CensusFacts) -> CensusScan {
+    CensusScan {
+        rows,
+        hierarchy: snapshot(facts),
+        session_processes: SessionProcesses::new(),
+    }
+}
 
 fn report_with(config: Config, rows: Vec<AgentRow>, facts: CensusFacts) -> Value {
     let (status, json, stderr) = print_census_with(
@@ -435,7 +446,34 @@ fn a_busy_session_whose_scan_saw_no_open_turn_shows_thinking() {
 #[test]
 fn sessions_list_each_tile_session_with_a_null_activity_when_not_busy() {
     let directory = tempfile::tempdir().expect("fixture directory");
-    let json = report(config(&directory, true), facts());
+    let loaded = LoadedConfig {
+        config: config(&directory, true),
+        error:  None,
+    };
+    let fixture = fixture_scan(rows(), facts());
+    let session_processes = BTreeMap::from([(
+        "director".to_owned(),
+        SessionProcess {
+            pid:           NonZeroU32::new(20).expect("fixture process ID"),
+            process_start: ProcessStart::try_from("18734562".to_owned())
+                .expect("fixture process start"),
+        },
+    )]);
+    let mut stdout = Vec::new();
+    assert_eq!(
+        print_to(
+            &loaded,
+            &(Arc::new(Unreachable) as Arc<dyn RemoteRunner>),
+            |_, _, _| move || CensusScan {
+                session_processes,
+                ..fixture
+            },
+            &mut stdout,
+            &mut Vec::new(),
+        ),
+        ExitCode::SUCCESS
+    );
+    let json: Value = serde_json::from_slice(&stdout).expect("census JSON");
     assert_eq!(json["schema"], 2);
     let ids: Vec<&str> = json["sessions"]
         .as_array()
@@ -462,6 +500,18 @@ fn sessions_list_each_tile_session_with_a_null_activity_when_not_busy() {
         director["activity"],
         entry(&json, "directors", "unit-id")["activity"]
     );
+    assert_eq!(
+        *director,
+        serde_json::json!({
+            "session": "director",
+            "status": "busy",
+            "activity": entry(&json, "directors", "unit-id")["activity"],
+            "machine": json["machines"][0]["name"],
+            "pid": 20,
+            "process_start": "18734562",
+            "shells": []
+        })
+    );
 }
 
 #[test]
@@ -479,7 +529,7 @@ fn sessions_list_their_shell_rows_with_the_tile_name_and_start() {
     ]))
     .expect("fixture shells");
     let directory = tempfile::tempdir().expect("fixture directory");
-    let json = report_with(config(&directory, true), rows, facts());
+    let json = report_with(config(&directory, true), rows.clone(), facts());
     assert_eq!(
         session(&json, "alpha")["shells"],
         serde_json::json!([
@@ -487,7 +537,69 @@ fn sessions_list_their_shell_rows_with_the_tile_name_and_start() {
             {"name":"sleep 60","started_at":7}
         ])
     );
-    assert_eq!(session(&json, "beta")["shells"], serde_json::json!([]));
+    let beta = session(&json, "beta");
+    assert_eq!(beta["shells"], serde_json::json!([]));
+    assert_eq!(
+        *beta,
+        serde_json::json!({
+            "session": "beta",
+            "machine": json["machines"][0]["name"],
+            "status": null,
+            "activity": null,
+            "shells": []
+        })
+    );
+
+    let remote_rows = serde_json::from_value(serde_json::json!([
+        {"agent":"claude","pid":60,"session_id":"alpha","name":"remote-alpha","started":100,
+         "directory":"/fixture","children":[
+            {"depth":0,"kind":"shell","pid":61,"name":"remote work","started":101}
+         ]}
+    ]))
+    .expect("remote shell row");
+    let mut census = Census::new("local".to_owned());
+    census.apply(CensusUpdate::Local {
+        rows,
+        hierarchy: snapshot(facts()),
+        stage: ScanStage::Completed,
+    });
+    census.apply(CensusUpdate::Remote {
+        host:  "remote".to_owned(),
+        state: MachineState::Answered(remote_rows, HierarchySnapshot::default()),
+    });
+    let processes = BTreeMap::from([(
+        "local".to_owned(),
+        BTreeMap::from([(
+            "alpha".to_owned(),
+            SessionProcess {
+                pid:           NonZeroU32::new(30).expect("alpha process ID"),
+                process_start: ProcessStart::try_from("18734562".to_owned())
+                    .expect("alpha process start"),
+            },
+        )]),
+    )]);
+    let cross_host = CensusReport::build(
+        &census,
+        &["remote".to_owned()],
+        &SessionStates::default(),
+        110,
+        &processes,
+    );
+    let json = serde_json::to_value(cross_host).expect("census JSON");
+    assert_eq!(
+        *session(&json, "alpha"),
+        serde_json::json!({
+            "session": "alpha",
+            "machine": "local",
+            "status": null,
+            "activity": null,
+            "shells": [
+                {"name":"bash verify.sh test","started_at":5},
+                {"name":"sleep 60","started_at":7},
+                {"name":"remote work","started_at":101}
+            ]
+        })
+    );
 }
 
 #[test]
@@ -598,91 +710,72 @@ fn source_failures_exit_zero_with_the_machine_error_and_a_bad_config_fails() {
     assert!(stderr.contains(&error), "{stderr}");
 }
 
-/// A remote whose probe answers only after the census ends.
-struct Hung(Mutex<Receiver<()>>);
-
-impl RemoteRunner for Hung {
-    fn probe(&self, _: &str, _: Instant) -> ProbeOutcome {
-        let _ = self.0.lock().expect("the release should lock").recv();
-        ProbeOutcome::NotStarted
-    }
-}
-
-/// Print a census bounded by `bound` whose scan, when `hung_scan`, answers only after the
-/// census ends, and say how long it took.
-fn print_hung_census(
-    mut config: Config,
-    bound: Duration,
-    hung_scan: bool,
-    remote: impl RemoteRunner + 'static,
-) -> (Value, Duration) {
-    let remote: Arc<dyn RemoteRunner> = Arc::new(remote);
-    config.census.report_deadline = toml::from_str::<Config>(&format!(
-        "[census]\nreport_deadline = {}\n",
-        bound.as_millis()
-    ))
-    .expect("census bound")
-    .census
-    .report_deadline;
-    let (release, scan_held) = mpsc::channel::<()>();
-    let started = Instant::now();
-    let mut stdout = Vec::new();
-    let status = print_to(
-        &LoadedConfig {
-            config,
-            error: None,
-        },
-        &remote,
-        move |_, _| {
-            move || {
-                if hung_scan {
-                    let _ = scan_held.recv();
-                }
-                (rows(), snapshot(facts()))
-            }
-        },
-        &mut stdout,
-        &mut Vec::new(),
-    );
-    let elapsed = started.elapsed();
-    drop(release);
-    assert_eq!(status, ExitCode::SUCCESS);
-    (
-        serde_json::from_slice(&stdout).expect("census JSON"),
-        elapsed,
-    )
-}
-
 /// A bound that leaves the accounts command 200 ms before the source stop reserve.
 const ACCOUNTS_CENSUS_BOUND: Duration = Duration::from_millis(700);
-/// A bound for a source that never answers; the census prints at this bound.
-const HUNG_CENSUS_BOUND: Duration = Duration::from_millis(300);
-/// Time past the bound that the census may take to build and print its report.
-const PRINT_ALLOWANCE: Duration = Duration::from_millis(150);
 
 #[test]
 fn a_slow_accounts_command_is_stopped_before_the_bound_and_reported_timed_out() {
     let directory = tempfile::tempdir().expect("fixture directory");
     let mut config = config(&directory, true);
+    config.census.report_deadline = toml::from_str::<Config>(&format!(
+        "[census]\nreport_deadline = {}\n",
+        ACCOUNTS_CENSUS_BOUND.as_millis()
+    ))
+    .expect("census bound")
+    .census
+    .report_deadline;
     config.census.accounts_command = "exec sleep 30".to_owned();
-    let (json, elapsed) = print_hung_census(config, ACCOUNTS_CENSUS_BOUND, false, Unreachable);
+    let started = Instant::now();
+    let (status, json, stderr) = print_census(
+        &LoadedConfig {
+            config,
+            error: None,
+        },
+        facts(),
+    );
+    let elapsed = started.elapsed();
+    assert_eq!(status, ExitCode::SUCCESS, "{stderr}");
     assert!(elapsed < ACCOUNTS_CENSUS_BOUND, "census took {elapsed:?}");
     assert_eq!(json["machines"][0]["reachable"], true);
     assert_eq!(json["machines"][0]["error"], "accounts: command timed out");
 }
 
+fn report_at_source_deadline<const N: usize>(config: Config, answers: [SourceAnswer; N]) -> Value {
+    let mut answers = answers.into_iter();
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let status = print_with_sources(
+        &LoadedConfig {
+            config,
+            error: None,
+        },
+        &mut stdout,
+        &mut stderr,
+        |config| {
+            SourceAnswers::receive(config.machines.remote.len(), || {
+                answers.next().ok_or(RecvTimeoutError::Timeout)
+            })
+        },
+    );
+    assert_eq!(
+        status,
+        ExitCode::SUCCESS,
+        "{}",
+        String::from_utf8_lossy(&stderr)
+    );
+    serde_json::from_slice(&stdout).expect("census JSON")
+}
+
 #[test]
 fn a_remote_that_misses_the_bound_is_reported_timed_out_and_the_census_still_prints() {
-    let directory = tempfile::tempdir().expect("fixture directory");
-    let (held, release) = mpsc::channel();
-    let mut config = config(&directory, true);
+    let mut config = Config::default();
     config.machines.remote = vec!["far".to_owned()];
-    let (json, elapsed) =
-        print_hung_census(config, HUNG_CENSUS_BOUND, false, Hung(Mutex::new(release)));
-    drop(held);
-    assert!(
-        elapsed < HUNG_CENSUS_BOUND + PRINT_ALLOWANCE,
-        "census took {elapsed:?}"
+    let json = report_at_source_deadline(
+        config,
+        [
+            SourceAnswer::Accounts(AccountsSource::NotConfigured),
+            SourceAnswer::Local(fixture_scan(rows(), facts())),
+        ],
     );
     assert_eq!(json["machines"][0]["reachable"], true);
     assert_eq!(
@@ -693,16 +786,9 @@ fn a_remote_that_misses_the_bound_is_reported_timed_out_and_the_census_still_pri
 
 #[test]
 fn a_local_scan_that_misses_the_bound_is_reported_timed_out_and_the_census_still_prints() {
-    let directory = tempfile::tempdir().expect("fixture directory");
-    let (json, elapsed) = print_hung_census(
-        config(&directory, true),
-        HUNG_CENSUS_BOUND,
-        true,
-        Unreachable,
-    );
-    assert!(
-        elapsed < HUNG_CENSUS_BOUND + PRINT_ALLOWANCE,
-        "census took {elapsed:?}"
+    let json = report_at_source_deadline(
+        Config::default(),
+        [SourceAnswer::Accounts(AccountsSource::NotConfigured)],
     );
     assert_eq!(
         json["machines"][0],

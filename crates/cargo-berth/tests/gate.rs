@@ -1944,6 +1944,13 @@ fn git_output(repository_root: &Path, arguments: &[&str]) -> Output {
     GIT.output(repository_root, arguments)
 }
 
+fn commit_with_head_tree(repository_root: &Path, parent: &str, message: &str) -> String {
+    git_stdout(
+        repository_root,
+        &["commit-tree", "HEAD^{tree}", "-p", parent, "-m", message],
+    )
+}
+
 /// Run git with exactly one session variable set, as a harness session's own git command.
 ///
 /// Every other session and run variable is cleared first, so neither this process's
@@ -4632,28 +4639,66 @@ fn a_user_owned_hook_that_starts_cargo_berth_is_never_rewritten() {
 
 #[test]
 fn deleting_trunk_with_one_unrelated_same_tip_branch_leaves_dispatch_unchanged() {
-    let repository = initialized_repository();
-    git(
-        repository.path(),
-        &["checkout", "--quiet", "-b", "unrelated", "main"],
-    );
-    let hook_path = repository.path().join(HOOK_PATH);
-    let installed = fs::read(&hook_path).expect("managed hook should read");
+    for advance_unrelated in [false, true] {
+        let repository = initialized_repository();
+        let root = repository.path();
+        git(root, &["checkout", "--quiet", "-b", "unrelated", "main"]);
+        let hook_path = root.join(HOOK_PATH);
+        let installed = fs::read(&hook_path).expect("managed hook should read");
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(root.join(LOCK_PATH))
+            .expect("mutation lock should open");
+        lock.try_lock().expect("test should hold mutation lock");
 
-    let deleted = git_output(repository.path(), &["branch", "-D", "main"]);
+        let deleted = if advance_unrelated {
+            let base = git_stdout(root, &["rev-parse", "main"]);
+            let next = commit_with_head_tree(root, &base, "unrelated advance");
+            let input = format!(
+                "delete refs/heads/main {base}\nupdate refs/heads/unrelated {next} {base}\n"
+            );
+            let mut child = git_command(BERTH_EXECUTABLE)
+                .args(["--no-optional-locks", "update-ref", "--stdin"])
+                .current_dir(root)
+                .env_remove(BYPASS_ENVIRONMENT)
+                .env(LOCK_CONTENTION_TOLERANCE_ENVIRONMENT, "50")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("mixed ref transaction should start");
+            child
+                .stdin
+                .take()
+                .expect("ref transaction stdin should exist")
+                .write_all(input.as_bytes())
+                .expect("ref transaction stdin should write");
+            child
+                .wait_with_output()
+                .expect("ref transaction should finish")
+        } else {
+            GIT.output_with_environment(
+                root,
+                &["branch", "-D", "main"],
+                LOCK_CONTENTION_TOLERANCE_ENVIRONMENT,
+                "50",
+            )
+        };
 
-    assert!(
-        deleted.status.success(),
-        "trunk deletion failed: {}",
-        String::from_utf8_lossy(&deleted.stderr)
-    );
-    let retained = fs::read(&hook_path).expect("retained hook should read");
-    assert_eq!(retained, installed);
-    assert!(
-        fs::read_to_string(repository.path().join(HOOK_CONTEXT_PATH))
-            .expect("retained hook context should read")
-            .contains("cargo_berth_trunk_reference='refs/heads/main'")
-    );
+        assert!(
+            deleted.status.success(),
+            "trunk deletion failed (advance unrelated: {advance_unrelated}): {}",
+            String::from_utf8_lossy(&deleted.stderr)
+        );
+        let retained = fs::read(&hook_path).expect("retained hook should read");
+        assert_eq!(retained, installed);
+        assert!(
+            fs::read_to_string(root.join(HOOK_CONTEXT_PATH))
+                .expect("retained hook context should read")
+                .contains("cargo_berth_trunk_reference='refs/heads/main'")
+        );
+    }
 }
 
 #[test]
@@ -6045,22 +6090,85 @@ fn multi_ref_transactions_evaluate_only_the_trunk_update() {
     let base = git_stdout(repository.path(), &["rev-parse", "main"]);
     let worktrees = tempdir().expect("worktree parent should exist");
     let feature_root = add_worktree(repository.path(), worktrees.path(), "multi-ref");
-    let feature_head = commit_work(
+    let feature_base = commit_work(
         &feature_root,
         "multi-ref.txt",
         "multi ref\n",
         "multi ref work",
     );
+    let feature_head =
+        commit_with_head_tree(&feature_root, &feature_base, "proposed feature update");
+    let trunk_ancestor = commit_with_head_tree(repository.path(), &base, "trunk ancestor");
+    let trunk_head =
+        commit_with_head_tree(repository.path(), &trunk_ancestor, "proposed trunk update");
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            "keep this registered checkout",
+            feature_root
+                .to_str()
+                .expect("worktree path should be UTF-8"),
+        ],
+    );
     let input = format!(
-        "invalid invalid refs/tags/release\n{base} {feature_head} refs/heads/multi-ref\n{base} {feature_head} refs/heads/main\n"
+        "invalid invalid refs/tags/release\n{feature_base} {feature_head} refs/heads/multi-ref\n{base} {trunk_head} refs/heads/main\n"
     );
 
-    let transaction = run_private_hook(repository.path(), "prepared", &input);
+    let projection = repository.path().join(".git/cargo-berth/reservations.json");
+    let expected_projection = fs::read(&projection).expect("projection should read");
+    fs::remove_file(&projection).expect("remove the projection before the prepared decision");
+    let hook = repository.path().join(HOOK_PATH);
+    let (transaction, invocations) = run_command_with_raw_git_trace(
+        repository.path(),
+        OsStr::new("sh"),
+        &[
+            "-c",
+            r#"printf '%s' "$2" | "$1" prepared"#,
+            "prepared-hook",
+            hook.to_str().expect("hook path should be UTF-8"),
+            &input,
+        ],
+    );
     assert!(
         transaction.status.success(),
         "multi-ref transaction failed: {}",
         String::from_utf8_lossy(&transaction.stderr)
     );
+    assert_eq!(
+        git_command_count(&invocations, "rev-list"),
+        0,
+        "a prepared update without ordering holds must skip the history walk: {invocations:#?}"
+    );
+    assert_eq!(
+        git_command_count(&invocations, "worktree"),
+        0,
+        "a locked worktree must not require a Git worktree scan: {invocations:#?}"
+    );
+    assert!(
+        invocations.len() <= 1,
+        "the prepared hook exceeded its Git process budget: {invocations:#?}"
+    );
+    assert_eq!(
+        fs::read(projection).expect("the prepared decision should rebuild the projection"),
+        expected_projection,
+    );
+
+    let (prefix, suffix) = trunk_ancestor.split_at(2);
+    fs::remove_file(
+        repository
+            .path()
+            .join(".git/objects")
+            .join(prefix)
+            .join(suffix),
+    )
+    .expect("remove the loose ancestor of the proposed trunk tip");
+    let broken = run_private_hook(repository.path(), "prepared", &input);
+    let diagnostic = String::from_utf8_lossy(&broken.stderr);
+    assert_eq!(broken.status.code(), Some(4), "{diagnostic}");
+    assert!(diagnostic.contains(&trunk_ancestor), "{diagnostic}");
 }
 
 #[test]

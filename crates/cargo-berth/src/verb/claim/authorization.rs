@@ -5,10 +5,8 @@ use std::collections::HashSet;
 use super::failure::ClaimRejection;
 use super::incomplete_answer::IncompleteClaimAnswer;
 use super::incomplete_answer::IncompleteClaimAnswerRejection;
-use super::request::ClaimReservationSelection;
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
-use crate::answer::ClaimSequenceBinding;
 use crate::answer::ConflictAuthorization;
 use crate::answer::ContradictedOrdering;
 use crate::answer::DeferAnswerRequest;
@@ -18,6 +16,7 @@ use crate::answer::PermissiveOverlapAuthorizationRequest;
 use crate::config::DefaultAnswer;
 use crate::edge::OrderingGraph;
 use crate::ids::CoordinationRunId;
+use crate::ids::ReservationId;
 use crate::ids::WireOrderedReservationIds;
 use crate::ids::WorktreeId;
 use crate::ledger::JournalOperation;
@@ -195,9 +194,9 @@ pub(super) fn bind_claim_authorization(
         )));
     }
     let replaced = replaced_orderings(&answer, ordering_context)?;
-    let authorization = match (ordering_context.reservation_selection, &answer) {
+    let authorization = match (ordering_context.requester, &answer) {
         (
-            ClaimReservationSelection::Existing(requester),
+            OrderingRequester::Existing(requester),
             PermissiveOverlapAnswer::Sequence { blockers, .. },
         ) => ConflictAuthorization::sequence_with_bindings(
             overlaps,
@@ -214,26 +213,15 @@ pub(super) fn bind_claim_authorization(
         ),
         _ => ConflictAuthorization::answered(&answer, overlaps, reason, replaced),
     };
-    let new_edge_count = match &authorization {
-        ConflictAuthorization::Sequence { .. } => 1,
-        ConflictAuthorization::SequencePerHolder { holders, .. } => holders.len(),
-        ConflictAuthorization::SequenceWithExistingEdges { holders, .. } => holders
-            .iter()
-            .filter(|binding| matches!(binding, ClaimSequenceBinding::NewEdge { .. }))
-            .count(),
-        ConflictAuthorization::NoConflict
-        | ConflictAuthorization::Enrollment { .. }
-        | ConflictAuthorization::Defer { .. }
-        | ConflictAuthorization::Override { .. }
-        | ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => 0,
+    let requester = match ordering_context.requester {
+        OrderingRequester::New(id) | OrderingRequester::Existing(id) => id,
     };
-    if new_edge_count != 0
-        && additions_exceed_limit(
-            ordering_context
-                .ordering_graph
-                .edge_count()
-                .saturating_sub(authorization.replaced().len()),
-            new_edge_count,
+    if ordering_context
+        .ordering_graph
+        .claim_exceeds_live_ordering_limit(
+            requester,
+            &authorization,
+            ordering_context.reservations,
             maximum_ordering_edges,
         )
     {
@@ -246,10 +234,17 @@ pub(super) fn bind_claim_authorization(
 
 /// The locked facts a sequence answer is checked against for contradicted live edges.
 pub(super) struct OrderingContext<'state> {
-    pub(super) reservation_selection: ClaimReservationSelection,
-    pub(super) ordering_graph:        &'state OrderingGraph,
-    pub(super) reservations:          &'state RetainedReservationSet,
-    pub(super) answering_worktree:    AnsweringWorktree,
+    pub(super) requester:          OrderingRequester,
+    pub(super) ordering_graph:     &'state OrderingGraph,
+    pub(super) reservations:       &'state RetainedReservationSet,
+    pub(super) answering_worktree: AnsweringWorktree,
+}
+
+/// The reservation the sequence answer orders against its holders.
+#[derive(Clone, Copy)]
+pub(super) enum OrderingRequester {
+    New(ReservationId),
+    Existing(ReservationId),
 }
 
 /// Return the live edges a sequence answer retires, or the rejection that stops it.
@@ -278,9 +273,9 @@ fn replaced_orderings(
     let requesters = ordering_context
         .reservations
         .iter()
-        .filter(|reservation| {
-            matches!(ordering_context.reservation_selection, ClaimReservationSelection::NewReservation)
-                || matches!(ordering_context.reservation_selection, ClaimReservationSelection::Existing(id) if reservation.id() == id)
+        .filter(|reservation| match ordering_context.requester {
+            OrderingRequester::New(_) => true,
+            OrderingRequester::Existing(id) => reservation.id() == id,
         })
         .filter(|reservation| {
             !reservation.is_terminal()
@@ -308,11 +303,6 @@ fn replaced_orderings(
             Err(ClaimRejection::NothingToReplace(answer.blockers()))
         },
     }
-}
-
-/// Whether adding `additions` to `count` would exceed `maximum`.
-fn additions_exceed_limit(count: usize, additions: usize, maximum: u32) -> bool {
-    u64::try_from(count.saturating_add(additions)).map_or(true, |total| total > u64::from(maximum))
 }
 
 pub(super) fn count_reaches_limit(count: usize, maximum: u32) -> bool {

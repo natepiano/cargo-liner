@@ -553,7 +553,7 @@ fn push_preserved_run(
 fn cell_count(text: &str) -> usize { text.width() }
 
 /// `text` split where it has drawn `cells` cells.
-fn split_at_cells(text: &str, cells: usize) -> (&str, &str) {
+pub(crate) fn split_at_cells(text: &str, cells: usize) -> (&str, &str) {
     let span = Span::raw(text);
     let mut used = 0;
     let mut byte = 0;

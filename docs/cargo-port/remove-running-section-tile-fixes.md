@@ -1825,94 +1825,81 @@ Each native test fixture records its source identity, and each publication remov
 
 **Ruled out:** in-process Git reads for the Mac goal (removing every cargo-berth Git call saves about 0.15 s per slow test); six slots per test; the Mac Developer Tools exemption.
 
-### Phase 70 — A plan shrink edit joins the worktree's active reservation  · status: todo
+### Phase 70 — A plan shrink edit joins the worktree's active reservation  · status: done
 
-**Depends on:** none (showrunner, 2026-11-17: first in tile's remaining scope).
+#### As-built
 
-#### Work Order
+- The cause: after a checkpoint release, the plan shrink edit made an ordinary first-touch reservation. Its merge extent later took the next phase's files, so drift found two candidates. `a_plan_shrink_after_checkpoint_never_makes_the_next_phases_drift_ambiguous` (`tests/hooks.rs`) reproduced it.
+- In a worktree with one active phase reservation, the edit joins it (`sole_active_phase`), also when the session has no marker.
+- In a checkpoint gap (no active phase in the worktree), an edit takes one exact-path hold for each free path (`acquire_checkpoint_gap_holds`, `ExactPathAcquisition`, `verb/claim/acquisition.rs`). The foreign overlap checks run first. Drift never selects a hold as a phase candidate, and reconciliation releases it when Git shows the change is integrated, squash merges included.
+- A phase that later edits a held path widens its own reservation and releases the hold in one ledger transaction (`plan_hold_transfers`).
+- Each hook result reports its own `ReservationAcquisitionKind`; a new hold never shows as `already_held`. No CLI change. The generated output contract carries the new fields.
+- Gates: Mac lint passed; Mac 1396/1396 at start load 6.58 (12 CPUs). No separate natedev suite (user ruling 2026-11-18); the merge gate covers Linux. Landed by the live-count rule after 3 repair rounds.
 
-**Goal:** An edit to a plan doc in a worktree with an active reservation joins that reservation. It makes no second reservation that holds only the plan doc (showrunner, 2026-11-14 and 2026-11-17).
+**Files:**
+- `crates/cargo-berth/src/verb/claim/acquisition.rs`, `verb/claim/mod.rs`, `verb/claim/request.rs`, `verb/check.rs`, `hook/pre_tool_use.rs` — the hold and the join.
+- `crates/cargo-berth/src/drift/execution.rs`, `drift/identity.rs`, `drift/selection.rs` — drift skips holds.
+- `crates/cargo-berth/src/ledger/journal.rs`, `ledger/authorization.rs`, `ledger/record_size.rs`, `reconcile.rs`, `reservation/record.rs`, `reservation/retention.rs`, `session/mod.rs`, `coordination_identity.rs`, `output.rs` — the record, release and output.
+- `crates/cargo-berth/tests/hooks.rs`, `docs/cargo-berth/generated/output-contract.json`, `crates/cargo-berth/CHANGELOG.md`.
 
-**Spec:**
-1. The evidence: in the handler worktree, each plan shrink edit made a second reservation that held only the plan doc (01a1da82 in handler Phase 14, 01a1dabc in Phase 15). In the tile home worktree, the same happened (01a1e05c, 01a1e0df, 01a1e0e2, 01a1e3ce, 01a1e4ad, 01a1e6af, 01a1e82f, 01a1e297, 01a1e9c6, 01a1e9ca, 01a1ea5b).
-2. The result: drift puts the next phase's files in the extra reservation's merge extent, so every drift is ambiguous. Units retire each one by hand with `--retire-orphan`.
-3. Measure first. Reproduce the edit path in a cargo-berth test and name the code that makes the second reservation.
-4. Fix the cause in cargo-berth. The edit joins the active reservation of the worktree. Keep the overlap checks against other worktrees' reservations.
+**Left over:** six new `hooks.rs` regressions take 1.06-2.43 s on the Mac at load 6.58 (0.27-0.45 s on natedev). The cost is Mac process starts, as in the dropped Phase 68b scope.
 
-**Files:** `crates/cargo-berth/src/` where the measurement names the cause; `crates/cargo-berth/tests/`.
-
-**Workers:** 1 writer, 1 reviewer.
-
-**Acceptance gate:** a test reproduces the second reservation before the fix and passes after it; `verify.sh final cargo-berth` passes on natedev; the Mac cargo-berth suite passes; lint.
+**Ruled out:**
+- A guard against a phase claim between hook selection and mutation: one user does not cause that race.
+- Hold settlement inside the comparison budget: a phase makes one or two holds, settled once for each integration.
 
 
-### Phase 71 — A capture shim lock that no install holds does not block  · status: todo
+### Phase 71 — A capture shim lock that no install holds does not block  · status: done
 
 **Depends on:** Phase 63b (both edit `crates/cargo-tile/src/hook.rs`).
 
-#### Work Order
+#### As-built
 
-**Goal:** A stale `cargo-tile-shim.lock` never blocks install, and the user takes no step to recover it (user via showrunner, 2026-11-17).
+- The cause: `HookInstallationLock` treated the existence of `cargo-tile-shim.lock` as the lock (`create_new`) and removed the file on drop. A file left by an ended install blocked every later install with `File exists (os error 17)`.
+- `HookInstallationLock::acquire` now opens or creates the file without `create_new` (`O_NOFOLLOW`; it must be a regular file) and takes `File::try_lock`. The lock is the held lock, so a left-over file that no process holds is free. The file stays on disk; the lock ends when the `File` drops.
+- Two installs at the same time still exclude each other: the second retries within the existing wait budget, then fails with `WouldBlock` and "another capture shim operation holds the lock".
+- `SHIM_LOCK_RECOVERY` (the "remove this lock file" text) is removed from `constants.rs`.
+- Tests: `install_succeeds_with_a_leftover_shim_lock_file` (`tests/cli_lifecycle.rs`) and a held-lock test in `hook.rs` that checks the `WouldBlock` text and that the lock file keeps its contents. The fixture repeats the lock name, because cargo-tile has no lib target (director ruling, review round 2).
+- Gates: Mac lint passed; Mac 1,302/1,302 at load 3.90 (12 CPUs); slowest 0.951 s. No separate natedev suite (user ruling 2026-11-18). Checkpoint ahead of Phase 32g (showrunner, 2026-11-19).
 
-**Spec:**
-1. The evidence: the cargo tile TUI showed "stable-x86_64-unknown-linux-gnu: not installed: ~/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo-tile-shim.lock: File exists (os error 17); confirm no install is still running, remove this lock file, and run cargo-tile install again". The lock was dated 11-16 15:14. No install ran.
-2. The lock is a held lock (flock) on the file, not the existence of the file. A file that no live process holds is free.
-3. Two installs at the same time still exclude each other.
-4. Remove the recovery text that asks the user to delete the lock file.
-
-**Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/constants.rs`, and the tests for the shim lock.
-
-**Workers:** 1 writer, 1 reviewer.
-
-**Acceptance gate:** a test with a left-over lock file installs with no error; a test with a held lock still excludes a second install; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint.
+**Files:** `crates/cargo-tile/src/hook.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/shim_registration/shared_capture.rs`, `crates/cargo-tile/tests/cli_lifecycle.rs`, `crates/cargo-tile/CHANGELOG.md`.
 
 
-### Phase 72 — Every notice closes with its [x] and with Esc  · status: todo
+### Phase 72 — Every notice closes with its [x] and with Esc  · status: done
 
-**Depends on:** none.
+#### As-built
 
-#### Work Order
+- The cause: `App::click` dropped `ToastHit::Close`, so the [x] did nothing, and `App::modal_key` left Esc unhandled while focus was on the grid.
+- Clicks and scrolling share one dispatcher, `tui_pane::handle_tile_click` (`framework/input.rs`, `framework/hit_test.rs`). The [x] close reaches the toast, and a click on a notice covered by settings or a popup leaves it open.
+- Esc closes the newest visible notice first, from any focus, before Favorites or settings. With no visible notice, Esc closes settings. Closing the last notice returns focus to the grid.
+- `Framework` stores the overlay bounds from the draw call (`overlay_bounds`), and each overlay popup returns the area it draws. Hit tests and drawing read one record; `toast_card_is_visible` checks a card against the overlays.
+- Tests (`shim_registration/app_scenarios.rs`): the capture shim lock notice closes with its button and with Esc from the grid; each startup and produced notice kind closes with [x] and with Esc; Esc order against Favorites and settings; a covered notice stays open on a click.
+- Gates: Mac lint passed; Mac 1,342/1,342 at load 6.56 (12 CPUs). Dark-mode shots before and after Esc. No separate natedev suite (user ruling 2026-11-18). Checkpoint ahead of Phase 32g (showrunner, 2026-11-19).
+- **Left over:** five older cargo-tile tests at 1.02-1.34 s on the Mac; moved to Phase 37 (showrunner, 2026-11-19).
 
-**Goal:** The user can close every notice in the cargo tile TUI with its [x] and with Esc (user via showrunner, 2026-11-17: "i can't even dismiss it which i've never seen before").
-
-**Spec:**
-1. The evidence: the "Capture shim" notice for the stale lock in Phase 71 did not close.
-2. Measure first. Name each notice kind and the reason the capture shim notice does not close.
-3. Fix the cause where it lives. A notice that comes back from live state shows again only when that state changes.
-4. Add one test for each notice kind: [x] closes it, and Esc closes it.
-
-**Files:** where the measurement names the cause.
-
-**Workers:** 1 writer, 1 reviewer.
-
-**Acceptance gate:** the new tests pass; `verify.sh final cargo-tile` passes on natedev; the Mac cargo-tile suite passes; lint; one dark-mode desktop image of the notice before and after Esc.
+**Files:** `crates/cargo-tile/src/{app,capture,interaction,render}.rs`, `shim_registration/app_scenarios.rs`; `crates/tui_pane/src/framework/`, overlays and toasts.
 
 
-### Phase 63b — The PTY helper fallback test passes on Linux  · status: todo
+### Phase 63b — The PTY helper fallback test passes on Linux  · status: done
 
-**Depends on:** none. Goes before Phase 68b (showrunner ruling, 2026-11-17); handler's Phase 35 final gate waits on it.
+#### As-built
 
-#### Work Order
-
-**Goal:** `cargo-tile::shim_modes` `a_pty_helper_that_exits_before_cargo_runs_falls_back_without_artifacts` passes on natedev and on the Mac (showrunner, 2026-11-17).
-
-**Spec:**
-1. The evidence: `verify.sh final cargo-tile` on natedev fails this test in 3 of 3 runs and passes on the Mac. At `shim_modes.rs:1570`, `fixture.observed("helper")` panics with "read observation file: NotFound": the fake `script` helper in `fixture.bin` does not run on Linux.
-2. Measure first. Make the failure print the shim status, stdout, stderr and the recorded capture fallback cause before the observation read (the Phase 63 attempt 9 method). Read which path skips the helper on Linux.
-3. Fix the cause where it lives, in the test fixture or in the shim. Keep each test's behavior and assertions.
+- The PTY capture helper's startup socket lives in a private directory under `/tmp` (`CAPTURE_STARTUP_SOCKET_BASE`), named with `CAPTURE_STARTUP_SOCKET_DIRECTORY_PREFIX` and `CAPTURE_STARTUP_SOCKET_NAME` (`constants.rs`). The path is 29 bytes for any `TMPDIR`. Before, the socket sat under `TMPDIR`; an agent session's long `/session/...` `TMPDIR` made it 130 bytes, over the Unix socket path limit (`SUN_LEN`: 108 on Linux, 104 on macOS). The bind failed, and capture fell back to plain cargo with `capture startup: path must be shorter than SUN_LEN`.
+- `PtyCaptureHelper` (`hook.rs`) owns the socket and its `TempDir`, and drops both on completion, fallback and the deferred signal paths. The directory is created and then set with `fs::set_permissions` to `CAPTURE_STARTUP_SOCKET_DIRECTORY_MODE` (`0o700`) before the bind, so the umask has no effect. The socket keeps mode `0600`.
+- `a_pty_helper_that_exits_before_cargo_runs_falls_back_without_artifacts` (`tests/shim_modes.rs`) runs a short and a long directory row. The fake helper records `CARGO_TILE_PTY_START_SOCKET`, and both rows assert that the socket and its directory are gone. The long row fails on the old code with the `SUN_LEN` fallback.
+- Gates: the named test 0.185 s; cargo-tile 1286/1286 on natedev; Mac `shim_modes` 48/48; lint clean.
 
 **Files:**
-- `crates/cargo-tile/tests/shim_modes.rs` — the test and its fixture.
-- `crates/cargo-tile/src/hook.rs` and `crates/cargo-tile/src/cargo-capture-shim.sh` — only where the measurement names the cause.
+- `crates/cargo-tile/src/hook.rs` — the private socket directory.
+- `crates/cargo-tile/src/constants.rs` — the base, prefix, socket name and directory mode.
+- `crates/cargo-tile/tests/shim_modes.rs` — the two directory rows and the removal assertions.
 
-**Workers:** 1 writer
-- `impl`: the diagnosis output, the fix and the natedev and Mac runs.
+**Binds later work:** Phase 71 edits the shim lock in `hook.rs`; keep the startup socket out of `TMPDIR`.
 
-**Constraints from prior phases:**
-- Phase 63a: the shim signal tests wait on an event and name their cause; keep that.
-- Diagnosis at `/tmp/claude/unit/02717738-2a97-4a2f-b362-e4add2f2dd8e/phases/63b/diagnosis.md` lists 12 paths that skip the helper (read only).
-
-**Acceptance gate:** the test passes on natedev and on the Mac; `verify.sh final cargo-tile` passes on natedev; lint.
+**Ruled out:**
+- A test-only short `TMPDIR` alias (a workaround; the defect is in `hook.rs`).
+- Recovery of a socket directory left after `SIGKILL`: the old socket file had the same limit, and `/tmp` is cleared at reboot.
+- A umask test: the umask is global to the test process, and the explicit mode reset removes the dependence.
 
 ### Phase 68b — Heavy cargo-berth scenario tests run under 1 s alone on the Mac  · status: dropped (review failed after 3 repair rounds; showrunner rule, 2026-11-18)
 
@@ -3071,40 +3058,22 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 - Shots of a live tile with active crates on a light and a dark background; when `tui_pane` changes, shots of `cargo-port` with the same ink. A fresh helper's design check passes.
 - Change-review line: active crate labels read on a light background.
 
-### Phase 32g — The hidden-process row reads whole and matches its cell  · status: todo
+### Phase 32g — The hidden-process row reads whole and matches its cell  · status: done
 
-**Depends on:** Phase 32c, Phase 32e, Phase 32h (both edit the painting and retained replay in `render.rs` and `render/cell_paint.rs`; item 4's fade clamp must keep Phase 32h's draw time)
+#### As-built
 
-#### Work Order
+- `draw_hidden_process_count` (`render.rs`) draws `+N more` whole on its own row, on the cell background in the normal row ink. It has a cut mark only when the label is cut.
+- Fading text keeps 4.5:1 contrast against its resolved background until the row goes. `RowPaintInk` and `RowFadePalette` (`render.rs`) clamp each fade amount at the floor. `PaintedCellContents::recolor` uses the same ink, so fresh and retained painting stay equal. The pid and readout share the row ink, from the first finished frame. `tui_pane` `tiles/draw` (`contents.rs`, `fade.rs`, `rows.rs`) takes the readout ink from the row.
+- A cut crate name keeps its `…` directly after the name; the hidden-rows mark stands at the right margin. `mark_table_continuation` no longer deletes the name's mark.
+- `-L`, `--out-dir` and `--check-cfg` are in `COMMAND_VALUED_OPTIONS` and wrap with their values. `ValuedOptionScope::Rustc`, `ArgumentOwner::Rustc` and `RUSTC_ARGUMENT_OWNERS` replace the `RustcLint` names.
+- Item 3 needed no change (showrunner ruling). Item 5 found no defect: the path follows the frontend when a row is available.
+- `row_resource_readings` finds rows and parents by an index keyed by pid and invocation identity, not by a scan.
+- Gates: design check passed; Mac lint passed; Mac 1,312/1,312 cargo-tile tests. Five repair rounds; rounds 4 and 5 ran under showrunner rulings.
+- **Frame gate, not met:** the perf profile (six groups, no workload) decides (showrunner, 2026-11-19). First fades: max CPU 10.4 ms against main 13.8 ms. Repeated fades: max repaint 2.78 ms against main 2.30 ms. Paired captures, frames over 4 ms, main → 32g: 30 → 40, 21 → 42, 73 → 49 at 24/40/80 rows, mostly at load 62-78. The showrunner landed 32g by the pooled counts. The cause is not named; it goes first in Phase 34.
 
-**Goal:** Defects from the Phase 32c design check (2026-11-10) moved here under the hard landing. The row that counts hidden processes loses its last letter at 24 rows (`+18 mor`), and it draws as a full-width black bar with white text on a white cell. Items 4 to 7 name the other rows the check reported.
+**Ruled out:** the palette build on a cache miss (round 5: no `RowFadePalette::new` or `powf` samples in the slow frames).
 
-**Spec:**
-
-1. The label `+N more` is whole at every count and every cell width that shows the row. Quote the source line in `draw_hidden_process_count` that cuts the label, and fix the cause there. Test, red first: add rows that read the whole label from the buffer at the 24-row cell width, with one-digit and two-digit counts.
-2. The row draws on the background of its cell, in the normal row ink. It has no cut mark at its right end unless the label is cut. Test, red first: read the background and ink of the row from the buffer on a light and a dark background.
-
-3. A cargo probe row keeps its real crate name: `clippy-driver ___`. It is the real value, and it marks the probe (showrunner, 2026-11-10). Make no change for this item. Tell the design check that this is the ruling.
-4. A process row that fades after its process ends stays readable until the row goes. The Phase 32c design check measured a fading frontend name at 3.32:1 down to 1.60:1, on a terminal whose appearance was not recorded (Phase 32f item 7). Keep the existing removal time, and clamp the visible text contrast at 4.5:1 against its resolved background. Keep the retained ink handling of Phase 32e: `PaintedCellContents::recolor` reapplies `RowInk::color` from retained source colors, apart from fresh text drawing, so the clamp applies on both paths. Test, red first: read the drawn ink at intermediate fade samples on a light and a dark background. In the retained-versus-fresh fixture, the buffers are equal, the contrast is at least 4.5:1, and the replay does not repaint.
-5. Check whether the path placement of a compiler call with no `--crate-name` is a defect. In the Phase 32c shots at 80 rows with `h` on, the path sits on the second row. `WrappedCommand::into_rows` combines continuation units into the last row when height is limited, so a row budget can change the placement. Compare the same argv and command width with only the row budget changed. If argv order and the available-space rules hold, close this item with no change.
-6. With `h` off, a shortened crate name keeps its `…` directly after the name, at the solved command-column width. In the Phase 32c shot at 24 rows, the name `phase32_crate_00_with_a` stopped two cells early, and the only `…` was at the right margin. `mark_table_continuation` deletes existing ellipses when rows are omitted, then places one at the table margin. Keep both marks (showrunner, 2026-11-10): the name's own mark stays directly after the name, and the hidden-rows mark stands at the right margin. Stop the deletion for rows omitted. `reserve_command_rows` keeps returning 0 for single-line Default rows, so no process row is lost, and the Phase 35 rule stays. Test, red first: read a shortened final name and the margin mark from the buffer while more process rows stay hidden.
-7. A flag and its value stay together on argument rows. In the Phase 32c shot at 80 rows, `-L` and `--out-dir` sat alone on a row, and `--check-cfg` ended a row while its value started the next. `COMMAND_VALUED_OPTIONS` omits these three options. Add them to the table, and reuse the existing `BoundValue` wrapping and cut behavior. Do not add a second classification in the renderer. These options are not lint options, so rename `ValuedOptionScope::RustcLint` and `ArgumentOwner::RustcLint` to `Rustc`, and `RUSTC_LINT_OWNERS` to `RUSTC_ARGUMENT_OWNERS`. Keep the Cargo and nextest boundaries. Test, red first: parser cases, and the argument rows of a recorded argv, for fitting pairs and for oversized values.
-
-**Files:**
-- `crates/cargo-tile/src/render.rs` — items 1, 2 and 4 to 6.
-- `crates/cargo-tile/src/render/cell_paint.rs` — item 4's retained-versus-fresh fixture.
-- `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/census/command_text.rs` — item 7 and its parser cases.
-- `crates/cargo-tile/CHANGELOG.md` — one Fixed line.
-
-**Workers:** 1 writer — `impl`, every file above.
-
-**Constraints from prior phases:** Phase 32b: a change to what a cell displays changes its `CellPaintSource`, or the cell keeps a stale painting. Phase 32c: `compiler_argument_layout` identifies forwarded compiler executables, and `wrapped_process_command` reserves the heading row. A capture that sets terminal colors and selects no appearance can draw the dark theme on a white terminal. No new `#[allow]` or `#[expect]`; no test takes a second. At most 3 repair rounds. Phase 69: `DirectoryDisplay` (render.rs), `StyledCommandWord::Slot` and `slot_label_prefix` fit a slot label from typed parts, not from ` · ` text; a purpose can contain ` · `. The cut order is purpose first, holder next, slot last. Extend the fade and cut fixtures with slot labels; keep retained-versus-fresh equality and the repaint counts.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile`, then `... test cargo-tile` green.
-- Shots of a live tile with hidden processes at 24 and 40 rows on a light background, and at 80 rows with `h` on with matched light and dark appearances. Record the resolved theme and the terminal settings before judging missing text, placement or contrast. A fresh helper's design check passes.
-- Phase 32h's capture gate, repeated on the final release build with the fade clamp: no frame over 4 ms of `cpu_ns` at 24, 40 and 80 rows, under the same load rule.
-- Change-review line: the hidden-process row reads whole on the background of its cell.
+**Files:** `crates/cargo-tile/src/render.rs`, `render/cell_paint.rs`, `constants.rs`, `census/command_text.rs`, `CHANGELOG.md`; `crates/tui_pane/src/tiles/draw/{contents,fade,rows}.rs`.
 
 ### Phase 33 — A nextest run shows its tests, and CPU counts only what each process adds  · status: done
 
@@ -3137,65 +3106,29 @@ The showrunner's CI gate checkout failed two `cargo-berth::board` tests: `an_exi
 
 **Ruled out:** `getrusage` (rustix 1.1.5 has none; an unsafe libc call adds an unsafe block); a reaper credit on Darwin (it holds the parent at 0%).
 
-### Phase 34 — Space pauses the display  · status: todo
+### Phase 34 — Space pauses the display  · status: done
 
-**Depends on:** Phase 20, Phase 21, Phase 23, Phase 32, Phase 33
+#### As-built
 
-**Scope (user, 2026-11-19):** the four slow `render.rs` tests from Phase 72's forward edit are dropped. This phase keeps the repeated-fade cost from Phase 32g and the pause.
+- Space pauses and resumes the display; `f` is unbound. The action, the `Updates::Paused` state and the status note all use the name pause. The status bar reads `paused`.
+- Pause holds the grid motion clock, the `FullScreenView` clock and the row-fade clock. Motion and fades resume from the held position with no jump. The status line keeps uptime and CPU current.
+- Command durations include the paused time. Disk scans during a pause keep the foot unchanged until resume.
+- Repeated fades: the renderer shares parent lookups and text layouts across one frame, and retained layers keep their colors when their ink is unchanged. Paired gate vs main, median of 3 pairs: first fade peak -2.182 ms, repeated fade peak -0.030 ms.
+- The visible-row index uses the PID and the invocation ID.
+- Scope (user, 2026-11-19): the four slow `render.rs` tests were dropped.
 
-#### Work Order
+**Files:** `crates/cargo-tile/{CHANGELOG.md, README.md}`, `crates/cargo-tile/src/{app.rs, app_global_action.rs, constants.rs, grid_view.rs, keymap.rs, render.rs, roster.rs, terminal.rs}`, `crates/cargo-tile/src/render/{cell_paint.rs, frame_preparation.rs}`, `crates/tui_pane/CHANGELOG.md`, `crates/tui_pane/src/attract/{controller.rs, updates.rs}`, `crates/tui_pane/src/favorites_overlay/globals.rs`, `crates/tui_pane/src/tiles/full_screen.rs`, `crates/tui_pane/src/tiles/grid/{motion.rs, tile_grid.rs, tests/motion.rs}`.
 
-**Goal:** The space bar pauses and unpauses cargo-tile while it runs, and the status bar says `paused` the whole time it is paused. From the user (2026-10-16, relayed by the showrunner): "make it so the space bar pauses and unpauses cargo tile while it's running (and it should show paused in the statusbar while that's happening)". Pausing is the display freeze cargo-tile already has: the screen holds still, and cargo keeps running underneath. Today that freeze is on `f` and the status bar says `frozen`. This phase moves it to space and calls it pause everywhere. It runs after Phases 21 to 33: Phase 33 and this phase both change the render files, so one writer owns them at a time. Files and lines below are as of phase 20's checkpoint and may move; find each by name.
+### Phase 35o — Phase 35's overlay items: a clipped-pane test that reads cells, a readable selected row, and settings values that wrap  · status: done
 
-**Spec:**
+#### As-built
 
-1. **One key, one name.** The default binding moves from `f` to `space`, and `f` is left unbound. The action is renamed from freeze to pause throughout, with no alias for the old name. Neither machine's cargo-tile config names `global.freeze` (checked 2026-10-16). The renames:
-   - the action: `AppGlobalAction::Freeze` ("freeze", "Freeze the display") becomes pause, "Pause the display" (`crates/cargo-tile/src/app_global_action.rs` ~43, ~69, ~93);
-   - the default keymap line: `global.freeze = f` becomes `global.pause = space` (`crates/cargo-tile/src/keymap.rs` ~215);
-   - the state: `Updates::Frozen` becomes `Updates::Paused`. `Updates` is public `tui_pane` API (`crates/tui_pane/src/attract/updates.rs`, exported from `attract/mod.rs` and `lib.rs`), so the rename reaches every consumer: `toggled` and the doc comments in `updates.rs`; `Attract::advance` (`crates/tui_pane/src/attract/controller.rs` ~1031-1055, which holds the attract strip while paused) and its tests `frozen_frame_records_its_laid_out_area` and `frozen_frame_does_not_change_band_glyphs`; the favorites overlay test `an_adjusted_random_favorite_schedules_a_lowercase_warning_while_frozen` (`crates/tui_pane/src/favorites_overlay/globals.rs` ~403); and in cargo-tile `render.rs` ~5988, `app_global_action.rs` ~207, ~228 and ~244, and `terminal.rs` ~194. cargo-handler uses only `Updates::Live` (`render/mod.rs`, `render/accounts_grid_tests.rs`) and needs no edit. The three `tui_pane` tests take the `paused` name and keep their assertions unchanged, as the regression that the held attract strip and the favorites warning still behave the same;
-   - the status note: `FROZEN_NOTE_LABEL` (`"frozen"`, `crates/cargo-tile/src/constants.rs` ~364) becomes a `paused` note, drawn through `StatusLineNote::flag` as today (`crates/cargo-tile/src/render.rs` ~6060).
-2. **Behaviour unchanged.** While paused, what the freeze skips today stays skipped (`crates/cargo-tile/src/terminal.rs` ~188: scans are drained and discarded, fades and travel hold). The first frame after unpausing describes the world as it is then. Apart from item 6's held motion clock, only the key and the words change.
-3. **Where space already means something.** The settings overlay steps a setting on space (`crates/tui_pane/src/runner/keys.rs` ~148); an open overlay keeps its own keys, and pause applies when the grid has the keyboard, as the freeze does today. The attract screen's steering keys take no space (README ~628 says the grid's letters stay free there; keep that true for space and say so). The keymap overlay's capture, which binds the next key pressed, still captures space as a key.
-4. **Words.** Every user-facing mention of freeze or `f` for this action becomes pause and `space`: README (~628 and any other), the `?` overlay description, doc comments that name `f` (`crates/cargo-tile/src/app.rs` ~331, `terminal.rs` ~188 and ~262).
-5. **Tests, red first:**
-   - `space_pauses_and_unpauses_the_display`: a running app, space, and the drawn status line reads `paused`; space again, and the note is gone and scans apply again. It reads the rendered status line back.
-   - `the_default_keymap_binds_pause_to_space`: the generated default keymap file binds `global.pause = space` and nothing binds `f`.
-6. **Pause holds the motion clock, not only the updates.** Skipping scans does not hold travel: `TileGrid::progress` (`crates/tui_pane/src/tiles/grid/tile_grid.rs:2520`; `MotionClock` is in `grid/motion.rs:27`) reads `transition.started.elapsed()` on whatever frame draws, and Phase 33's once-a-second status-line frame draws while paused, so a paused grid would advance its motion and fades on every status tick. Rule: this phase owns freezing the clock that cells read. While paused, every frame draws each cell's geometry and its text inks exactly as on the frame pause began; the status line alone moves. On unpause, motion and fades continue from where they stood, as if the paused span had not passed, with no jump. The grid takes a paused state through an additive `tui_pane` method (for example `TileGrid::pause(at)` / `resume(at)`, or a clock the grid reads that pause stops) that shifts elapsed motion by the paused span; the row fades cargo-tile computes read the same held clock. Phase 36 replaces the step queue with `step(displayed, target, dt)`, and carries this as a paused `dt` of zero. Test, red first, with injected time: `a_paused_grid_draws_the_same_cells_across_status_ticks`: a grid mid-motion with a fading row, paused, then several status ticks; every frame's cell area matches the paused frame cell for cell; after unpause the next frame continues from the paused progress, not from wall time.
+- Item 9: `a_moving_pane_clipped_below_the_buffer_stops_at_its_last_row` (`pane/frame.rs`) reads the drawn cells at the buffer's last row.
+- Item 35: the settings overlay draw (`app_settings/draw.rs`, `overlays/settings.rs`) picks a readable foreground for the selected row. Label and value meet 4.5:1 in every shipped theme. The shared check sits in `support/contrast.rs` under the `contrast-test` feature; `tui_pane` and the three apps' `settings_scroll_tests.rs` read the drawn cells.
+- Item 38: every settings value keeps one blank column before the right border, and the column stays clickable. Values wrap at a word or path-separator break; only one word longer than the row is cut with `…`. `settings_popup_fits_its_widest_row` (`cargo-tile/src/settings.rs`) counts the blank column.
+- Gates: Mac lint clean; Mac tui_pane 1,355, cargo-tile 1,343, cargo-handler 1,167, cargo-port 1,559 pass. Dark-mode shot of the overlay. Review: 3 rounds, 10 findings closed.
 
-**Files:**
-- `crates/cargo-tile/src/grid_view.rs` — the view clock that `Opening`, `Expanding` and `Collapsing` keep.
-- `crates/cargo-tile/src/app_global_action.rs`, `crates/cargo-tile/src/keymap.rs`, `crates/cargo-tile/src/constants.rs`, `crates/cargo-tile/src/terminal.rs`, `crates/cargo-tile/src/app.rs` — items 1 to 3 and the renames.
-- `crates/cargo-tile/src/render.rs` — the note line, item 5's render test, and item 6's row fades on the held clock with its test.
-- `crates/cargo-tile/src/render/frame_preparation.rs` — preparation inputs, retained tables, allocation decisions and row measurements.
-- `crates/cargo-tile/src/render/command_cache.rs` — retained command widths, wrapped text, row cells and table layouts.
-- `crates/cargo-tile/src/render/cell_paint.rs` — paint inputs, destination validation, command visibility and paint replay.
-- `crates/tui_pane/src/tiles/grid/tile_grid.rs`, `crates/tui_pane/src/tiles/grid/motion.rs`, `crates/tui_pane/src/tiles/grid/tests/motion.rs`, `crates/tui_pane/src/tiles/mod.rs`, `crates/tui_pane/src/lib.rs` — item 6's paused motion clock and any additive export it needs, and its grid test.
-- `crates/tui_pane/src/attract/updates.rs`, `crates/tui_pane/src/attract/controller.rs`, `crates/tui_pane/src/favorites_overlay/globals.rs` — item 1's `Updates::Paused` rename, its consumers and their three tests.
-- `crates/cargo-tile/README.md`, `crates/cargo-tile/CHANGELOG.md` — item 4, and one Changed line; `crates/tui_pane/CHANGELOG.md` — one Added line for item 6 and one Changed line for the `Updates::Paused` rename.
-
-**Workers:** 1 writer: a rebinding, a rename and the pause clock it needs, one path from the key to the held frame. The `Updates` rename crosses `tui_pane` and cargo-tile and stays with this one writer.
-- `impl` — every file above, items 1 to 6, the whole rename and the pause path.
-
-**Constraints from prior phases:** space already parses as a key (`key_bind.rs` ~349). This phase makes two `tui_pane` changes: item 6's paused motion clock, which is additive, and item 1's rename of the public `Updates::Frozen` variant to `Updates::Paused`, which changes public API and gets its Changed line. No other existing `tui_pane` public signature changes. A `tui_pane` change also runs `verify.sh test` for `cargo-handler` and `cargo-port`. Phase 35 later reworks `render.rs`'s table walk; this phase touches only the status note there. Phase 34 starts after Phase 33; one writer owns shared source and documentation at a time. Phase 33 adds a framework-owned `CPU:` segment and a once-a-second status-line tick; pause holds the cells, and the status line keeps its uptime and CPU current while paused. No new `#[allow]` or `#[expect]`; no test takes a second. Rename the app-local `Updates::Frozen` variant when `attract` is disabled. Include pause state and held cell time in preparation. Keep status time live. Reader PTY tests and settled helpers do not prove animated leave, pause or retarget behavior. Use injected-time buffer fixtures and production-motion captures for those acceptance gates. Since "Reads/s stays beside CPU at 100 columns or more", the uptime group (uptime, CPU, `Reads/s`) outranks every status note, so on a narrow row the `paused` note drops before `Reads/s`. Draw `space_pauses_and_unpauses_the_display` at 80 columns or more, where a flag note such as cargo-handler's `attract` still shows.
-
-**Forward edits from Phase 46 (director, 2026-11-07):**
-- Pause holds the `GridView` motion clock (`tui_pane::FullScreenView::advance`, `crates/tui_pane/src/tiles/full_screen.rs`) as well as the grid clock. Extend the injected-time test across `Opening`, `Expanding`, `Expanded` and `Collapsing`, with status-only frames and resume without a jump.
-- `Opening` stays private to key routing and preparation. Keep `quit_after_enter_before_the_first_paint_quits_the_app` green; add no screen label.
-
-**Forward edits from Phase 49 (director, 2026-11-07):**
-- `drain_scans` (`terminal.rs:297`) stores the disk value. Extend `a_paused_grid_draws_the_same_cells_across_status_ticks` with available and unavailable disk scans during status ticks, in Grid and Expanded views. Assert an unchanged foot while paused, and the next accepted disk value after resume.
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` and `... lint tui_pane` once, then `... test tui_pane`, `... test cargo-tile`, `... test cargo-handler` and `... test cargo-port` green; the three tests red before the change and green after; no test takes a second or more.
-- No `Updates::Frozen` remains (`rg 'Updates::Frozen' crates` is empty); the three renamed `tui_pane` tests of item 1 pass with their assertions unchanged.
-- Unit director's live capture: a running tile, space, and the status bar reads `paused` while the cells hold still with a build running; space again, the note leaves and the cells update.
-- Change-review line (production doc's change review file): space pauses and unpauses the display, and the status bar says `paused`.
-
-### Phase 35o — Phase 35's overlay items: a clipped-pane test that reads cells, a readable selected row, and settings values that wrap  · status: todo
-
-**Depends on:** Phase 72
-
-**Packaging (director, 2026-11-19, on the showrunner's parallel order):** Phase 35's `overlay` writer (items 9, 35 and 38) touches no Phase 34 file, so it runs as its own phase beside Phase 34. Phase 35's item text, files (`crates/tui_pane/src/pane/frame.rs`, `pane/state.rs`, `app_settings/draw.rs`, a `tui_pane` palette file its diagnosis names) and acceptance gate for those items apply here. This phase writes its own `crates/tui_pane/CHANGELOG.md` Fixed lines for items 35 and 38. It builds on Phase 72's `app_settings/draw.rs`.
+**Files:** `crates/tui_pane/src/{pane/frame.rs, app_settings/{draw,constants}.rs, overlays/settings.rs, support/contrast.rs, wrap.rs}`, `crates/tui_pane/CHANGELOG.md`; `settings_scroll_tests.rs` in cargo-tile, cargo-handler and cargo-port; `Cargo.toml` in cargo-tile and cargo-handler; `crates/cargo-tile/src/settings.rs`.
 
 ### Phase 35 — Phase 20's follow-ups: one table walk, plain caches, and whole marks  · status: dropped (user, 2026-11-19: not wanted; Phase 35o keeps items 9, 35 and 38)
 
@@ -3802,6 +3735,11 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Forward edits from Phase 46 (director, 2026-11-07):**
 - Measure the suite that holds Phase 46's tests.
 
+**Forward edits from Phase 72 (showrunner, 2026-11-19):**
+- Five older `cargo-tile` tests take 1 s or more on the Mac at start load 6.56 on 12 CPUs. That load is normal, so each is a defect. Shorten each under 1 s on the Mac and on natedev. Phase 72 changed only one draw call that they reach; the Phase 71 run of the same suite at load 3.90 had none at 1 s or more.
+- The tests and their Mac times: `render.rs` `an_expanded_summary_updates_its_disk_footer_after_scroll_and_resize` (1.337 s), `an_expanded_summary_keeps_its_header_above_scrolled_rows` (1.083 s), `every_command_cell_shows_a_process` (1.056 s), `an_expanded_summary_keeps_compact_rows_and_an_exact_end_range` (1.021 s); `progress/capture.rs` `taking_two_resolved_roots_shares_one_removal_allowance` (1.154 s).
+- Files: add `crates/cargo-tile/src/render.rs` (tests module) and `crates/cargo-tile/src/progress/capture.rs`.
+
 **Forward edits from Phase 49 (director, 2026-11-07):**
 - Run after every remaining phase that changes tests, 39, 40 and 43f included, so the measurement covers the suite that ships. Phase 43e replaces parked Phase 43c.
 - The priority-100 override holds two readers: source-switch and `reader_scenario_sigkill_ends_its_waiting_writer_group` (Phase 49 slot, `.config/nextest.toml:22`). Without the slot the SIGKILL test took 0.950 s and 1.069 s on natedev. The slot costs about 1.5 s of Mac suite time.
@@ -3813,6 +3751,11 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 **Forward edits from Phase 68 (director, 2026-11-17):**
 - On macOS a `package(cargo-berth)` override sets `threads-required = 3` and no priority. The new priority-80 override sets `priority` alone, so both hold; the Mac before runs measure the suite with it.
 
+**Forward edits from Phase 70 (showrunner, 2026-11-19):**
+- Six new `cargo-berth` `tests/hooks.rs` tests take 1 s or more on the Mac at start load 6.58 on 12 CPUs. That load is normal, so each is a defect. Shorten each one to under 1 s on the Mac at normal load. This is a test rewrite in addition to the ordering work.
+- The six tests and their Mac times: `a_plan_shrink_after_checkpoint_never_makes_the_next_phases_drift_ambiguous` (2.427 s), `a_bash_write_after_checkpoint_creates_an_exact_path_hold` (2.068 s), `a_bash_write_after_checkpoint_creates_one_hold_per_free_path` (2.013 s), `a_plan_shrink_hold_releases_after_squash_integration` (1.761 s), `an_active_phase_edit_widens_the_phase_and_releases_the_checkpoint_gap_hold` (1.440 s), `the_next_phase_check_acquires_a_path_from_a_checkpoint_gap_hold` (1.064 s). On natedev they take 0.27-0.45 s.
+- Files: add `crates/cargo-berth/tests/hooks.rs` and the `crates/cargo-berth/tests/support/` files that set up these tests.
+
 **Acceptance gate:**
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` once, after the config edit: green.
 - When `crates/cargo-port/src/watcher/runtime.rs` changes: `bash ~/.claude/scripts/direct/verify.sh lint cargo-port` once, then `... test cargo-port` green, and `spawn_watcher_thread_keeps_watcher_guard_alive_until_shutdown` passes under a second on a quiet natedev.
@@ -3821,35 +3764,15 @@ Also added: `replaying_the_same_events_and_dt_produces_identical_frames`, `paint
 - The unit director's notice reports, per machine, the median suite wall time before and after and the first thirty tests in start order.
 - The summary gives each test named in Spec items 5 and 6 its quiet natedev time and load, and for any at a second or more, its measured cause, its floor and the fix proposal sent to the showrunner.
 
-### Phase 61 — Two lifecycle tests leave no child process or pipe  · status: todo
+### Phase 61 — Two lifecycle tests leave no child process or pipe  · status: done
 
-**Depends on:** Phase 37 (order only; the showrunner queued it after the queued phases, 2026-11-12).
+#### As-built
 
-On main 5142c3ca4 (natedev), nextest marks two `cargo-tile::cli_lifecycle` tests as LEAK. A LEAK test leaves a child process or an open pipe after it ends. Phase 53 fixed one leak in the second test on 2026-11-05; the leak is back. Log: `/tmp/claude/unit/d7820739-0dcf-4c55-a275-39f03fa1baf4/detached_runs/20261112T015550-3381833-1e2c.log`, lines 54-55.
+- No code change. Neither `all_accounts_status_refuses_non_root_with_sudo_instruction` nor `install_prints_a_completed_toolchain_before_a_later_lock_finishes` (`crates/cargo-tile/tests/cli_lifecycle.rs`) shows LEAK now: cargo-tile 1286/1286 on natedev and 1302/1302 on the Mac with zero LEAK, and 20 Mac repeats of each test with zero LEAK (2026-11-18).
+- The tests already clean up: the refusal test's `Command::output()` waits for its child and reads both streams, and the install test reaps its child and joins its reader before it returns.
+- The probable cause of the old reports is a nextest race on macOS: sibling tests can inherit each other's capture pipes. The Mac ran nextest 0.9.143; 0.9.145 fixes the race. The production moves natedev, the Mac and the AWS pin to nextest 0.9.152 together (showrunner, 2026-11-18).
 
-#### Work Order
-
-**Goal:** nextest reports PASS, not LEAK, for both tests.
-
-**Spec:**
-
-1. Find each child process and pipe that these tests leave open after they return:
-   - `tests::all_accounts_status_refuses_non_root_with_sudo_instruction` (0.254 s)
-   - `tests::install_prints_a_completed_toolchain_before_a_later_lock_finishes` (0.266 s)
-2. Make each test wait for or stop every child it starts, on a pass and on a failed assertion. A process cleans up like a tempdir: a guard ends it when the scope ends.
-3. Close each pipe end the test holds before the test returns.
-4. Keep every assertion as it is. Do not raise the nextest leak timeout.
-
-**Files:**
-- `crates/cargo-tile/tests/cli_lifecycle.rs`
-
-**Workers:** 1 writer, a Codex worker through `assign.sh`.
-
-**Constraints from prior phases:** Phase 58b: a test at 1 s or more is a defect. An intermittent leak is a defect.
-
-**Acceptance gate:**
-- `verify.sh lint cargo-tile`, then `verify.sh test cargo-tile` green on natedev. Nextest reports neither test as LEAK, and each runs under 1 s.
-- `verify.sh test cargo-tile --mac` reports neither test as LEAK.
+**Ruled out:** a reader join on panic and a wait before reading the refusal output; the review showed neither closes a real leak path, so the candidate was reverted.
 
 ### Phase 62 — Each app shows its own disk reads per second after its CPU  · status: done
 

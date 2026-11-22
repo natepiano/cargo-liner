@@ -16,7 +16,6 @@ use crate::PaneFocusState;
 use crate::Renderable;
 use crate::SettingsRows;
 use crate::ToastsRenderCtx;
-use crate::draw_settings;
 
 /// Draw the framework's toasts inside `area`.
 pub fn render_toasts<Ctx: AppContext>(
@@ -45,21 +44,19 @@ pub fn draw_framework_overlay<A: KeymapUiContext + 'static, S: Copy>(
     keymap: &Keymap<A>,
     settings_rows: impl FnOnce(&A) -> SettingsRows<S>,
 ) {
-    match app.framework().overlay() {
+    let area = match app.framework().overlay() {
         Some(FrameworkOverlayId::Settings) => {
             let resolved_settings_rows = settings_rows(app);
             let mode = app.framework().color_mode;
-            draw_settings(
-                frame,
-                &mut app.framework_mut().settings_pane,
-                &resolved_settings_rows,
-                mode,
-            );
+            app.framework_mut()
+                .settings_pane
+                .draw_popup(frame, &resolved_settings_rows, mode)
         },
-        Some(FrameworkOverlayId::Keymap) => keymap_ui::draw_keymap_overlay(frame, app, keymap),
+        Some(FrameworkOverlayId::Keymap) => keymap_ui::draw_keymap_popup(frame, app, keymap),
         Some(FrameworkOverlayId::GlobalShortcuts) => {
-            global_shortcuts::draw_global_shortcuts_overlay(frame, app, keymap);
+            global_shortcuts::draw_global_shortcuts_popup(frame, app, keymap)
         },
-        None => (),
-    }
+        None => Rect::default(),
+    };
+    app.framework_mut().set_framework_overlay_bounds(area);
 }

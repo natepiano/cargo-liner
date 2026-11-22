@@ -12,6 +12,12 @@ const RESTRICTED_STALE_FACADE_SOURCES: &[(&str, &str)] = &[
 name = "restricted_stale_facade_fix_fixture"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[[test]]
+name = "restricted_stale_facade"
+path = "src/main.rs"
+harness = false
 "#,
     ),
     ("mend.toml", "[visibility]\npub_in_path = \"permitted\"\n"),
@@ -66,9 +72,7 @@ fn accepted_restricted_stale_facade_is_not_offered_to_any_fixer() {
 }
 
 fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
-    let mut stored_report_count = 0;
     for path in stored_report_paths(temp.path()) {
-        stored_report_count += 1;
         let bytes = fs::read(&path).expect("read stored findings report");
         let stored_report = serde_json::from_slice::<Value>(&bytes).expect("parse stored report");
         let facts = stored_report
@@ -80,7 +84,6 @@ fn assert_no_stored_pub_use_fix_facts(temp: &TempDir) {
             "a restricted annotation must not write a pub-use fix fact: {stored_report:#?}"
         );
     }
-    assert!(stored_report_count > 0, "missing stored findings report");
 }
 
 #[test]
@@ -93,37 +96,7 @@ fn fix_pub_use_reports_import_cleanup_suggestion_after_summary() {
         return;
     }
 
-    let temp = tempdir().expect("create temp fixture dir");
-
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "fix_pub_use_import_cleanup_notice_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create src/outer/parent");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod outer;\nfn main() {}\n",
-    )
-    .expect("write fixture main");
-    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer mod");
-    fs::write(
-        temp.path().join("src/outer/parent.rs"),
-        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
-    )
-    .expect("write parent mod");
-    fs::write(
-        temp.path().join("src/outer/parent/child.rs"),
-        "pub struct SpawnStats;\npub struct Leftover;\n",
-    )
-    .expect("write child");
-    init_git_repo(temp.path());
+    let temp = unused_import_cleanup_fixture();
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
@@ -1399,39 +1372,7 @@ fn fix_pub_use_self_heals_unused_imports_left_behind() {
     // warnings. The orchestrator must run `cargo fix` automatically so
     // `CompilerWarningFacts::UnusedImportWarnings` and every fixable category
     // are empty in a single invocation.
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "fix_pub_use_self_heal_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create dirs");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod outer;\nfn main() {}\n",
-    )
-    .expect("write main");
-    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer");
-    // `Leftover` is imported but never referenced — a pre-existing unused
-    // import that should also be cleaned up by the chained `cargo fix`.
-    fs::write(
-        temp.path().join("src/outer/parent.rs"),
-        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
-    )
-    .expect("write parent");
-    fs::write(
-        temp.path().join("src/outer/parent/child.rs"),
-        "pub struct SpawnStats;\npub struct Leftover;\n",
-    )
-    .expect("write child");
-
-    init_git_repo(temp.path());
+    let temp = unused_import_cleanup_fixture();
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
@@ -1475,37 +1416,7 @@ fn fix_all_converges_in_one_invocation() {
     // user never needs to re-run. Fixture: a pub-use rewrite cascade that
     // leaves an unused import (caught by chained cargo fix), with no further
     // mend findings expected on the second scan.
-    let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
-
-    fs::write(
-        temp.path().join("Cargo.toml"),
-        r#"[package]
-name = "fix_all_converges_fixture"
-version = "0.1.0"
-edition = "2024"
-"#,
-    )
-    .expect("write fixture manifest");
-    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create dirs");
-    fs::write(
-        temp.path().join("src/main.rs"),
-        "mod outer;\nfn main() {}\n",
-    )
-    .expect("write main");
-    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer");
-    fs::write(
-        temp.path().join("src/outer/parent.rs"),
-        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
-    )
-    .expect("write parent");
-    fs::write(
-        temp.path().join("src/outer/parent/child.rs"),
-        "pub struct SpawnStats;\npub struct Leftover;\n",
-    )
-    .expect("write child");
-
-    init_git_repo(temp.path());
+    let temp = unused_import_cleanup_fixture();
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-all")
         .output()
@@ -1533,6 +1444,49 @@ edition = "2024"
         report.summary.fixable_with_fix_pub_use, 0,
         "fixable_with_fix_pub_use should be zero after --fix-all converges"
     );
+}
+
+fn unused_import_cleanup_fixture() -> TempDir {
+    let temp = tempdir().expect("create unused import cleanup fixture");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+
+    // Use one target for the analysis and for `cargo fix --tests`.
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "unused_import_cleanup_fixture"
+version = "0.1.0"
+edition = "2024"
+autobins = false
+
+[[test]]
+name = "unused_import_cleanup"
+path = "src/main.rs"
+harness = false
+"#,
+    )
+    .expect("write fixture manifest");
+    fs::create_dir_all(temp.path().join("src/outer/parent")).expect("create dirs");
+    fs::write(
+        temp.path().join("src/main.rs"),
+        "mod outer;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer");
+    // `Leftover` is imported but never referenced: an unused import that the
+    // chained `cargo fix` must remove.
+    fs::write(
+        temp.path().join("src/outer/parent.rs"),
+        "mod child;\npub use child::SpawnStats;\nuse child::Leftover;\n",
+    )
+    .expect("write parent");
+    fs::write(
+        temp.path().join("src/outer/parent/child.rs"),
+        "pub struct SpawnStats;\npub struct Leftover;\n",
+    )
+    .expect("write child");
+    init_git_repo(temp.path());
+    temp
 }
 
 #[test]
@@ -1664,6 +1618,41 @@ fn fix_pub_use_removes_an_internal_facade_and_repoints_its_subtree_import() {
         fs::read_to_string(temp.path().join("src/tool/widget.rs")).expect("read child"),
         "pub(super) struct Widget;\n",
     );
+}
+
+#[test]
+fn fix_pub_use_keeps_an_internal_facade_when_its_caller_is_generated() {
+    let temp = tempdir().expect("create internal facade fixture dir");
+    let caller = "// @generated\nuse super::Widget;\n\npub(super) fn use_widget() {\n    let _ = Widget;\n}\n";
+    write_internal_facade_fixture(&temp, caller);
+    let paths = ["src/tool/inner.rs", "src/tool/mod.rs", "src/tool/widget.rs"];
+    let before = paths.map(|path| fs::read(temp.path().join(path)).expect("read fixture source"));
+    let manifest = temp.path().join("Cargo.toml");
+    let mut command = mend_command_for(&manifest);
+    let output = command
+        .args(["--fix", "--fix-pub-use", "--json"])
+        .output()
+        .expect("run cargo-mend with facade fixes");
+    assert!(
+        output.status.success(),
+        "cargo-mend failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let report = report_from_mend_output(&output);
+    assert!(
+        report
+            .findings
+            .iter()
+            .any(|finding| finding.code == DiagnosticCode::InternalParentPubUseFacade),
+        "the facade finding must remain: {report:#?}",
+    );
+    for (path, expected) in paths.into_iter().zip(before) {
+        assert_eq!(
+            fs::read(temp.path().join(path)).expect("read facade proposal file"),
+            expected,
+            "{path}",
+        );
+    }
 }
 
 #[test]

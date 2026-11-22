@@ -33,6 +33,12 @@ pub(super) struct ScopeInfo {
     pub(super) existing_reexport_names: BTreeMap<String, BTreeSet<ConditionalAttributes>>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum EnclosingModule {
+    Found(usize),
+    Unscoped,
+}
+
 impl ScopeInfo {
     pub(super) fn has_private_import_conflict(&self, name: &str, path: &str) -> bool {
         self.private_imports
@@ -201,13 +207,15 @@ pub(super) fn collect_scopes(
     Ok(())
 }
 
-pub(super) fn find_innermost_scope(scopes: &[ScopeInfo], byte_offset: usize) -> Option<usize> {
+pub(super) fn find_innermost_scope(scopes: &[ScopeInfo], byte_offset: usize) -> EnclosingModule {
     scopes
         .iter()
         .enumerate()
         .filter(|(_, scope)| scope.span_start <= byte_offset && byte_offset < scope.span_end)
         .max_by_key(|(_, scope)| (scope.span_start, Reverse(scope.span_end)))
-        .map(|(scope_id, _)| scope_id)
+        .map_or(EnclosingModule::Unscoped, |(id, _)| {
+            EnclosingModule::Found(id)
+        })
 }
 
 pub(super) fn qualify_through_parent_scope(

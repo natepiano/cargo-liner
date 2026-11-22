@@ -295,6 +295,10 @@ and `name` is the value that the tile draws.
 - `shells` lists each shell row that the tile shows under the session, in tile
   order, with the row name and the shell's `started_at`. A session with no
   shell row has an empty list.
+- A session also has `pid` and `process_start` for its Claude process when
+  the census can read both, and neither when it cannot. `process_start` has
+  the format of `~/.claude/scripts/lib/process_start.py`: the Linux
+  `/proc/<pid>/stat` start ticks, or the macOS `ps -o lstart=` text in UTC.
 - `pane` is `open`, `stopped`, `closed` or `unknown`. It is separate from
   `status`.
 - Each run `state` is `running`, `finished_queued` or `missing`.

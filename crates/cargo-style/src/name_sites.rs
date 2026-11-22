@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use serde::Deserialize;
 use serde::Serialize;
 
 use crate::declarations::DeclaredFile;
@@ -14,14 +15,14 @@ use crate::unicode_tables::LINE_BOUNDARIES;
 use crate::unicode_tables::SPACE;
 
 /// The item has no readable body or its source has unknown tokens.
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum UnreadableBody {
     Unreadable,
 }
 
 /// A body's name offsets, or the Python unreadable-body result.
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(untagged)]
 pub(crate) enum NameSiteReading {
     Unreadable(UnreadableBody),
@@ -29,13 +30,14 @@ pub(crate) enum NameSiteReading {
 }
 
 /// Shared normalized tokens and each declaration's name sites.
+#[derive(Deserialize, Serialize)]
 pub(crate) struct BodyFacts {
     pub(crate) tokens: BodyTokens,
     pub(crate) sites:  Vec<NameSiteReading>,
 }
 
 /// Reuse original offsets, retain changed tokens, or report an unreadable body.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 pub(crate) enum BodyTokens {
     State(BodyTokenState),
@@ -43,7 +45,7 @@ pub(crate) enum BodyTokens {
 }
 
 /// The normalized body needs no new token list, or cannot supply offsets.
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum BodyTokenState {
     Original,
@@ -141,9 +143,9 @@ fn normalized_tokens<'a>(
 }
 
 /// Read every declared item's body, in declaration order.
-pub(crate) fn read_facts(text: &[char], file: &DeclaredFile) -> BodyFacts {
+pub(crate) fn read_facts(text: &[char], file: &DeclaredFile, tokens: &[Token]) -> BodyFacts {
     let normalized = joined_lines(source_lines(text));
-    let tokens = normalized_tokens(text, &normalized, &file.tokens);
+    let tokens = normalized_tokens(text, &normalized, tokens);
     if tokens.iter().any(|token| token.kind == TokenKind::Unknown) {
         return BodyFacts {
             tokens: BodyTokens::State(BodyTokenState::Unreadable),
@@ -173,7 +175,9 @@ pub(crate) fn read_facts(text: &[char], file: &DeclaredFile) -> BodyFacts {
 
 /// Read only name sites for the existing unit tests.
 #[cfg(test)]
-fn read(text: &[char], file: &DeclaredFile) -> Vec<NameSiteReading> { read_facts(text, file).sites }
+fn read(text: &[char], file: &DeclaredFile) -> Vec<NameSiteReading> {
+    read_facts(text, file, &tokenizer::tokenize(text)).sites
+}
 
 #[cfg(test)]
 mod tests {

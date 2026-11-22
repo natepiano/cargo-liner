@@ -30,6 +30,7 @@ use crate::reporting::MendFailure;
 use crate::reporting::Report;
 use crate::reporting::SubtreeReexportFixFact;
 use crate::rust_syntax::ParsedSources;
+use crate::rust_syntax::SourceOwnershipClassifier;
 
 /// A chain proposal keeps its edit count separate from its composed file writes.
 enum ChainBatch {
@@ -285,7 +286,7 @@ impl MendRunner<'_> {
             if report.findings.is_empty() {
                 break;
             }
-            let next = self.chain_pass(&report, &sources)?;
+            let next = self.chain_pass(&report, &sources, &planned.source_ownership)?;
             if next.presence() == FixSetPresence::Empty {
                 break;
             }
@@ -318,18 +319,29 @@ impl MendRunner<'_> {
         self.protect_chain(&files, counts, &planned.sources, steps)
     }
 
-    fn chain_pass(&self, report: &Report, sources: &ParsedSources) -> Result<ValidatedFixSet> {
-        let subtree = subtree_reexport::scan_selection(self.selection, report, sources, |scan| {
-            Self::combined_import_plan(
-                FixScans {
-                    subtree_reexports: Some(scan),
-                    ..FixScans::default()
-                },
-                sources,
-                &self.selection.package_roots,
-            )
-            .map(|plan| plan.declined_files)
-        })?;
+    fn chain_pass(
+        &self,
+        report: &Report,
+        sources: &ParsedSources,
+        source_ownership: &SourceOwnershipClassifier,
+    ) -> Result<ValidatedFixSet> {
+        let subtree = subtree_reexport::scan_authored_selection(
+            self.selection,
+            report,
+            sources,
+            source_ownership,
+            |scan| {
+                Self::combined_import_plan(
+                    FixScans {
+                        subtree_reexports: Some(scan),
+                        ..FixScans::default()
+                    },
+                    sources,
+                    &self.selection.package_roots,
+                )
+                .map(|plan| plan.declined_files)
+            },
+        )?;
         let next = Self::combined_import_plan(
             FixScans {
                 subtree_reexports: Some(&subtree),

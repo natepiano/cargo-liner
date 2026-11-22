@@ -1,3 +1,4 @@
+mod block_bindings;
 mod offsets;
 mod process;
 mod scan;

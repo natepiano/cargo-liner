@@ -512,7 +512,7 @@ impl SessionMappingChange {
     fn for_operation(operation: &JournalOperation, run: CoordinationRunId) -> Self {
         match operation {
             JournalOperation::Claim {
-                source: ClaimSource::Enrolled | ClaimSource::Cover { .. },
+                source: ClaimSource::Enrolled | ClaimSource::Cover { .. } | ClaimSource::PlanShrink,
                 ..
             } => Self::Unchanged,
             JournalOperation::Claim { reservation_id, .. } => {

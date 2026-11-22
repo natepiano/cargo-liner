@@ -1,5 +1,6 @@
 //! The locked gate decision: who is entering, what holds them, and what that permits.
 
+use std::convert::Infallible;
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -53,6 +54,7 @@ use crate::ledger::LedgerError;
 use crate::ledger::LedgerReconciliationOutcome;
 use crate::ledger::LedgerTransactionError;
 use crate::ledger::ReconciliationValidation;
+use crate::ledger::ReplayedLedgerState;
 use crate::ledger::SkippedDeferral;
 use crate::ledger::SkippedIntegrationHoldSet;
 use crate::ledger::SkippedOrderingEdge;
@@ -63,7 +65,6 @@ use crate::reconcile::GateReconciliationAction;
 use crate::reconcile::GateReconciliationError;
 use crate::reconcile::GateReconciliationPurpose;
 use crate::reconcile::GenerationBoundReconciliation;
-use crate::reconcile::ReconciliationReport;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::RetainedReservationSet;
 
@@ -219,15 +220,6 @@ pub(crate) fn evaluate_integration(
         request,
         identity_validation: Box::new(identity_validation),
     };
-    evaluate_locked(invocation_directory, &proposed_target_move, &gate_purpose)
-}
-
-pub(super) fn evaluate_locked(
-    invocation_directory: &Path,
-    update: &ProposedTargetMove,
-    purpose: &GatePurpose,
-) -> Result<Enrollment<GateResult>, GateError> {
-    let worktree_context = WorktreeContext::discover(invocation_directory)?;
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -238,72 +230,78 @@ pub(super) fn evaluate_locked(
             });
         },
     };
+    let repository = RepositorySnapshot::new(worktree_context);
+    let decision = evaluate_updates(&repository, &berth_config, &gate_purpose, |_, _| {
+        Ok::<_, GatePreparationRejection<Infallible>>(proposed_target_move.clone())
+    })?;
+    match decision {
+        Ok(result) => Ok(Enrollment::Enrolled(result)),
+        Err(impossible) => match impossible {},
+    }
+}
+
+pub(super) enum GatePreparationRejection<StandAside> {
+    NoGatedUpdate(StandAside),
+    Failed(GateError),
+}
+
+/// Select and decide against the same replay before the ledger validates it under lock.
+pub(super) fn evaluate_updates<StandAside>(
+    repository: &RepositorySnapshot,
+    berth_config: &BerthConfig,
+    purpose: &GatePurpose,
+    select: impl Fn(
+        ReplayedLedgerState<'_>,
+        &RepositorySnapshot,
+    ) -> Result<ProposedTargetMove, GatePreparationRejection<StandAside>>,
+) -> Result<Result<GateResult, StandAside>, GateError> {
+    let worktree_context = repository.context();
     let identity_validation = purpose.identity_validation()?;
     let repository_trunk = berth_config
         .repository_trunk()
         .map_err(|reason| GateError::Ledger(LedgerError::InvalidRepositoryTrunk(reason)))?;
-    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+    let ledger = match purpose {
+        GatePurpose::Hook { .. } => Ledger::open_for_reference_transaction(worktree_context),
+        GatePurpose::Integrate { .. } => Ledger::open_from_discovered_worktree(worktree_context),
+    }?;
     let ledger_repository = ledger.repository_identity()?;
     let resolved_edit_authorization = identity_validation.resolved_edit_authorization();
     let journal_mutation_actor = resolved_edit_authorization
         .journal_mutation_actor_for(purpose.coordination_run_id(&identity_validation));
-    let repository = crate::git::RepositorySnapshot::new(worktree_context.clone());
-    let integration = hook_move_integration(&repository, update, &repository_trunk, purpose)
-        .map_err(GateError::Git)?;
+    let context = GateDecisionContext {
+        purpose,
+        repository_trunk: &repository_trunk,
+        identity_validation: &identity_validation,
+    };
     retry_rewrite_reconciliation(|| {
         let outcome = ledger
             .transact_reconciliation_then(
                 journal_mutation_actor.worktree_id,
                 journal_mutation_actor.coordination_run_id,
                 |state| {
-                    let observation =
-                        reconcile::GenerationBoundReconciliation::new(state, &repository);
-                    let state = observation.state();
-                    let prepared = match prepare_gate_reconciliation(
+                    let observation = GenerationBoundReconciliation::new(state, repository);
+                    let update = match select(state, observation.repository()) {
+                        Ok(update) => update,
+                        Err(rejection) => return ReconciliationValidation::Reject(rejection),
+                    };
+                    let result = prepare_selected_update(
                         &observation,
                         &ledger,
                         ledger_repository,
-                        &berth_config,
-                        update,
-                        GateReconciliationPurpose::PreparedDecision,
-                    ) {
-                        Ok(prepared) => prepared,
-                        Err(error) => return ReconciliationValidation::Reject(error),
-                    };
-                    if let Err(rejection) =
-                        validate_gate_identity(prepared.reservations(), &identity_validation)
-                    {
-                        return ReconciliationValidation::Reject(rejection);
-                    }
-                    let newly_reachable =
-                        match newly_reachable_commits(worktree_context.repository_root(), update) {
-                            Ok(newly_reachable) => newly_reachable,
-                            Err(error) => {
-                                return ReconciliationValidation::Reject(
-                                    GateTransactionRejection::Git(error),
-                                );
-                            },
-                        };
-                    let entering = entering_for_purpose(
-                        &prepared,
-                        &newly_reachable,
-                        purpose,
-                        &update.target,
-                        &repository_trunk,
+                        berth_config,
+                        &update,
+                        &context,
                     );
-                    let (decision, operations) = match decide(
-                        state.coordination_events(),
-                        prepared.constraints(),
-                        &entering,
-                        purpose,
-                        berth_config.gate_mode,
-                        integration,
-                    ) {
-                        Ok(decision) => decision,
-                        Err(error) => return ReconciliationValidation::Reject(error),
+                    let (prepared, operations, decision) = match result {
+                        Ok(result) => result,
+                        Err(error) => {
+                            return ReconciliationValidation::Reject(
+                                GatePreparationRejection::Failed(error),
+                            );
+                        },
                     };
                     let (operations, cover_actors, action) =
-                        prepared.into_action(operations, decision);
+                        prepared.into_action(operations, (update.target, decision));
                     ReconciliationValidation::Apply {
                         operations,
                         cover_actors,
@@ -311,17 +309,116 @@ pub(super) fn evaluate_locked(
                         action,
                     }
                 },
-                |action: GateReconciliationAction<GateDecision>, _, failures| {
-                    action.commit_repairs(failures)
-                },
+                |action: GateReconciliationAction<(IntegrationTarget, GateDecision)>,
+                 _,
+                 failures| { action.commit_repairs(failures) },
                 |action, state, _| action.finish(state, journal_mutation_actor.worktree_id),
             )
             .map_err(|error| match error {
                 LedgerCommittedActionError::Transaction(error) => GateError::Transaction(error),
                 LedgerCommittedActionError::Action(error) => GateError::Reconciliation(error),
             })?;
-        finish_gate_decision(outcome, &update.target)
+        match outcome {
+            LedgerReconciliationOutcome::Appended {
+                output: (report, (target, decision)),
+                ..
+            } => {
+                report.retention_maintenance.report();
+                Ok(Ok(GateResult {
+                    target,
+                    decision,
+                    alerts: report.alerts,
+                }))
+            },
+            LedgerReconciliationOutcome::Rejected(GatePreparationRejection::NoGatedUpdate(
+                reason,
+            )) => Ok(Err(reason)),
+            LedgerReconciliationOutcome::Rejected(GatePreparationRejection::Failed(error)) => {
+                Err(error)
+            },
+        }
     })
+}
+
+struct GateDecisionContext<'a> {
+    purpose:             &'a GatePurpose,
+    repository_trunk:    &'a IntegrationTarget,
+    identity_validation: &'a CoordinationIdentityValidationContext,
+}
+
+fn prepare_selected_update(
+    observation: &GenerationBoundReconciliation<'_>,
+    ledger: &Ledger,
+    ledger_repository: RepoInstanceId,
+    berth_config: &BerthConfig,
+    update: &ProposedTargetMove,
+    context: &GateDecisionContext<'_>,
+) -> Result<(GateReconciliation, Vec<JournalOperation>, GateDecision), GateError> {
+    let repository = observation.repository();
+    let integration = hook_move_integration(
+        repository,
+        update,
+        context.repository_trunk,
+        context.purpose,
+    )
+    .map_err(GateError::Git)?;
+    let prepared = prepare_gate_reconciliation(
+        observation,
+        ledger,
+        ledger_repository,
+        berth_config,
+        update,
+        GateReconciliationPurpose::PreparedDecision,
+    )?;
+    validate_gate_identity(prepared.reservations(), context.identity_validation)?;
+    let entering = if matches!(context.purpose, GatePurpose::Hook { .. })
+        && holds_are_empty(prepared.constraints())
+        && update_history_is_complete(repository, update)
+    {
+        Vec::new()
+    } else {
+        let newly_reachable = newly_reachable_commits(repository.repository_root(), update)
+            .map_err(GateError::Git)?;
+        entering_for_purpose(
+            &prepared,
+            &newly_reachable,
+            context.purpose,
+            &update.target,
+            context.repository_trunk,
+        )
+    };
+    let (decision, operations) = decide(
+        observation.state().coordination_events(),
+        prepared.constraints(),
+        &entering,
+        context.purpose,
+        berth_config.gate_mode,
+        integration,
+    )?;
+    Ok((prepared, operations, decision))
+}
+
+/// An empty hold set in the `IntegrationConstraintProjection` cannot cause an ordering violation.
+fn holds_are_empty(constraints: &IntegrationConstraintProjection) -> bool {
+    constraints.reservations.iter().all(|reservation| {
+        constraints
+            .holds_for(reservation.reservation_id)
+            .next()
+            .is_none()
+    })
+}
+
+fn update_history_is_complete(
+    repository: &RepositorySnapshot,
+    update: &ProposedTargetMove,
+) -> bool {
+    let root = repository.repository_root();
+    match &update.previous {
+        PreviousTargetTip::Existing(previous) => {
+            git::has_complete_history(root, &[previous, &update.proposed])
+        },
+        PreviousTargetTip::Absent => git::has_complete_history(root, &[&update.proposed]),
+    }
 }
 
 /// Prepare gate evidence against the fresh facts belonging to this replay generation.
@@ -348,29 +445,6 @@ pub(super) fn prepare_gate_reconciliation(
         rewrite_preflight,
     )
     .map_err(GateTransactionRejection::Reconciliation)
-}
-
-fn finish_gate_decision(
-    ledger_reconciliation_outcome: LedgerReconciliationOutcome<
-        GateTransactionRejection,
-        (ReconciliationReport, GateDecision),
-    >,
-    target: &IntegrationTarget,
-) -> Result<Enrollment<GateResult>, GateError> {
-    match ledger_reconciliation_outcome {
-        LedgerReconciliationOutcome::Appended {
-            output: (report, decision),
-            ..
-        } => {
-            report.retention_maintenance.report();
-            Ok(Enrollment::Enrolled(GateResult {
-                target: target.clone(),
-                decision,
-                alerts: report.alerts,
-            }))
-        },
-        LedgerReconciliationOutcome::Rejected(rejection) => Err(rejection.into()),
-    }
 }
 
 /// Retry only rejected rewrite validation and report persistent races as contention.

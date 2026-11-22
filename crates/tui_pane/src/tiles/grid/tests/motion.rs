@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn sampled_motion_holds_and_continues_from_the_held_time() -> Result<(), &'static str> {
+    let mut grid = opening_column();
+    let GridMotion::Moving(transition) = &mut grid.motion else {
+        return Err("the grid needs active motion");
+    };
+    let started = Instant::now();
+    transition.started = started;
+    transition.millis = 1_000;
+    let held_at = started + Duration::from_millis(300);
+    grid.sample_motion(held_at);
+    let held = grid.placements(test_area(), redistribute(4));
+    for _ in 0..3 {
+        grid.sample_motion(held_at);
+        grid.tick();
+        assert_eq!(grid.placements(test_area(), redistribute(4)), held);
+    }
+    grid.sample_motion(held_at + Duration::from_millis(300));
+    assert_ne!(grid.placements(test_area(), redistribute(4)), held);
+    assert!(grid.has_pending_motion_for_test());
+    Ok(())
+}
+
+#[test]
 fn idle_visual_motion_bands_and_title_transfers_need_one_body_paint() {
     let mut grid = opening_column();
     let area = test_area();

@@ -63,14 +63,18 @@ mod wrap;
 pub use activity::Icon;
 pub use ansi_text::sanitize_ansi_for_output;
 pub use ansi_text::strip_ansi;
+pub use app_config::ActiveThemeOutcome;
 pub use app_config::AppIdentity;
 pub use app_config::AppearanceConfig;
 pub use app_config::ConfigError;
 pub use app_config::InitialRows;
 pub use app_config::LoadedConfig;
+pub use app_config::RejectedThemeFile;
+pub use app_config::ThemeInstallation;
 pub use app_config::TileFill;
 pub use app_config::TileView;
 pub use app_config::install_theme;
+pub use app_config::install_theme_with_parser;
 pub use app_context::AppContext;
 pub use app_context::NoToastAction;
 pub use app_settings::AppConfig;
@@ -316,6 +320,8 @@ pub use favorites_overlay::FavoritesOverlayPane;
 #[cfg(feature = "backdrop")]
 pub use favorites_overlay::dispatch_favorites_key;
 #[cfg(feature = "backdrop")]
+pub use favorites_overlay::draw_favorites_overlay;
+#[cfg(feature = "backdrop")]
 pub use favorites_overlay::favorites_resize_settled;
 #[cfg(feature = "backdrop")]
 pub use favorites_overlay::open_favorites;
@@ -348,6 +354,7 @@ pub use framework::clear_all_hover;
 pub use framework::dispatch_hit_test;
 pub use framework::focus_next;
 pub use framework::focus_prev;
+pub use framework::reconcile_focus_after_toast_change;
 pub use framework::render_panes;
 pub use framework::wheel_framework_overlay;
 pub use input::dispatch_focused_toasts;

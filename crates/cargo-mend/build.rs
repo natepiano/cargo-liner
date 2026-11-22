@@ -13,16 +13,16 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 fn main() {
-    // Without these `rerun-if-changed` directives from `main`, Cargo treats build.rs as
-    // an opaque dependency-free script and reuses the previous run's env
-    // output. New commits then ship with stale `MEND_GIT_HASH` / `MEND_BUILD_ID`
-    // values — the binary works, but mend's findings cache is
-    // keyed on `MEND_BUILD_ID` and silently reuses stale results.
-    // Resolved relative to the package root, which is `crates/cargo-mend/` in
-    // this workspace — the git directory is two levels up.
+    // Cargo reruns this script when a watched path changes.
+    // Watch Git refs for `MEND_GIT_HASH` and package inputs for `MEND_BUILD_ID`.
+    // The findings cache keys on `MEND_BUILD_ID`, so a new id after each source
+    // edit stops the cache from reusing findings of an older build.
+    // Cargo resolves these paths from the package root.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs/heads");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=Cargo.toml");
 
     if let Some(git_hash) = git_commit_hash() {
         println!("cargo:rustc-env=MEND_GIT_HASH={git_hash}");

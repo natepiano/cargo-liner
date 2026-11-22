@@ -727,3 +727,364 @@ The tree's type column follows role and comes before activity, in `TreeColumn` o
 - DYLD_PRINT_LIBRARIES and DYLD_PRINT_TO_FILE do not reach cargo's child processes. Do not use them to count loads.
 
 **Ruled out:** the full CLI/driver split, which makes hundreds of internal items public for about one load per run; a `cargo-mend-wrapper` binary, at 0 ms of avoidable loads.
+
+### Phase 35 — Worker role labels take the `role.worker` color  · status: done
+
+#### As-built
+
+- `FooterRole::Worker` reads the key `role.worker`, with the same comment, spacing and invalid-value rules as the other role keys. The user sets the color on the Accounts page; devtools writes the key to `~/.claude/config/statusline.conf`.
+- `FooterColors::hierarchy_role` gives `HierarchyRole::Impl`, `Test`, `Review`, `Fix` and `Worker` the `FooterRole::Worker` tint in the tree role column. `Agent` and `Producer` stay plain.
+- A review-fallback session and each dispatch or unroled worker seat also show `worker` and take the same tint.
+- `FooterColors::management_role` tints job text: showrunner, unit director and Astra roles keep their ink; worker job text stays plain.
+- A missing or invalid `role.worker` key leaves every worker label plain.
+
+**Files:**
+- `crates/cargo-handler/src/footer_colors/mod.rs` — `FooterRole::Worker`, the parse arm, `hierarchy_role` and `management_role`.
+- `crates/cargo-handler/src/agent_cell.rs` — `job_tint` and `footer_role` route worker labels to the `role.worker` tint.
+- `docs/cargo-handler/as-built/colors.md` — the `role.worker` key and its scope.
+
+**Gotchas:**
+- `job_style` shares the role tint path. Worker job text must go through `management_role` to stay plain.
+
+**Ruled out:** tinting worker job text with `role.worker`, an unasked look change.
+
+### Phase 36 — mend skips generated files  · status: done
+
+#### As-built
+
+cargo-mend neither reports nor fixes a generated source file, such as the spacetime bindings in hana_catalyst `crates/hana_agora/src/bindings/`.
+
+- Config: a `[generated]` table with `markers` (`Vec<String>`) and `header_lines` (`NonZeroUsize`), in the global config and in a project `mend.toml`. A project key overrides the global key. The defaults are `["@generated", "AUTOMATICALLY GENERATED"]` and 5. `ProjectGeneratedSources::resolve(global)` applies the override. Global config creation and reconciliation share `generated_defaults`.
+- Classification: `SourceOwnershipClassifier` returns `SourceOwnership::{Generated, Authored}`. A file is generated when a marker is in its first `header_lines` lines, or when its parent module file (`D/mod.rs` or `D.rs`) is generated. Cargo target roots have no parent. Ancestry follows the mounted module path. The per-pass cache uses the physical file identity, so re-entry cannot recurse.
+- No report: `MendRunner::scan_checked_sources` drops each finding in a generated file in the disabled-diagnostic step, after the syntax-scan findings merge. `MendRunner::retain_authored_facts` removes `ReportFacts::pub_use_fix_facts` with a generated child or parent.
+- No fix: `SyntaxScans::retain_authored` and `ValidatedFixSet::retain_authored` drop the import, prefer-module-import, inline-path and imports-at-top fixes in generated files. A pub-use facade or subtree re-export proposal with any edit in a generated file is rejected whole, in the first pass (`subtree_reexport::scan_authored_selection`) and in each chain pass (`chain_pass(report, sources, source_ownership)`). The finding stays in the report.
+- The generated settings are not part of the compiler fingerprint.
+
+**Files:**
+- `crates/cargo-mend/src/config/generated_sources.rs` — the `[generated]` config type and project override.
+- `crates/cargo-mend/src/rust_syntax/generated_sources.rs` — the classifier.
+- `crates/cargo-mend/src/fixes/runner/{execute,mend_runner,plan,chain}.rs` — report, fact and proposal filters; `RunPlan::source_ownership`.
+- `crates/cargo-mend/src/fixes/pub_use_fixes/{scan,validated_plan}.rs`, `crates/cargo-mend/src/fixes/subtree_reexport/{mod,scan}.rs` — proposal rejection.
+- `crates/cargo-mend/tests/diagnostics/generated_sources.rs` — the spacetime-shaped regression test.
+- `crates/cargo-mend/README.md` — the "Generated sources" section.
+
+**Gotchas:**
+- A per-file report filter does not protect callers. Facade and subtree fixes edit caller and ancestor files, so each proposal checks every edit path.
+- The compiler facts cache is stored before the filter, so the generated settings stay out of the fingerprint.
+
+**Ruled out:** crate roots from the `lib.rs`/`main.rs` file names; support for one file that is both a Cargo target root and a symlinked module under a generated `mod.rs`, which is not a realistic case.
+
+### Phase 37 — mend counts a qualified path in a struct pattern as a use  · status: done
+
+#### As-built
+
+cargo-mend counts an item named through a qualified path in a pattern as a use of that item, and keeps its `pub(crate)`. Before this fix, `let board_templates::UnresolvedOverlap { a, b } = …;` in a test crate root did not count as a use of a `#[path]` child's struct. mend narrowed the struct to private, the build failed with E0603, and `--fix` rolled back.
+
+- `UseSiteCollector::visit_pat` records the `PatKind::Struct` path through `record_qpath`, beside `record_struct_pat_field_targets`. Tuple-struct and path patterns already recorded their path.
+- `record_target` maps a variant to its enum, so a qualified struct-variant pattern counts as a use of the enum.
+
+**Files:**
+- `crates/cargo-mend/src/compiler/visibility/use_sites.rs` — the struct-pattern arm of `visit_pat`.
+- `crates/cargo-mend/tests/diagnostics/overbroad_pub_crate.rs` — `qualified_patterns_keep_required_pub_crate`, in the tile shape: a `#[path]` child with a struct, a tuple struct and an enum variant used through qualified patterns, plus one unused control.
+
+**Gotchas:** a pattern regression needs an unused control that mend still reports, and a project `mend.toml` that pins `[generated] markers = []` and the diagnostic. Without them, the test also passes when the file is skipped or the diagnostic is off.
+
+**Ruled out:** extending `integration_test_support_module_keeps_required_pub_crate` for this case, because its `autotests = false` manifest removes that test's second compilation target.
+
+### Phase 38 — census sessions name their owner process  · status: done
+
+#### As-built
+
+Each object in `cargo-handler census --json` `sessions[]` names its sampled Claude director process, so the sdlc Units board can join a director's shell rows to its checked owner process. Source: sdlc unit-board, through the showrunner, 2026-11-18. `schema` stays 2.
+
+- `machine` (string) stays on every session, as before. It is the census machine name.
+- `pid` (integer) and `process_start` (string) are both present or both absent. `process_start` matches `~/.claude/scripts/lib/process_start.py`. Linux: `/proc/<pid>/stat` field 22 (`ProcessBirth::KernelTicks`) as a decimal string. macOS: `ps -p <pid> -o lstart=` with `LC_ALL=C` and `TZ=UTC`, trimmed at both ends.
+- `ProcessStart` refuses empty text and whitespace at either end, at construction and at decode. `SessionProcess { pid: NonZeroU32, process_start }` holds the pair. `SessionReport` flattens an untagged `SessionOwner`: `Known(&SessionProcess)` or `Unreadable {}`.
+- `LocalScanner::scan` reads each session pid's exact birth before the process-table read. It emits the pair only when that birth equals the snapshot's birth and the session has one Claude row.
+- On macOS, one `/bin/ps -p <pids> -o pid= -o lstart=` call runs for all sessions. It is capped at 200 ms or the time left before the probe deadline, and the birth is checked again after `ps`.
+- Remote probes return `session_processes`. `remote::probe_answer` and `probe::parse_census_answer` are the single decode path for the report and the scheduler.
+- A session with a shell on another machine omits the pair (`SessionCells.shells_share_machine`).
+
+**Files:**
+- `crates/cargo-handler/src/census/scan.rs` — `ProcessStart`, `SessionProcess`, `SessionProcesses`, `CensusScan`, birth checks, `session_starts` for Linux and macOS.
+- `crates/cargo-handler/src/census/report.rs` — `SessionReport` and `SessionOwner`.
+- `crates/cargo-handler/src/census/probe.rs` — `ProbeReport.session_processes` and the owner deadline.
+- `crates/cargo-handler/src/census/remote.rs`, `census/mod.rs`, `census/schedule.rs` — the shared remote decode.
+- `crates/cargo-handler/src/agent_cell.rs` — `SessionCells.shells_share_machine`.
+- `crates/cargo-handler/src/census/report_tests.rs` — a session with the full pair, a session without it, and a cross-machine shell that omits it.
+
+**Gotchas:** Codex worker threads have no Claude row, so they get no pair. A Mac session gets its pair only after the Mac runs a build that has this phase.
+
+**Ruled out:**
+- A guard for PID reuse inside one second: the board compares the pair with its stored owner start, so the worst result is "unknown".
+- A guard for a remote that uses the local machine name: that is a configuration error.
+
+### Phase 39 — mend writes its stored findings report under load  · status: done
+
+#### As-built
+
+cargo-mend test fixtures find their stored findings reports with any Cargo build directory. Source: the showrunner, 2026-11-18, from a CI point validation that failed two facade tests with "missing stored findings report". mend's report writer and reader are unchanged: each report stays beside its unit's `.rmeta`.
+
+- Cause: the build slot exports `CARGO_BUILD_BUILD_DIR` (`~/.claude/scripts/lib/build_slots.py`). Fixture cargo commands inherited it, so mend wrote the reports in the slot's shared build directory. The test helper searched only `<fixture>/target`. The `verify.sh` gate fixtures built under `<fixture>/target`, so the gate passed.
+- `isolate_cargo` removes an inherited `CARGO_BUILD_BUILD_DIR`, so a fixture builds in its own directory.
+- `stored_report_paths` searches the fixture's Cargo `build_directory`, read from `cargo metadata` through `CargoDirectories::for_fixture`.
+- `stored_reports_are_found_under_a_split_build_directory` sets a fixture-local `build-dir` and requires one report for each `.rmeta`.
+
+**Files:**
+- `crates/cargo-mend/tests/support/mend_json.rs` — `isolate_cargo`, `CargoDirectories::for_fixture` and `read`.
+- `crates/cargo-mend/tests/support/mod.rs` — `stored_report_paths`, `STORED_REPORT_SUFFIX`.
+- `crates/cargo-mend/tests/diagnostics/facade_subjects.rs` — the split build directory regression.
+
+**Gotchas:** a test that loops over stored reports without a minimum count passes when none are found (`pub_use_fixes.rs`, `rendering.rs`, `allowances.rs`).
+
+**Ruled out:** a second report layout under `target/mend-reports/`. A build directory spelled `target/../x` passed its path-prefix check and put reports outside `target`, and mend's own writer and reader already agreed.
+
+### Phase 40 — a mend source edit gives a new build id  · status: done
+
+#### As-built
+
+A cargo-mend binary built after a source or manifest edit carries a new `MEND_BUILD_ID`. Thus the findings cache (`src/compiler/settings.rs`) and the builds lint cache (`cargo mend --build-info`) do not reuse findings from an older build. Source: the showrunner, 2026-11-18, from the builds phase 43m review.
+
+- `build.rs` emits `cargo:rerun-if-changed` for `../../.git/HEAD`, `../../.git/refs/heads`, `build.rs`, `src` and `Cargo.toml`. Cargo scans `src` recursively, so any edit there reruns the script, and `build_id()` stamps a new id.
+- `build_script_watches_source_and_manifest_for_build_id_updates` checks the `src` and `Cargo.toml` directives in Cargo's saved build-script output.
+
+**Files:**
+- `crates/cargo-mend/build.rs` — stamps the git hash, build id and sysroot; declares the watched paths.
+- `crates/cargo-mend/tests/cli_smoke.rs` — the directive test.
+
+**Gotchas:** the directive test reads `concat!(env!("OUT_DIR"), "/../output")`, a Cargo-internal path. A toolchain layout change fails it at compile time.
+
+**Ruled out:** a live edit-and-rebuild test. A rebuild takes more than the 1 s test limit.
+
+### Phase 41 — tests that read stored findings reports require a report  · status: done
+
+#### As-built
+
+Every cargo-mend test that loops over stored findings reports fails when it finds none. Source: the showrunner approved the Phase 39 add-on, 2026-11-18.
+
+- `stored_report_paths` walks the fixture's Cargo build directory, keeps only files that end in `.mend.json`, and asserts that at least one exists. Every caller loop (`pub_use_fixes.rs`, `rendering.rs`, `allowances.rs`, `facade_subjects.rs`) gets the check from the helper.
+- Three tests lost their own report counters and count asserts, because the helper holds that check.
+
+**Files:**
+- `crates/cargo-mend/tests/support/mod.rs` — the stored-report lookup, which fails on an empty result.
+
+**Gotchas:** WalkDir also yields directories. The lookup filters on `file_type().is_file()` before the suffix match.
+
+**Ruled out:** a count check in each caller loop. The shared helper holds it once.
+
+### Phase 42 — the mend rollback test finishes in under 1 second  · status: done
+
+#### As-built
+
+`fix_rollback::failed_later_pass_restores_the_edits_earlier_passes_left_on_disk` takes 0.861 s in the full Mac suite at load 10.38 (1.448 s before). On natedev it took 0.615 s at load 77. Source: the showrunner approved the Phase 41 add-on, 2026-11-18.
+
+- The old fixture's cost was a compiler edit plus a chained `cargo fix` and its check. The new fixture has two mend edits. In pass one, `ImportsAtTop` moves a function import. `PreferModuleImport` puts off its overlapping rewrite to pass two, and a compile-time check rejects that rewrite.
+- The called function is `#[deprecated]`, so the compiler prints the moved import line. The test requires that line before the error, which proves that pass one compiled before pass two failed.
+- The fixture is one binary target with `test = false`, so `cargo fix --tests` skips a build.
+- `MODULE_IMPORT_FIXTURE_CONFIG` holds the `mend.toml` text that this test and `imports_at_top.rs` share.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/fix_rollback.rs` — the two-pass rollback fixture and its proof of pass one.
+- `crates/cargo-mend/tests/support/mod.rs` — the shared module-import fixture configuration.
+
+**Gotchas:** without the pass-one proof, a single pass that makes both edits also satisfies the rollback assertions.
+
+**Ruled out:** more nextest slots or a higher time limit; `git init --template=` in the shared helper (tried, then reverted).
+
+### Phase 43 — the mend fix tests finish in under 1 second on the Mac  · status: done
+
+#### As-built
+
+The full Mac suite at load 3.73 runs 1,047 cargo-mend tests in 24.8 s, and the slowest test takes 0.949 s. Before, at load 4.45, it took 32.9 s with seven tests at 1 s or more. Source: the showrunner approved the Phase 42 add-on, 2026-11-19.
+
+- No later commit caused the cost. The Phase 33 checkpoint source, run again on the Mac at load 4.48, had 65 tests at 1 s or more, and each of the seven slow tests at HEAD was slow there too.
+- Five fix-test fixtures compiled the same source as a binary and as a test, so each first check compiled twice (433–451 ms at load 4.70). Each fixture now has one test target, with autobins and the test harness off. The feature-gated fixture still compiles with the hidden feature before and after the fix.
+- The three unused-import tests share one fixture.
+- The later-pass re-export fixture sets a line threshold that keeps mend from starting a rustfmt measurement (236 ms in two batches). The test still checks the exact rewritten files and compiles the result.
+
+**Files:**
+- `crates/cargo-mend/tests/diagnostics/narrow_pub_crate.rs` — the feature-gated fixture with one test target
+- `crates/cargo-mend/tests/diagnostics/pub_use_fixes.rs` — the single-target fixtures and the shared unused-import fixture
+- `crates/cargo-mend/tests/diagnostics/pub_use_outside_subtree_fixes.rs` — the line threshold of the later-pass fixture
+
+**Gotchas:** a test run alone on the Mac pays first-launch costs for each new binary and a cold toolchain-query cache, so it does not compare with a suite run. About 250 ms of each cold mend launch comes before dyld starts to log; its cause is not known.
+
+**Ruled out:** more nextest slots or a higher time limit; a bisect of one test run alone.
+
+### Phase 44 — cargo-berth claims stay under the ordering edge limit when many reservations hold one file  · status: done
+
+#### As-built
+
+- A claim on a file with many holders binds to an existing ordering edge that covers its scopes and is reachable in claim order. It adds no edge for each holder pair, so the hana shape (one file, 11 holders, 184 waiting entries) stays far under the 512-edge limit.
+- Edges of released or integrated reservations do not count as live. Retention keeps an inherited hold alive while a nonterminal dependent still reaches it through ended reservations.
+- `maximum_ordering_edges` stays a config value with its 512 default.
+
+**Files:**
+- `crates/cargo-berth/src/edge/graph.rs` — live edge set, inherited edges, and claim-order reachability
+- `crates/cargo-berth/src/verb/claim/authorization.rs`, `crates/cargo-berth/src/verb/claim/acquisition.rs` — claim binding to an existing edge
+- `crates/cargo-berth/src/verb/sequence.rs` — `sequence` uses the same binding
+- `crates/cargo-berth/tests/edges.rs`, `crates/cargo-berth/tests/support/edges_fixtures.rs` — the hana-shape regression test
+
+**Gotchas:** replay accepts a binding to an anchor edge between other endpoints only when the anchor covers the scopes and is reachable; older ledgers always had matching endpoints and replay the same.
+
+**Ruled out:** raising the edge limit.
+
+### Phase 45 — the cargo-berth ref-update hook finishes inside its time limit under load  · status: done
+
+#### As-built
+
+- The reference-transaction hook does not run automatic journal compaction. `LedgerHandle::open_for_reference_transaction` opens the ledger with `AutomaticCompaction::Deferred`, so the next ordinary ledger mutation compacts a journal past the threshold. The hook still syncs each journal append. At the compaction threshold under load, the hook median is about 2.2 s against the 10 s limit.
+- A transaction with no proposed trunk commit reads the ledger without the lock. When no update needs a decision (`SelectedGateUpdate::StandAside`), the hook returns before identity resolution and `mutation.lock`. A gated non-trunk update still takes the locked decision path.
+- The native worktree reader resolves relative registrations, and keeps locked and detached worktrees as live.
+
+**Files:**
+- `crates/cargo-berth/src/gate/reference_transaction.rs` — `SelectedGateUpdate { Evaluate, StandAside }` and the early return
+- `crates/cargo-berth/src/gate/decision.rs` — history check against the integration constraint projection
+- `crates/cargo-berth/src/gate/audit.rs`, `crates/cargo-berth/src/gate/permit.rs` — open the ledger with the hook open
+- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/ledger/compaction.rs` — deferred compaction and its test
+- `crates/cargo-berth/src/git/worktree.rs` — native worktree reader and its parity tests
+- `crates/cargo-berth/tests/gate.rs` — trunk-deletion rows with `mutation.lock` held, and the multi-ref test with a separate trunk history
+
+**Gotchas:** a test that proves the hook skips the lock holds `mutation.lock` with a 50 ms contention tolerance, so a hook that takes the lock fails the row.
+
+**Ruled out:** a retry in the merge tool, and a longer hook time limit.
+
+### Phase 46 — the Phase 44 claim fix holds on a copy of hana's real claim records  · status: done
+
+#### As-built
+
+A scratch copy of hana's cargo-berth records (`.git/cargo-berth`, `.git/refs/cargo-berth`, `.git/cargo-berth-worktree-id`) holds 512 stored ordering edges, 153 of them live. On that copy, a claim on `crates/hana/tests/assembly_face/frame_time_assembly/mod.rs` after all 14 current holders:
+
+- The cargo-berth build before Phase 44 refuses it with `ordering_edge_limit_reached`, because it charges all 512 stored edges.
+- The Phase 44 build accepts it. The copy then holds 526 stored and 167 live edges, and the limit charges 79 of 512.
+
+The copies are deleted. No source changes.
+
+**Gotchas:** an outstanding reservation cannot continue under either build, so a replay of a refused claim uses a new claim on the same path against the current holders.
+
+### Phase 47 — mend leaves a path when a block binding can bring in its first name  · status: done
+
+#### As-built
+
+- The `inline_path_qualified_type` fix leaves a qualified path and writes no import when a binding in an enclosing block can bind the path's first segment. A block binding is a `use`, an item, a glob or a macro. Syntax cannot tell a module from a type or a fn there, so mend does not guess.
+- `BlockBindings::collect` returns `Named` with the names that a block binds, or `Unknown` when a statement macro, an item macro, a glob or an attribute that is not built in can add a name. `BlockBindings::lookup` returns `BlockBinding::MayBind` or `Absent` for a first segment across the enclosing block scopes. A `macro_rules` definition binds only a macro name, and an `extern` block binds its declared names.
+- `BUILT_IN_ATTRIBUTES` lists the attributes and derives that never add a name. An attribute that is not on the list counts as a possible macro.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs` — `BlockBindings`, `BlockBinding`, `BUILT_IN_ATTRIBUTES` and the attribute and macro unit table
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/visitor.rs`, `scope.rs`, `process.rs`, `mod.rs` — block scopes and the leave-the-site check
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — the hana fixture and the six expansion cases, through `rewrite_inline_path_fixture`
+
+**Gotchas:** a fixture that builds a proc-macro crate takes over 1 s on the Mac; the attribute and derive macro cases live in the `BlockBindings` unit table instead.
+
+### Phase 48 — the handler installs its theme through tui_pane  · status: done
+
+#### As-built
+
+- `tui_pane::install_theme_with_parser(appearance, builtins, source, parser)` builds the `ThemeRegistry` with the caller's parser, resolves the active theme, installs the `ThemeState` and returns a `ThemeInstallation { active: ActiveThemeOutcome, rejected: Vec<RejectedThemeFile> }`. It takes no remembered-appearance argument: it uses the appearance that the registry load observed.
+- `tui_pane::install_theme` and `install_theme_with_parser` share the body `install_from_source`. The private `RememberedAppearancePolicy` enum selects `Use` for `install_theme` and `Ignore` for the parser install. The handler calls `install_theme_with_parser`. No copy of the registry build, resolve or install steps stays in either crate.
+- `ActiveThemeOutcome::MissingName` names a configured theme that the registry lacks. The handler shows the same theme and the same notes as before, and its message text stays in `files.rs`.
+
+**Files:**
+- `crates/tui_pane/src/app_config/theme_install.rs` — `install_theme_with_parser`, `install_from_source`, the install types and their tests
+- `crates/tui_pane/src/app_config/mod.rs`, `crates/tui_pane/src/lib.rs` — re-exports of the install function and types
+- `crates/cargo-handler/src/theme/files.rs` — the handler install call and its theme notes
+
+### Phase 49 — a tree-scope claim on a folder that does not exist yet holds that folder  · status: todo
+
+#### Work Order
+
+**Goal:** `cargo-berth claim tree:<folder>` on a folder that does not exist yet puts that folder in the reservation's board scopes. A claim that adds no scope does not report success. The recovery command that a refused edit names binds the reservation it selects. Source: the showrunner, 2026-11-20, from a hana errors-unit fault.
+
+**Spec:**
+1. The fault: at phase start, the hana errors unit claimed `tree:crates/hana_saved` and `tree:crates/hana_saved_macros`. Neither folder existed yet. The claim exited 0, but the board scopes did not include the folders. The lint fix pass writes only paths in the board scopes, so it could not write three import fixes. The unit then widened the reservation with `cargo-berth check` on each new file.
+2. First write a cargo-berth test that reproduces the exact command from the errors unit (command, cwd and reservation id in `${SESSION_DIR}/phases/49/errors_unit_reply.md`). The test fails before the fix.
+3. Name the function and the value that drop the scope. A lead: `ReservationAcquisitionKind::AlreadyHeld` in `crates/cargo-berth/src/verb/claim/acquisition.rs` documents "already covered every claimable path".
+4. Fix the cause: a tree scope on an absent folder is a valid scope and is held as requested. The board then shows it.
+5. A claim whose requested scopes add nothing to the reservation, and that records no answer, returns a non-zero exit with a named reason. Use the existing exit and output contract types. A retry of an ordering claim (`--before`, `--after`) whose ordering is already recorded is not this case: it stays an idempotent success.
+6. Second fault, same phase: in the home worktree an Edit of `docs/cargo-port/cargo-liner-handler.md` was refused with "cargo-berth could not select one active reservation for this edit" (candidates `01a1f0ce-2c2b-7bf2-a480-6911c82d7780`, no session, and `01a1f522-b03c-71b1-a3fb-2f7704e219dc`, session `<harness session>.phase-47`). The refusal names `cargo-berth check --reservation <reservation-id> <path>...` as the recovery (`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND`, `crates/cargo-berth/src/output.rs:127`). `cargo-berth check --reservation 01a1f0ce… docs/cargo-port/cargo-liner-handler.md` answered "No foreign reservation overlaps the requested paths; the acting run already holds them." The next Edit was refused the same way. The selection must bind: after the recovery command, the next edit by the same session selects that reservation. Reproduce it in a test beside the claim test, and fix the cause.
+7. Second claim case, from hana (reservation `01a1f050`, the hana repo, the fastest unit): at 02:40 a `claim --reservation` with no overlap answer on `crates/hana_diegetic/src/render/panel_text` and `crates/hana_diegetic/src/render/analytic_paths` added nothing. Later, `cargo-berth check` on `panel_text/batching.rs` and `analytic_paths/batching.rs` printed "first-touch reservation was widened". A second check printed "the acting run already holds them". Add this shape as a second row of the claim test.
+8. Third case, from hana, the same fault as the `check --reservation` case above: the worktree `/home/natepiano/rust/hana_catalyst-lfo` holds reservation `01a1f14a`. Five uncommitted paths are outside its scopes (`crates/hana/src/annunciator/mod.rs`, `src/tool/fault_feed.rs`, `tests/annunciator_turned_panel/mod.rs`, `tests/control_tool_creation/first_frame_geometry.rs`, `tests/rear_jack_pixels/assembly_button_pixels.rs`). Reservation `01a1eee1`, of the same acting run, holds them. After `cargo-berth identity clear-session`, `check --reservation 01a1f14a` on the 5 paths (one argument each) still says "the acting run already holds them". The `01a1f14a` board lists none of them, and `01a1eee1` keeps them. The showrunner's finding: `check --reservation` counts a path that any reservation of the acting run holds as held. It does not move the path to the named reservation. The session mapping is not the cause. Reproduce this case and the home-worktree `01a1f0ce` case together in one test, then fix the cause: `check --reservation <id>` puts each path in reservation `<id>`. Read the hana worktree only; never write to it.
+9. First-touch attribution case, from hana: the errors unit's Codex P4 workers edit under the P4 reservation `01a1f925`. cargo-berth records each first touch under `01a1f4c5-cbc5-7700-819a-150881541608`, a stale style reservation keyed to the same worktree. The result is 12 false incursions (`fault.rs`, `records.rs`, `cables.rs`, `Cargo.lock` and more). The berth hint names `CARGO_BERTH_RUN`; the worker processes probably have no coordination run. Required result: first-touch attribution picks the reservation that claims the path, never another reservation of the same worktree. This is the same family as the lfo case: a reservation of the same worktree takes paths that the named or claiming reservation must hold. Reproduce it in the same test as the lfo case, with a worker process that has no `CARGO_BERTH_RUN`.
+10. Fourth claim case, from hana: the demo reservation `01a1cb9c` lacked 21 of its claimed paths. `cargo-berth check` on each file restored them. This is the same claim defect. Add it as a row of the claim test.
+11. Separate gap, showrunner ruling: one scope in `01a1cb9c` is a single string of 17 space-separated paths (`camera/editor_camera.rs` ... `glyph_cache.rs`). A claim got several paths in one quoted argument, because zsh does not word-split `$var`. It recorded one wrong path with no error. Fix: `claim` and `check` refuse a path that contains whitespace when no file or folder of that exact name exists and either its parent folder does not exist or one of its whitespace-separated parts names an existing path. The error has a named reason and a non-zero exit. When the second condition applies, the reason names the existing part. Reason (showrunner, rulings 2026-11-20): berth must never print a recovery command that it then refuses, and a hook recovery command can name a real file with a space or a new file such as `notes draft.rs`. Test rows: `notes draft.rs` (new file, parent exists) is accepted; the 17-path string is refused; `Cargo.toml Cargo.lock` is refused and its reason names `Cargo.toml`. Every recovery command that berth or the hook prints passes each path with the literal-path flag (`--path '<p>'`); the parser takes that value as one path and skips the joined-list check. A typed bare argument keeps the rule above. Rows: `--path 'Cargo.toml draft.rs'` is accepted as one path; the bare `Cargo.toml draft.rs` is refused; the printed recovery command for that refusal runs and berth accepts it. Make the invalid path unrepresentable: parse each argument into the path type, and refuse at that parse. Do not refuse a path without whitespace because it does not exist yet: a claim on a new file before it exists is valid. The two hook tests keep seeding `source file.rs` with `claim`. Add a test that a claim of several paths in one argument is refused, and a row that a claim of a space-named path that does not exist is refused.
+
+**Files:**
+- `crates/cargo-berth/src/verb/claim/` — the claim path and outcome that drop the scope
+- `crates/cargo-berth/src/scope/` — when the scope filter is the cause
+- `crates/cargo-berth/src/session/`, `crates/cargo-berth/src/hook/` — the session mapping and the edit-hook reservation selection
+- the cargo-berth claim test of the same behavior
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- The new test fails before the fix and passes after it.
+- No changed test takes one second or more.
+
+### Phase 50 — mend shortens a path beside a built-in attribute it does not list  · status: todo
+
+#### Work Order
+
+**Goal:** a built-in attribute in a block, such as `#[link(name = "c")]` on an `extern` block, does not stop `cargo mend --fix` from shortening the paths in that block. Source: review finding F012 of the Phase 47 change, held for its own phase at the repair-round cap. A mend bug always gets a phase.
+
+**Spec:**
+1. The fault: `BlockBindings::collect` (`crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`) treats an attribute that is not in `BUILT_IN_ATTRIBUTES` as a possible macro. It then returns `BlockBindings::Unknown`, so mend leaves every site in the block. `#[link(name = "c")]` on an `extern` block is one case: `std::time::Duration` beside it does not shorten. This is a missed fix only. Mend never writes a wrong import here.
+2. Make `BUILT_IN_ATTRIBUTES.names` the complete list from the Rust Reference built-in attributes index (https://doc.rust-lang.org/reference/attributes.html#built-in-attributes-index). Keep it one named constant. An attribute that is not on the list still counts as a possible macro.
+3. Add `#[link(name = "c")]` on the `extern` block in the positive control of the `BlockBindings` unit table. That row fails before the fix.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The new row fails before the fix and passes after it.
+- No changed test takes one second or more.
+
+### Phase 51 — a release of merged work frees its board slot  · status: todo
+
+#### Work Order
+
+**Goal:** a reservation whose work is on its target frees its board slot when it is released, or when its protected tip reaches the target. A release never protects commits that are not the reservation's own work. Source: the showrunner, 2026-11-20, from a spacetime showrunner report.
+
+**Spec:**
+1. The fault, from the hana_catalyst worktrees on 2026-11-20 (`maximum_reservations = 128`):
+   - The board was full, and every claim got `reservation_limit_reached`.
+   - The fps reservation `01a1e826-4107-7e13-8d24-b9a8d4054d1d` held fps Phase 1. That work merged into spacetime as `6404721d79`.
+   - `cargo-berth release 01a1e826-4107-7e13-8d24-b9a8d4054d1d` printed "now retains protected tip c25d254610...; pending paths: ... (29 paths)". The status became outstanding and still counted as live.
+   - The release took a new snapshot at the branch tip `c25d254610`, which also holds unmerged Phase 2 work. The release extended the protection.
+   - The board now shows `01a1e826` as `released_after_checkpoint`, protected tip `c25d254610f9f7c5d145cd1503bdb423ff5d87df`, merge extent protected against target `9ba7507245bb5ee72c660ab8a882de34cd9d7ef0`.
+2. Second case: the spacetime-server reservation `01a1e968-c074-7d80-b520-9b9edd026988` (Phase 2, merged). A plain release took a snapshot of the unmerged tip `6eb35ba526`. After `release --keep-work`, it reads `released_after_checkpoint`, `kept_on_branch`.
+3. Today only `resolve <id> --integrated-as <sha>` frees a merged reservation. A holder does not release itself when its tip reaches the target. `01a1f522` released itself only after 24 h with no owner activity.
+4. First write a cargo-berth test that reproduces the `01a1e826` case and fails before the fix. Name the function and the value that pick the new tip. A lead: `checkpoint_operation` in `crates/cargo-berth/src/verb/release.rs` takes `protected_tip` from `git::reservation_checkpoint_commits`.
+5. The showrunner's ruling:
+   - A release of a reservation whose work is on its target frees the slot at once.
+   - A release never moves the protected tip onto commits that are not the reservation's own work.
+   - A reservation whose protected tip becomes an ancestor of its target releases itself at once, with no 24 h activity wait.
+6. Add the second case as a row of the same test.
+7. Background: `~/.claude/projects/-home-natepiano-rust-hana/memory/cargo-berth-coordination.md` records the same behavior. Read it only.
+
+**Files:**
+- `crates/cargo-berth/src/verb/release.rs` — the release and checkpoint tip choice
+- `crates/cargo-berth/src/git/` — `reservation_checkpoint_commits` and reachability
+- `crates/cargo-berth/src/reservation/` — the live count and the self-release on an integrated tip
+- `crates/cargo-berth/src/reconcile.rs` — when reconcile owns the self-release
+- `crates/cargo-berth/tests/lifecycle.rs` — the release test
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- The new test fails before the fix and passes after it.
+- No changed test takes one second or more.

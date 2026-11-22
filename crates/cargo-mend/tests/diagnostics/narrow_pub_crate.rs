@@ -1330,6 +1330,12 @@ fn fix_compiler_keeps_reexport_used_only_by_feature_gated_module() {
 name = "cfg_feature_reexport_fixture"
 version = "0.1.0"
 edition = "2024"
+autobins = false
+
+[[test]]
+name = "feature_gated_reexport"
+path = "src/main.rs"
+harness = false
 
 [features]
 hidden = []
@@ -1365,7 +1371,7 @@ hidden = []
 
     assert_feature_fixture_compiles(
         temp.path(),
-        &["--features", "hidden"],
+        &["--tests", "--features", "hidden"],
         "hidden feature before --fix-compiler",
     );
 
@@ -1388,7 +1394,7 @@ hidden = []
 
     assert_feature_fixture_compiles(
         temp.path(),
-        &["--features", "hidden"],
+        &["--tests", "--features", "hidden"],
         "hidden feature after --fix-compiler",
     );
 }

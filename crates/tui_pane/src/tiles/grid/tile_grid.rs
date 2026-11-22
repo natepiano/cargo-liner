@@ -1093,6 +1093,14 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
         self.visual_repaint() == Repaint::Needed
     }
 
+    /// Supply the display time for grid motion.
+    /// Supply the same time on paused frames to hold the current progress.
+    pub const fn sample_motion(&mut self, time: Instant) {
+        if !matches!(self.motion_clock, MotionClock::HeldAtHalf) {
+            self.motion_clock = MotionClock::Sampled(time);
+        }
+    }
+
     /// Whether the next body differs from the last paint. Polling does not consume it.
     #[must_use]
     pub fn visual_repaint(&self) -> crate::Repaint { self.visual_repaint_at(self.progress()) }
@@ -2060,7 +2068,7 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             from:         previous,
             held:         drawn_held,
             source:       Box::new(source),
-            started:      Instant::now(),
+            started:      self.motion_clock.time(),
             millis:       step.millis,
             depth_status: step.depth_status,
         });
@@ -2589,10 +2597,13 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             return PROGRESS_SCALE;
         };
         match self.motion_clock {
-            MotionClock::Elapsed => {
-                travel_progress(transition.started.elapsed(), transition.millis)
-            },
             MotionClock::HeldAtHalf => PROGRESS_SCALE / 2,
+            MotionClock::Elapsed | MotionClock::Sampled(_) => travel_progress(
+                self.motion_clock
+                    .time()
+                    .saturating_duration_since(transition.started),
+                transition.millis,
+            ),
         }
     }
 

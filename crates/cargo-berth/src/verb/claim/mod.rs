@@ -24,6 +24,7 @@ pub(crate) use acquisition::acquire_first_touch;
 pub(super) use acquisition::acquire_first_touch_for_check;
 pub(crate) use acquisition::execute;
 pub(super) use acquisition::selected_reservation_check_acquisition;
+pub(super) use acquisition::sole_phase_edit_authorization;
 pub(crate) use failure::ClaimError;
 pub(crate) use phase_candidate::PhaseReservationCandidate;
 pub(crate) use recovery_command::ClaimRecoveryCommand;

@@ -260,7 +260,11 @@ pub(crate) fn record_environment_bypass(
     let cause = BypassCause::EnvironmentOverride {
         bypassed_merge: bypassed_merge_identity(),
     };
-    let journalled = Ledger::open_from_discovered_worktree(&worktree_context)
+    let ledger = match action {
+        BypassedAction::Integration => Ledger::open_for_reference_transaction(&worktree_context),
+        BypassedAction::Editing => Ledger::open_from_discovered_worktree(&worktree_context),
+    };
+    let journalled = ledger
         .and_then(|ledger| {
             let journal_mutation_actor = journal_mutation_actor?;
             ledger

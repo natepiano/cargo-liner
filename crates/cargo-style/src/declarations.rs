@@ -1,7 +1,11 @@
 //! The Python declaration reader, with the same word spans and ownership rules.
 
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
+use std::ops::RangeInclusive;
 
+use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde::Serializer;
 
@@ -11,41 +15,41 @@ use crate::tokenizer::Token;
 use crate::word_syntax;
 
 /// The direct owner of a declaration.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum DeclarationOwner {
+pub(crate) enum DeclarationOwner {
     Module,
     ImplOrTrait(String),
 }
 
 /// The import scope of a declaration or its owning impl header.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ImportPosition {
+pub(crate) enum ImportPosition {
     FileLevel,
     BlockScoped(usize),
 }
 
 /// An impl has no target of this kind, or its target cannot be read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum ImplementationState {
+pub(crate) enum ImplementationState {
     None,
     Unreadable,
 }
 
 /// A complete impl path and its generic arguments.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct ImplementedPath {
-    path:      Vec<String>,
-    arguments: Vec<String>,
-    position:  ImportPosition,
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
+pub(crate) struct ImplementedPath {
+    pub(crate) path:      Vec<String>,
+    pub(crate) arguments: Vec<String>,
+    pub(crate) position:  ImportPosition,
 }
 
 /// The trait or type relationship of a direct impl member.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 #[serde(untagged)]
-enum ImplMembership {
+pub(crate) enum ImplMembership {
     State(ImplementationState),
     Path(ImplementedPath),
 }
@@ -64,7 +68,7 @@ impl ImplMembership {
 }
 
 /// One named declaration and its source lines.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub(crate) struct DeclaredItem {
     keyword:           String,
     pub(crate) name:   String,
@@ -77,8 +81,50 @@ pub(crate) struct DeclaredItem {
     implemented_type:  ImplMembership,
 }
 
+impl DeclaredItem {
+    pub(crate) const fn implemented_type(&self) -> &ImplMembership { &self.implemented_type }
+
+    pub(crate) const fn import_position(&self) -> &ImportPosition { &self.import_position }
+
+    pub(crate) const fn keyword(&self) -> &str { self.keyword.as_str() }
+
+    pub(crate) const fn keyword_line(&self) -> usize { self.keyword_line }
+
+    pub(crate) const fn owner(&self) -> &DeclarationOwner { &self.owner }
+
+    pub(crate) const fn is_module_item(&self) -> bool {
+        matches!(self.owner, DeclarationOwner::Module)
+    }
+
+    pub(crate) const fn implemented_trait(&self) -> &ImplMembership { &self.implemented_trait }
+
+    pub(crate) fn same_declaration(&self, other: &Self) -> bool {
+        self.keyword == other.keyword && self.name == other.name && self.owner == other.owner
+    }
+
+    pub(crate) fn same_readable_membership(&self, other: &Self) -> bool {
+        !matches!(
+            self.implemented_type,
+            ImplMembership::State(ImplementationState::Unreadable)
+        ) && !matches!(
+            self.implemented_trait,
+            ImplMembership::State(ImplementationState::Unreadable)
+        ) && self.implemented_type == other.implemented_type
+            && self.implemented_trait == other.implemented_trait
+    }
+
+    pub(crate) fn has_proved_body(&self) -> bool {
+        matches!(
+            self.keyword.as_str(),
+            "fn" | "struct" | "enum" | "union" | "type" | "trait"
+        )
+    }
+
+    pub(crate) const fn lines(&self) -> RangeInclusive<usize> { self.first_line..=self.last_line }
+}
+
 /// The word indexes of a complete or incomplete braced body.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct BodyWords {
     pub(crate) open:  usize,
     pub(crate) close: usize,
@@ -100,22 +146,90 @@ impl Serialize for ItemBody {
     }
 }
 
+impl<'de> Deserialize<'de> for ItemBody {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum NoBody {
+            None,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum BodyValue {
+            NoBody(NoBody),
+            Braced(BodyWords),
+        }
+
+        Ok(match BodyValue::deserialize(deserializer)? {
+            BodyValue::NoBody(NoBody::None) => Self::NoBody,
+            BodyValue::Braced(body) => Self::Braced(body),
+        })
+    }
+}
+
 /// The keyword, end, and body word indexes of one item.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ItemSpan {
     keyword:         usize,
     end:             usize,
     pub(crate) body: ItemBody,
 }
 
-/// A file's declarations and the tokens used to read their bodies.
-#[derive(Debug, Serialize)]
+impl ItemSpan {
+    pub(crate) const fn keyword_word(&self) -> usize { self.keyword }
+}
+
+/// A file's declarations and their token indexes.
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct DeclaredFile {
-    pub(crate) items:  Vec<DeclaredItem>,
-    pub(crate) spans:  Vec<ItemSpan>,
-    others:            Vec<ItemSpan>,
-    #[serde(skip)]
-    pub(crate) tokens: Vec<Token>,
+    pub(crate) items: Vec<DeclaredItem>,
+    pub(crate) spans: Vec<ItemSpan>,
+    others:           Vec<ItemSpan>,
+}
+
+pub(crate) enum DeclarationAt<'a> {
+    Named(&'a DeclaredItem),
+    Unnamed,
+}
+
+impl DeclaredFile {
+    pub(crate) fn at(&self, word_lines: &[usize], line: usize) -> DeclarationAt<'_> {
+        let Some(&target) = word_lines.get(word_lines.partition_point(|&word| word < line)) else {
+            return DeclarationAt::Unnamed;
+        };
+        let readable = self
+            .items
+            .iter()
+            .zip(&self.spans)
+            .filter(|(item, _)| item.lines().contains(&target))
+            .map(|(item, span)| {
+                (
+                    (item.first_line, Reverse(item.last_line), span.keyword),
+                    DeclarationAt::Named(item),
+                )
+            });
+        let others = self.others.iter().filter_map(|span| {
+            let first = word_lines[span.keyword];
+            let last = word_lines[span.end];
+            (first..=last)
+                .contains(&target)
+                .then_some(((first, Reverse(last), span.keyword), DeclarationAt::Unnamed))
+        });
+        readable
+            .chain(others)
+            .max_by_key(|(key, _)| *key)
+            .map_or(DeclarationAt::Unnamed, |(_, item)| item)
+    }
+
+    pub(crate) fn unique(&self, item: &DeclaredItem) -> bool {
+        self.items
+            .iter()
+            .filter(|candidate| candidate.same_declaration(item))
+            .take(2)
+            .count()
+            == 1
+    }
 }
 
 /// A readable impl owner, or an owner whose members Python omits.
@@ -390,7 +504,7 @@ fn owning_bodies(
 }
 
 /// Read declarations from a request's shared token reading.
-pub(crate) fn read_tokens(text: &[char], tokens: &[Token]) -> DeclaredFile {
+pub(crate) fn read_tokens(tokens: &[Token]) -> DeclaredFile {
     let words: Vec<String> = tokens.iter().map(|token| token.value.clone()).collect();
     let mut first_attribute = BTreeMap::new();
     for (start, keyword) in word_syntax::attribute_owners(&words).into_iter().rev() {
@@ -410,7 +524,6 @@ pub(crate) fn read_tokens(text: &[char], tokens: &[Token]) -> DeclaredFile {
         items:  Vec::new(),
         spans:  Vec::new(),
         others: Vec::new(),
-        tokens: tokens.to_vec(),
     };
     for (index, span) in all_spans {
         let keyword = word_syntax::word(&words, index);
@@ -472,14 +585,12 @@ pub(crate) fn read_tokens(text: &[char], tokens: &[Token]) -> DeclaredFile {
         });
         file.spans.push(span);
     }
-    // Source offsets count characters; the body reader receives the original text separately.
-    debug_assert!(file.tokens.iter().all(|token| token.start <= text.len()));
     file
 }
 
 /// Read declarations for the tests without a request token reading.
 #[cfg(test)]
-pub(crate) fn read(text: &[char]) -> DeclaredFile { read_tokens(text, &tokenizer::tokenize(text)) }
+pub(crate) fn read(text: &[char]) -> DeclaredFile { read_tokens(&tokenizer::tokenize(text)) }
 
 #[cfg(test)]
 mod tests {

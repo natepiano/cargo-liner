@@ -7,15 +7,38 @@
 //! `RAYON_NUM_THREADS` sets the thread count; the default is one thread for each CPU.
 
 mod blob_reader;
+mod cache_constants;
 mod constants;
+mod declaration_source;
 mod declarations;
+mod enclosing_items;
 mod error;
+mod fact_store;
 mod facts;
+mod finding;
+mod finding_anchor;
+mod finding_source;
+mod ledger_read;
 mod module_scan;
 mod module_sites;
 mod name_sites;
+mod original_site;
+mod outside_bindings;
+mod outside_mapping;
+mod outside_rename;
+mod relocation_ledger;
 mod request;
+mod rule_snapshot;
+mod same_declaration;
+mod site_ledger;
+mod source_lines;
+mod source_sites;
+mod sqlite_read;
+mod state_directory;
+mod tip_view;
 mod tokenizer;
+mod trait_identity;
+mod tree_inventory;
 mod unicode_tables;
 mod word_syntax;
 
@@ -23,17 +46,21 @@ use std::error::Error;
 use std::ffi::OsStr;
 use std::ffi::OsString;
 use std::process::ExitCode;
+use std::vec::IntoIter;
 
 use libc::LC_CTYPE;
 
 use crate::constants::PROTOCOL_VERSION;
 use crate::constants::STYLE_SUBCOMMAND;
 use crate::constants::VERSION_FLAG;
+use crate::finding::FINDING_SUBCOMMAND;
+use crate::finding::FindingRequest;
 use crate::request::Request;
 
 /// The operation selected by a direct call or the Cargo subcommand.
 enum ReaderCommand {
     Facts,
+    Finding(IntoIter<OsString>),
     Version,
 }
 
@@ -48,6 +75,9 @@ impl From<Vec<OsString>> for ReaderCommand {
         };
         match operation.as_deref() {
             Some(argument) if argument == OsStr::new(VERSION_FLAG) => Self::Version,
+            Some(argument) if argument == OsStr::new(FINDING_SUBCOMMAND) => {
+                Self::Finding(arguments)
+            },
             _ => Self::Facts,
         }
     }
@@ -66,6 +96,18 @@ fn main() -> ExitCode {
             );
             return ExitCode::SUCCESS;
         },
+        ReaderCommand::Finding(arguments) => {
+            return match FindingRequest::parse(arguments).and_then(FindingRequest::answer) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!(
+                        "cargo-style: {}",
+                        error_chain(&error).replace(['\r', '\n'], " ")
+                    );
+                    ExitCode::FAILURE
+                },
+            };
+        },
         ReaderCommand::Facts => {},
     }
 
@@ -77,14 +119,15 @@ fn main() -> ExitCode {
     match Request::read().and_then(Request::answer) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            let chain = std::iter::successors(Some(&error as &(dyn Error + 'static)), |&cause| {
-                cause.source()
-            })
-            .map(ToString::to_string)
-            .collect::<Vec<_>>()
-            .join(": ");
-            eprintln!("cargo-style: {chain}");
+            eprintln!("cargo-style: {}", error_chain(&error));
             ExitCode::FAILURE
         },
     }
+}
+
+fn error_chain(error: &(dyn Error + 'static)) -> String {
+    std::iter::successors(Some(error), |&cause| cause.source())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
 }

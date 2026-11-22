@@ -12,6 +12,7 @@ use super::CommandReading;
 use super::CommandView;
 use super::DirectoryHeading;
 use super::DirectorySeparation;
+use super::DisplayFrameTime;
 use super::FrameColumnGrids;
 use super::FrameTableColumnGrid;
 use super::FreeDiskSpace;
@@ -88,7 +89,13 @@ mod expanded_cache_tests {
         let mut tables = PreparedTables::default();
         let mut roster = Roster::default();
         let view = CommandView::long();
-        tables.for_cell_frame(&mut roster, &[], view, FreeDiskSpace::Unavailable);
+        tables.for_cell_frame(
+            &mut roster,
+            &[],
+            view,
+            FreeDiskSpace::Unavailable,
+            DisplayFrameTime::Live,
+        );
         let CellFramePreparation::Prepared(cell) = &tables.cell else {
             return Err("the cell frame must be prepared".into());
         };
@@ -161,6 +168,7 @@ impl PreparedFrameTables {
 pub(super) struct PreparedPaneFrame {
     pub(super) tables:       PreparedFrameTables,
     pub(super) summary_foot: Rc<SummaryFoot>,
+    pub(super) display_time: DisplayFrameTime,
 }
 
 impl PreparedPaneFrame {
@@ -168,10 +176,12 @@ impl PreparedPaneFrame {
         tables: PreparedFrameTables,
         free_disk_space: FreeDiskSpace,
         summary_foot: &mut SummaryFootPreparation,
+        display_time: DisplayFrameTime,
     ) -> Self {
         Self {
             summary_foot: summary_foot.for_frame(&tables.roster, free_disk_space),
             tables,
+            display_time,
         }
     }
 }
@@ -286,6 +296,7 @@ impl PreparedTables {
         hidden: &[String],
         view: &CommandView,
         free_disk_space: FreeDiskSpace,
+        display_time: DisplayFrameTime,
     ) -> PreparedPaneFrame {
         let mut preparation = std::mem::take(&mut self.cell);
         let mut tables = match preparation {
@@ -298,7 +309,12 @@ impl PreparedTables {
         let prepared = tables.for_table_frame(roster, hidden, view, u16::MAX);
         preparation = CellFramePreparation::Prepared(tables);
         self.cell = preparation;
-        PreparedPaneFrame::new(prepared, free_disk_space, &mut self.summary_foot)
+        PreparedPaneFrame::new(
+            prepared,
+            free_disk_space,
+            &mut self.summary_foot,
+            display_time,
+        )
     }
 
     pub(super) fn for_frame(
@@ -308,9 +324,15 @@ impl PreparedTables {
         view: &CommandView,
         height: u16,
         free_disk_space: FreeDiskSpace,
+        display_time: DisplayFrameTime,
     ) -> PreparedPaneFrame {
         let tables = self.for_table_frame(roster, hidden, view, height);
-        PreparedPaneFrame::new(tables, free_disk_space, &mut self.summary_foot)
+        PreparedPaneFrame::new(
+            tables,
+            free_disk_space,
+            &mut self.summary_foot,
+            display_time,
+        )
     }
 
     fn for_table_frame(
@@ -442,6 +464,7 @@ mod prepared_tables_tests {
                 CommandView::long(),
                 37,
                 FreeDiskSpace::Available(bytes),
+                DisplayFrameTime::Live,
             );
             if let Some(before) = previous.as_ref() {
                 assert!(Rc::ptr_eq(&before.tables.grids, &prepared.tables.grids));

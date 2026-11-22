@@ -7,27 +7,46 @@
 
 use std::ffi::OsString;
 use std::fs;
+use std::io;
 use std::path::Path;
+#[cfg(feature = "attract")]
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::time::Duration;
 use std::time::Instant;
 
+use crossterm::event::KeyCode;
+use crossterm::event::KeyEvent;
+use crossterm::event::KeyModifiers;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use sysinfo::Pid;
 use tempfile::TempDir;
+#[cfg(feature = "attract")]
+use tui_pane::AppIdentity as _;
+#[cfg(feature = "attract")]
+use tui_pane::FavoritesFileState;
 use tui_pane::FocusedPane;
 use tui_pane::FrameworkFocusId;
+use tui_pane::FrameworkHit;
+use tui_pane::FrameworkOverlayId;
 use tui_pane::GlobalAction;
 use tui_pane::NavAction;
 use tui_pane::Navigation;
 use tui_pane::SettingStep;
 use tui_pane::SettingsNavigation;
 use tui_pane::TILE_ROWS_CONTENT_LABEL;
+use tui_pane::TerminalApp;
 use tui_pane::ToastDuration;
+use tui_pane::ToastHit;
 use tui_pane::ToastVisualDeadline;
+use tui_pane::dispatch_key;
 
 use crate::app::App;
+use crate::app::AppPaneId;
+use crate::app::GridView;
 use crate::birth_stamp::BirthStamp;
 use crate::birth_stamp::IdentityEvidence;
 use crate::birth_stamp::KernelObservation;
@@ -44,6 +63,7 @@ use crate::census::scan::ProcessField;
 use crate::census::scan::ProcessObservation;
 use crate::census::scan::ProcessObservations;
 use crate::constants::BYTES_PER_GIBIBYTE;
+use crate::constants::CAPTURE_PROGRESS_TITLE;
 use crate::constants::CPU_COLUMN;
 use crate::constants::LOCK_WAIT_MARKER;
 use crate::constants::NOTICE_TOAST_VISIBLE;
@@ -263,6 +283,530 @@ fn settings_scroll_reaches_every_account_and_later_settings() {
 }
 
 #[test]
+fn capture_shim_lock_notice_closes_with_its_button() {
+    assert_capture_shim_lock_notice_closes(App::click);
+}
+
+#[test]
+fn capture_shim_lock_notice_closes_with_escape_from_the_grid() {
+    assert_capture_shim_lock_notice_closes(press_escape);
+}
+
+fn assert_capture_shim_lock_notice_closes(close: impl FnOnce(&mut App, Position)) {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    app.loaded_config.config.capture.auto_install = true;
+    let error = "/tmp/rustup/toolchains/stable/bin/cargo-tile-shim.lock: \
+                 File exists (os error 17); confirm no install is still running, \
+                 remove this lock file, and run cargo-tile install again";
+    let startup = Startup {
+        failed: vec![("stable".into(), error.into())],
+        ..Startup::default()
+    };
+    hook::with_startup_for_test(startup, || capture::stand_up(&mut app));
+    let mut terminal = Terminal::new(TestBackend::new(240, 60)).expect("startup terminal");
+    assert_notice_closes(&mut terminal, &mut app, "Capture shim", close);
+    assert_settings_notices(
+        &mut terminal,
+        &mut app,
+        &[("Capture shim", format!("stable: not installed: {error}"))],
+    );
+}
+
+macro_rules! notice_close_tests {
+    ($(#[$attribute:meta])* $button:ident, $escape:ident, $scenario:expr) => {
+        $(#[$attribute])*
+        #[test]
+        fn $button() {
+            ($scenario)(App::click);
+        }
+
+        $(#[$attribute])*
+        #[test]
+        fn $escape() {
+            ($scenario)(press_escape);
+        }
+    };
+}
+
+notice_close_tests!(
+    installed_capture_notice_closes_with_button,
+    installed_capture_notice_closes_with_escape,
+    |close| assert_startup_notice_closes(
+        CAPTURE_PROGRESS_TITLE,
+        close,
+        Ok(Startup {
+            installed: vec!["stable".into()],
+            ..Startup::default()
+        })
+    )
+);
+
+notice_close_tests!(
+    updated_capture_notice_closes_with_button,
+    updated_capture_notice_closes_with_escape,
+    |close| assert_startup_notice_closes(
+        "Capture shim updated",
+        close,
+        Ok(Startup {
+            refreshed: vec!["stable".into()],
+            ..Startup::default()
+        })
+    )
+);
+
+notice_close_tests!(
+    unreadable_toolchains_notice_closes_with_button,
+    unreadable_toolchains_notice_closes_with_escape,
+    |close| assert_startup_notice_closes(
+        "Capture shim not installed",
+        close,
+        Err(io::Error::other("could not read toolchains")),
+    )
+);
+
+notice_close_tests!(
+    newer_shim_notice_closes_with_button,
+    newer_shim_notice_closes_with_escape,
+    |close| assert_startup_notice_closes(
+        "Newer capture shim kept",
+        close,
+        Ok(Startup {
+            kept_newer: vec![newer_shim()],
+            ..Startup::default()
+        })
+    )
+);
+
+notice_close_tests!(
+    orphaned_shim_notice_closes_with_button,
+    orphaned_shim_notice_closes_with_escape,
+    |close| assert_startup_notice_closes(
+        "Capture shim",
+        close,
+        Ok(Startup {
+            orphaned: vec!["stable".into()],
+            ..Startup::default()
+        })
+    )
+);
+
+#[test]
+fn escape_closes_the_newest_visible_notice_first() {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    let older_id = app.framework.toasts.push("First notice", "Older");
+    app.framework.toasts.push("Second notice", "Newer");
+    app.framework.toasts.settings_mut().animation.exit_duration =
+        ToastDuration::try_from_secs("exit_duration", 0.0).expect("instant toast exit");
+    let mut terminal = notice_terminal();
+    draw(&mut terminal, &mut app);
+    assert_eq!(app.framework.toasts.hits().len(), 2);
+
+    press_escape(&mut app, Position::default());
+
+    let after_exit = Instant::now() + Duration::from_secs(1);
+    let remaining = app.framework.toasts.active_views(after_exit);
+    assert_eq!(remaining.len(), 1, "one card stays open after Esc");
+    assert_eq!(remaining[0].id(), older_id);
+
+    press_escape(&mut app, Position::default());
+    assert!(!app.framework.toasts.has_active());
+}
+
+notice_close_tests!(
+    notice_closes_from_toast_focus_with_button,
+    notice_closes_from_toast_focus_with_escape,
+    assert_closing_two_notices_returns_focus_to_the_grid
+);
+
+fn assert_closing_two_notices_returns_focus_to_the_grid(close: fn(&mut App, Position)) {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    app.framework.toasts.push("First notice", "Older");
+    app.framework.toasts.push("Second notice", "Newer");
+    let toast_focus = FocusedPane::Framework(FrameworkFocusId::Toasts);
+    app.framework.set_focused(toast_focus);
+    let mut terminal = notice_terminal();
+    draw(&mut terminal, &mut app);
+    assert_eq!(app.framework.toasts.hits().len(), 2);
+    let first = app.framework.toasts.hits()[0].close_rect;
+    let second = app.framework.toasts.hits()[1].close_rect;
+
+    close(&mut app, Position::new(first.x + 1, first.y));
+    assert_eq!(*app.framework.focused(), toast_focus);
+    assert!(app.framework.toasts.has_active());
+
+    close(&mut app, Position::new(second.x + 1, second.y));
+    assert!(!app.framework.toasts.has_active());
+    assert_eq!(*app.framework.focused(), FocusedPane::App(AppPaneId::Main));
+}
+
+#[test]
+#[cfg(feature = "attract")]
+fn escape_closes_the_notice_before_favorites() {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    app.framework
+        .toasts
+        .push("Capture shim", "Installation lock exists");
+    tui_pane::open_favorites_on_state_for_test(
+        &mut app,
+        FavoritesFileState::Missing {
+            path: PathBuf::from("favorites.toml"),
+        },
+    );
+    assert!(app.favorites_overlay.is_open());
+    let mut terminal = notice_terminal();
+
+    assert_notice_closes(&mut terminal, &mut app, "Capture shim", press_escape);
+    assert!(app.favorites_overlay.is_open());
+    press_escape(&mut app, Position::default());
+    assert!(!app.favorites_overlay.is_open());
+}
+
+#[test]
+fn escape_closes_the_notice_before_settings() {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    app.framework
+        .toasts
+        .push("Capture shim", "Installation lock exists");
+    dispatch_key(
+        &mut app,
+        KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+    );
+    let mut terminal = notice_terminal();
+
+    assert_notice_closes(&mut terminal, &mut app, "Capture shim", press_escape);
+    assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+    press_escape(&mut app, Position::default());
+    assert_eq!(app.framework.overlay(), None);
+}
+
+notice_close_tests!(
+    expanded_cell_notice_closes_with_button,
+    expanded_cell_notice_closes_with_escape,
+    assert_closes_a_notice_over_an_expanded_cell
+);
+
+fn assert_closes_a_notice_over_an_expanded_cell(close: fn(&mut App, Position)) {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    let mut terminal = notice_terminal();
+    draw(&mut terminal, &mut app);
+    app.grid_view.expand(Instant::now());
+    app.framework
+        .toasts
+        .push("Capture shim", "Installation lock exists");
+
+    assert_notice_closes(&mut terminal, &mut app, "Capture shim", close);
+    assert!(matches!(
+        app.grid_view,
+        GridView::Expanding { .. } | GridView::Expanded { .. }
+    ));
+    press_escape(&mut app, Position::default());
+    assert!(matches!(app.grid_view, GridView::Collapsing { .. }));
+}
+
+#[test]
+fn escape_closes_settings_when_no_notice_is_visible() {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    let keymap = Rc::clone(&app.keymap);
+    keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+    app.framework
+        .toasts
+        .push("Hidden notice", "Toasts are disabled");
+    app.framework
+        .toasts
+        .settings_mut()
+        .set_toasts_enabled(false);
+    let mut terminal = notice_terminal();
+    let rendered = draw(&mut terminal, &mut app);
+    assert!(!rendered.contains("Hidden notice"));
+
+    press_escape(&mut app, Position::default());
+
+    assert_eq!(app.framework.overlay(), None);
+    assert!(app.framework.toasts.has_active());
+}
+
+#[test]
+fn escape_closes_settings_over_a_covered_notice() {
+    let (mut app, position) = settings_over_notice();
+    press_escape(&mut app, position);
+    assert_eq!(app.framework.overlay(), None);
+    assert!(
+        app.framework.toasts.has_active(),
+        "covered notice stays open"
+    );
+}
+
+#[test]
+fn click_leaves_a_covered_notice_open() {
+    let (mut app, position) = settings_over_notice();
+    app.click(position);
+    assert_eq!(app.framework.overlay(), Some(FrameworkOverlayId::Settings));
+    assert!(
+        app.framework.toasts.has_active(),
+        "covered notice stays open"
+    );
+}
+
+fn settings_over_notice() -> (App, Position) {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    app.framework
+        .toasts
+        .push("Covered notice", "Installation lock exists");
+    let mut terminal = Terminal::new(TestBackend::new(48, 16)).expect("small notice terminal");
+    assert!(draw(&mut terminal, &mut app).contains("Covered notice"));
+    let close = app.framework.toasts.hits()[0].close_rect;
+    let position = Position::new(close.x + 1, close.y);
+    assert_eq!(terminal.backend().buffer()[position].symbol(), "x");
+    let keymap = Rc::clone(&app.keymap);
+    keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
+    assert!(!draw(&mut terminal, &mut app).contains("Covered notice"));
+    assert_ne!(terminal.backend().buffer()[position].symbol(), "x");
+    (app, position)
+}
+
+notice_close_tests!(
+    #[cfg(feature = "attract")]
+    attract_mode_notice_closes_with_button,
+    attract_mode_notice_closes_with_escape,
+    |close| assert_produced_notice_closes("Capture shim", close, |app| {
+        app.attract.request_show();
+        app.framework
+            .set_focused(FocusedPane::App(AppPaneId::Attract(
+                app.attract.current_settings().mode(),
+            )));
+        app.framework
+            .toasts
+            .push("Capture shim", "Installation lock exists");
+    })
+);
+
+#[cfg(feature = "attract")]
+fn with_isolated_favorites(test: &str, run: impl FnOnce(&Path)) {
+    const ROOT: &str = "CARGO_TILE_TEST_FAVORITES_ROOT";
+    if let Some(root) = std::env::var_os(ROOT) {
+        let root = PathBuf::from(root);
+        let path = tui_pane::SettingsFileSpec::new(
+            crate::config::CargoTile::CONFIG_DIRNAME,
+            "favorites.toml",
+        )
+        .resolved_path()
+        .expect("isolated favorites path");
+        assert!(path.starts_with(&root), "favorites path: {path:?}");
+        fs::create_dir_all(path.parent().expect("favorites directory"))
+            .expect("create favorites directory");
+        run(&path);
+        return;
+    }
+    let root = TempDir::new().expect("isolated favorites root");
+    let module = module_path!().split_once("::").expect("test module").1;
+    let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+        .args(["--exact", &format!("{module}::{test}"), "--nocapture"])
+        .env(ROOT, root.path())
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path())
+        .output()
+        .expect("run isolated favorites test");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success() && stdout.contains("1 passed"),
+        "{stdout}{stderr}"
+    );
+}
+
+#[cfg(feature = "attract")]
+macro_rules! favorite_notice_close_tests {
+    ($button:ident, $escape:ident, $title:literal, $action:expr) => {
+        #[test]
+        fn $button() {
+            with_isolated_favorites(stringify!($button), |path| {
+                assert_produced_notice_closes($title, App::click, |app| ($action)(app, path));
+            });
+        }
+
+        #[test]
+        fn $escape() {
+            with_isolated_favorites(stringify!($escape), |path| {
+                assert_produced_notice_closes($title, press_escape, |app| ($action)(app, path));
+            });
+        }
+    };
+}
+
+#[cfg(feature = "attract")]
+fn save_initial_favorite() {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    tui_pane::save_favorite(&mut app);
+}
+
+#[cfg(feature = "attract")]
+favorite_notice_close_tests!(
+    favorite_added_notice_closes_with_button,
+    favorite_added_notice_closes_with_escape,
+    "Favorite added",
+    |app, _| tui_pane::save_favorite(app)
+);
+
+#[cfg(feature = "attract")]
+favorite_notice_close_tests!(
+    favorite_refreshed_notice_closes_with_button,
+    favorite_refreshed_notice_closes_with_escape,
+    "Favorite refreshed",
+    |app: &mut App, _| {
+        save_initial_favorite();
+        tui_pane::save_favorite(app);
+    }
+);
+
+#[cfg(feature = "attract")]
+favorite_notice_close_tests!(
+    favorite_not_saved_notice_closes_with_button,
+    favorite_not_saved_notice_closes_with_escape,
+    "Favorite not saved",
+    |app, path| {
+        fs::write(path, "broken = [").expect("malformed favorites file");
+        tui_pane::save_favorite(app);
+    }
+);
+
+#[cfg(feature = "attract")]
+favorite_notice_close_tests!(
+    favorite_adjusted_notice_closes_with_button,
+    favorite_adjusted_notice_closes_with_escape,
+    "Favorite adjusted",
+    |app: &mut App, path| {
+        fs::write(
+            path,
+            r#"
+[[favorite]]
+id = "01a03f60-9c14-7b41-8a02-1de4c7c9b332"
+saved = "2026-08-26T11:02:44-07:00"
+mode = "moving_band"
+direction = "left"
+width = 10000
+speed = 32
+tail_speed = 72
+fraying = "leading"
+"#,
+        )
+        .expect("write oversized favorite");
+        app.attract.record_terminal_resize(Rect::new(0, 0, 10, 5));
+        tui_pane::show_random_favorite(app);
+    }
+);
+
+#[cfg(feature = "attract")]
+favorite_notice_close_tests!(
+    favorite_not_deleted_notice_closes_with_button,
+    favorite_not_deleted_notice_closes_with_escape,
+    "Favorite not deleted",
+    |app: &mut App, path| {
+        save_initial_favorite();
+        tui_pane::open_favorites(app);
+        draw(&mut notice_terminal(), app);
+        for _ in 0..2 {
+            dispatch_key(app, KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE));
+        }
+        fs::write(path, "broken = [").expect("favorites file becomes malformed");
+        press_escape(app, Position::default());
+    }
+);
+
+notice_close_tests!(
+    #[cfg(feature = "attract")]
+    nothing_to_undo_notice_closes_with_button,
+    nothing_to_undo_notice_closes_with_escape,
+    |close| assert_produced_notice_closes(
+        "Nothing to undo",
+        close,
+        tui_pane::undo_attract_replacement
+    )
+);
+
+notice_close_tests!(
+    #[cfg(feature = "attract")]
+    attract_restored_notice_closes_with_button,
+    attract_restored_notice_closes_with_escape,
+    |close| assert_produced_notice_closes("Attract restored", close, |app| {
+        replace_attract_settings(app);
+        tui_pane::undo_attract_replacement(app);
+    })
+);
+
+notice_close_tests!(
+    #[cfg(feature = "attract")]
+    adjusted_attract_restore_notice_closes_with_button,
+    adjusted_attract_restore_notice_closes_with_escape,
+    |close| assert_produced_notice_closes("Attract restored with adjustments", close, |app| {
+        replace_attract_settings(app);
+        app.attract.record_terminal_resize(Rect::new(0, 0, 4, 3));
+        tui_pane::undo_attract_replacement(app);
+    })
+);
+
+#[cfg(feature = "attract")]
+fn replace_attract_settings(app: &mut App) {
+    app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
+    let settings = app.attract.current_settings();
+    app.attract.apply_settings(settings);
+}
+
+fn assert_startup_notice_closes(
+    title: &str,
+    close: fn(&mut App, Position),
+    startup: io::Result<Startup>,
+) {
+    assert_produced_notice_closes(title, close, |app| capture::report(app, startup));
+}
+
+fn assert_produced_notice_closes(
+    title: &str,
+    close: fn(&mut App, Position),
+    show: impl FnOnce(&mut App),
+) {
+    let mut app = App::new_for_test().expect("isolated startup app");
+    show(&mut app);
+    let mut terminal = notice_terminal();
+    assert_notice_closes(&mut terminal, &mut app, title, close);
+}
+
+fn notice_terminal() -> Terminal<TestBackend> {
+    Terminal::new(TestBackend::new(240, 60)).expect("notice terminal")
+}
+
+fn press_escape(app: &mut App, _: Position) {
+    dispatch_key(app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+}
+
+fn assert_notice_closes(
+    terminal: &mut Terminal<TestBackend>,
+    app: &mut App,
+    title: &str,
+    close: impl FnOnce(&mut App, Position),
+) {
+    let rendered = draw(terminal, app);
+    assert!(rendered.contains(title), "{rendered}");
+    assert_eq!(app.framework.toasts.hits().len(), 1);
+    let hit = app.framework.toasts.hits()[0];
+    let position = Position::new(hit.close_rect.x + 1, hit.close_rect.y);
+    assert_eq!(terminal.backend().buffer()[position].symbol(), "x");
+    assert_eq!(
+        app.framework.hit_test_at(position),
+        Some(FrameworkHit::Toast(ToastHit::Close(hit.id)))
+    );
+
+    close(app, position);
+
+    assert!(!app.framework.toasts.has_active(), "{title} is still open");
+    app.framework
+        .toasts
+        .prune(Instant::now() + Duration::from_secs(60));
+    let rendered = draw(terminal, app);
+    assert!(!rendered.contains(title), "{rendered}");
+    assert_eq!(app.framework.toasts.hits(), []);
+}
+
+#[test]
 fn startup_newer_toast_expires_and_settings_retain_recovery() {
     assert_startup(Startup {
         kept_newer: vec![newer_shim()],
@@ -442,7 +986,7 @@ fn selected_line(rendered: &str) -> &str {
 fn draw(terminal: &mut Terminal<TestBackend>, app: &mut App) -> String {
     let keymap = Rc::clone(&app.keymap);
     terminal
-        .draw(|frame| render::draw(frame, app, &keymap))
+        .draw(|frame| app.draw(frame, &keymap))
         .expect("draw app");
     let buffer = terminal.backend().buffer();
     (0..buffer.area.height)

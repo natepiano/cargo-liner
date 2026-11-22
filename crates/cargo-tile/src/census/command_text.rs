@@ -27,9 +27,9 @@ use crate::constants::COMMAND_WORD_SEPARATOR;
 use crate::constants::FLAG_MARK;
 use crate::constants::HOME_ALIAS;
 use crate::constants::NEXTEST_SUBCOMMAND_NAME;
+use crate::constants::RUSTC_ARGUMENT_OWNERS;
 use crate::constants::RUSTC_CRATE_NAME_FLAG;
 use crate::constants::RUSTC_CRATE_NAME_PREFIX;
-use crate::constants::RUSTC_LINT_OWNERS;
 use crate::constants::SELF_PROCESS_NAME;
 use crate::constants::ValuedOptionScope;
 
@@ -187,16 +187,16 @@ pub(crate) enum CommandWordDisplay<'a> {
 #[derive(Clone, Copy)]
 enum ArgumentOwner {
     Cargo,
-    RustcLint,
+    Rustc,
     Nextest,
     Other,
 }
 
 impl ArgumentOwner {
-    /// Compiler frontends share the same lint argument language.
+    /// Compiler frontends use the same argument rules as rustc.
     fn compiler(program: &str) -> Self {
-        if RUSTC_LINT_OWNERS.contains(&program_name(program)) {
-            Self::RustcLint
+        if RUSTC_ARGUMENT_OWNERS.contains(&program_name(program)) {
+            Self::Rustc
         } else {
             Self::Other
         }
@@ -214,8 +214,8 @@ impl ArgumentOwner {
                             | ValuedOptionScope::Cargo
                             | ValuedOptionScope::CargoAndRustc
                     ) | (
-                        Self::RustcLint,
-                        ValuedOptionScope::RustcLint
+                        Self::Rustc,
+                        ValuedOptionScope::Rustc
                             | ValuedOptionScope::GlobalAndRustc
                             | ValuedOptionScope::CargoAndRustc
                     ) | (
@@ -337,7 +337,7 @@ impl CommandText {
         let command_layout = if CARGO_PROCESS_NAMES.contains(&program_name(&program))
             && arguments.first().is_some_and(|argument| {
                 argument.contains(MAIN_SEPARATOR)
-                    && RUSTC_LINT_OWNERS.contains(&program_name(argument))
+                    && RUSTC_ARGUMENT_OWNERS.contains(&program_name(argument))
             }) {
             program = program_name(&arguments.remove(0)).to_string();
             let mut crate_name = CompilerCrate::Unnamed;
@@ -439,7 +439,7 @@ impl CommandText {
     pub(crate) fn compiler_argument_layout(&self) -> CompilerArgumentLayout {
         match self.words.first().map(|word| &word.kind) {
             Some(CommandWordKind::Value(program))
-                if matches!(ArgumentOwner::compiler(program), ArgumentOwner::RustcLint) =>
+                if matches!(ArgumentOwner::compiler(program), ArgumentOwner::Rustc) =>
             {
                 CompilerArgumentLayout::ForwardedExecutable
             },
@@ -898,6 +898,35 @@ fn base_name(argument: &OsString) -> String {
     reason = "tests should panic on unexpected values"
 )]
 mod tests {
+    #[test]
+    fn phase_32g_rustc_options_bind_only_in_compiler_arguments() {
+        for (flag, value) in [
+            ("-L", "dependency=target/debug/deps"),
+            ("--out-dir", "target/debug/deps"),
+            ("--check-cfg", "cfg(feature, values())"),
+        ] {
+            for (program, mut arguments, binds) in [
+                ("rustc", vec![], true),
+                ("clippy-driver", vec!["/toolchain/bin/rustc"], true),
+                ("cargo", vec!["rustc", "--"], true),
+                ("cargo", vec!["clippy", "--"], true),
+                ("cargo", vec!["check"], false),
+                ("cargo", vec!["nextest", "run"], false),
+                ("cargo", vec!["test", "--"], false),
+            ] {
+                arguments.extend([flag, value]);
+                let command = CommandText::of(program, &arguments);
+                let bound = command.display_words().any(|word| {
+                    matches!(word.display_word(), CommandWordDisplay::FlagWithValue {
+                        flag: actual_flag,
+                        value: actual_value,
+                    } if actual_flag == flag && actual_value == value)
+                });
+                assert_eq!(bound, binds, "{program} {arguments:?}");
+            }
+        }
+    }
+
     #[test]
     fn a_rustc_wrapper_call_reads_its_frontend_and_crate() {
         for (frontend, crate_arguments, displayed) in [

@@ -11,6 +11,8 @@ use crossterm::event::MouseEvent;
 use crossterm::event::MouseEventKind;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
+use tui_pane::SettingsPane;
+use tui_pane::ThemeRegistry;
 
 use super::SettingOption;
 use super::selected_setting;
@@ -19,6 +21,7 @@ use crate::tui::app::App;
 use crate::tui::input;
 use crate::tui::render;
 use crate::tui::test_support;
+use crate::tui::theme_roles;
 
 fn key(app: &mut App, code: KeyCode) {
     input::handle_event(app, &Event::Key(KeyEvent::new(code, KeyModifiers::NONE)));
@@ -28,6 +31,32 @@ fn draw(app: &mut App, terminal: &mut Terminal<TestBackend>) {
     terminal
         .draw(|frame| render::ui(frame, app))
         .expect("draw settings");
+}
+
+#[test]
+fn the_overlay_selected_row_meets_contrast() {
+    let mut app = test_support::make_app(&[]);
+    let mut terminal = Terminal::new(TestBackend::new(120, 40)).expect("settings terminal");
+    let mut registry = ThemeRegistry::new_with_builtins(crate::themes::builtins());
+    theme_roles::apply_role_defaults_to_registry(&mut registry);
+    key(&mut app, KeyCode::Char('s'));
+    draw(&mut app, &mut terminal);
+    let target = selection_index_for_setting(&app, SettingOption::NavigationKeys)
+        .expect("navigation keys setting");
+    app.framework.settings_pane.select_row(target);
+    let expected_row = if app.config.navigation_keys().uses_vim() {
+        "▶ Vim nav keys < ON >"
+    } else {
+        "▶ Vim nav keys < OFF >"
+    };
+
+    for variant in registry.all() {
+        let _theme = test_support::ThemeOverride::install(variant.theme.clone());
+        draw(&mut app, &mut terminal);
+        let area = app.framework.settings_pane.viewport().content_area();
+        let buffer = terminal.backend().buffer();
+        SettingsPane::assert_selected_row_contrast(buffer, area, expected_row, variant.id.as_str());
+    }
 }
 
 fn at_end() -> (App, Terminal<TestBackend>, usize) {

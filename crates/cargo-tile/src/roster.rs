@@ -158,15 +158,16 @@ pub(crate) struct TrackedRow {
 #[cfg(test)]
 impl From<CargoProcess> for TrackedRow {
     fn from(process: CargoProcess) -> Self {
-        Self::with_clock(process, RosterClock(Rc::new(Cell::new(Instant::now()))))
+        let now = Instant::now();
+        Self::with_clock(process, RosterClock(Rc::new(Cell::new(now))), now)
     }
 }
 
 impl TrackedRow {
     /// Bind a newly observed row to the roster's frame clock.
-    fn with_clock(process: CargoProcess, clock: RosterClock) -> Self {
+    fn with_clock(process: CargoProcess, clock: RosterClock, observed_at: Instant) -> Self {
         Self {
-            continuity: InvocationContinuity::new(process, clock.0.get()),
+            continuity: InvocationContinuity::new(process, observed_at),
             faded: RowFade::Retained(0),
             entry: Rc::new(Cell::new(CellEntry::AwaitingText)),
             clock,
@@ -354,15 +355,15 @@ pub(crate) struct TrackedGroup {
 
 impl TrackedGroup {
     /// New rows share the roster's frame time, including children that arrive later.
-    fn with_clock(group: CargoGroup, clock: &RosterClock) -> Self {
-        let lead = TrackedRow::with_clock(group.lead, clock.clone());
+    fn with_clock(group: CargoGroup, clock: &RosterClock, observed_at: Instant) -> Self {
+        let lead = TrackedRow::with_clock(group.lead, clock.clone(), observed_at);
         Self {
             id: lead.continuity.key().clone(),
             lead,
             rest: group
                 .rest
                 .into_iter()
-                .map(|process| TrackedRow::with_clock(process, clock.clone()))
+                .map(|process| TrackedRow::with_clock(process, clock.clone(), observed_at))
                 .collect(),
             ancestry: group.ancestry,
         }
@@ -399,8 +400,8 @@ impl TrackedGroup {
     /// Rows the scan no longer carries are stamped rather than dropped,
     /// and stay where they sat: a sub-command finishing should fade out
     /// of the place it occupied, not pull the rows under it upward.
-    fn refresh(&mut self, group: CargoGroup, now: Instant) {
-        self.lead.refresh(group.lead, now);
+    fn refresh(&mut self, group: CargoGroup, time: RosterScanTime) {
+        self.lead.refresh(group.lead, time.observed);
         self.ancestry = group.ancestry;
         let mut arriving = group.rest;
         for tracked in &mut self.rest {
@@ -408,15 +409,13 @@ impl TrackedGroup {
                 .iter()
                 .position(|process| tracked.process.invocation_id == process.invocation_id)
             {
-                Some(index) => tracked.refresh(arriving.remove(index), now),
-                None => tracked.finish(now),
+                Some(index) => tracked.refresh(arriving.remove(index), time.observed),
+                None => tracked.finish(time.display),
             }
         }
-        self.rest.extend(
-            arriving
-                .into_iter()
-                .map(|process| TrackedRow::with_clock(process, self.lead.clock.clone())),
-        );
+        self.rest.extend(arriving.into_iter().map(|process| {
+            TrackedRow::with_clock(process, self.lead.clock.clone(), time.observed)
+        }));
     }
 
     /// Stamp the whole group as finished.
@@ -584,6 +583,23 @@ impl Default for Roster {
     fn default() -> Self { Self::new() }
 }
 
+/// An accepted scan uses observation time for durations and display time for fades.
+#[derive(Clone, Copy)]
+pub(crate) struct RosterScanTime {
+    pub(crate) observed: Instant,
+    pub(crate) display:  Instant,
+}
+
+#[cfg(test)]
+impl RosterScanTime {
+    pub(crate) const fn live(now: Instant) -> Self {
+        Self {
+            observed: now,
+            display:  now,
+        }
+    }
+}
+
 impl Roster {
     /// An empty roster.
     pub(crate) fn new() -> Self {
@@ -664,11 +680,17 @@ impl Roster {
     /// A group the scan still carries keeps its place: the display is
     /// ordered by when a command started, and re-sorting on every scan
     /// would shuffle tiles under the reader for no reason.
-    pub(crate) fn observe(&mut self, mut scan: Vec<CargoGroup>, now: Instant) -> bool {
+    #[cfg(test)]
+    pub(crate) fn observe(&mut self, scan: Vec<CargoGroup>, now: Instant) -> bool {
+        self.observe_at(scan, RosterScanTime::live(now))
+    }
+
+    /// Apply a scan with separate times for duration readings and fades.
+    pub(crate) fn observe_at(&mut self, mut scan: Vec<CargoGroup>, time: RosterScanTime) -> bool {
         if scan == self.last {
             let mut changed = false;
             for row in self.groups.iter_mut().flat_map(TrackedGroup::rows_mut) {
-                changed |= row.continuity.advance_retained_clock(now);
+                changed |= row.continuity.advance_retained_clock(time.observed);
             }
             if changed {
                 self.revision = RosterRevision::default();
@@ -676,7 +698,7 @@ impl Roster {
             return changed;
         }
         self.revision = RosterRevision::default();
-        self.clock.0.set(now);
+        self.clock.0.set(time.display);
         self.last.clone_from(&scan);
         let mut rows: Vec<_> = scan
             .iter_mut()
@@ -698,16 +720,16 @@ impl Roster {
                 .find(|tracked| tracked.id == group.lead.invocation_id)
             {
                 arriving.insert(tracked.id.clone());
-                tracked.refresh(group, now);
+                tracked.refresh(group, time);
             } else {
-                let tracked = TrackedGroup::with_clock(group, &self.clock);
+                let tracked = TrackedGroup::with_clock(group, &self.clock, time.observed);
                 arriving.insert(tracked.id.clone());
                 self.groups.push(tracked);
             }
         }
         for tracked in &mut self.groups {
             if !arriving.contains(&tracked.id) {
-                tracked.finish(now);
+                tracked.finish(time.display);
             }
         }
         let keys = self

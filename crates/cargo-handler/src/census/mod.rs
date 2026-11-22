@@ -92,7 +92,9 @@ pub(crate) use placement::RowRole;
 #[cfg(test)]
 pub(crate) use placement::mesh_worker_fixture;
 use remote::ProbeOutcome;
+use remote::probe_answer;
 use scan::ScanStage;
+use scan::SessionProcesses;
 use serde::Deserialize;
 use serde::Serialize;
 pub(crate) use session_identity::AstraSessionMembership;
@@ -803,14 +805,14 @@ impl RemoteHierarchyAnswers {
         }
     }
 
-    /// The machine state one probe outcome gives, through [`Self::apply`] when it answered.
-    fn answer(&mut self, host: &str, outcome: ProbeOutcome) -> MachineState {
-        match outcome {
-            ProbeOutcome::Finished {
-                status: Some(0),
-                stdout,
-            } => self.apply(host, probe::parse_answer(&stdout)),
-            outcome => remote::machine_state(outcome),
+    /// Apply the probe outcome and return the session processes with the machine state.
+    fn answer(&mut self, host: &str, outcome: ProbeOutcome) -> (MachineState, SessionProcesses) {
+        match probe_answer(outcome) {
+            Ok(answer) => (
+                self.apply(host, Ok((answer.rows, answer.hierarchy))),
+                answer.session_processes,
+            ),
+            Err(reason) => (MachineState::Failed(reason), SessionProcesses::new()),
         }
     }
 
