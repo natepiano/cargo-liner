@@ -1118,3 +1118,33 @@ The copies are deleted. No source changes.
 - The reproduction fails on main and passes after the fix.
 - The idle CPU pairs show no increase, or the reply names the cost.
 - No changed test takes one second or more.
+
+### Phase 53 — cargo-berth hooks stop rewriting the whole replay checkpoint  · status: todo
+
+#### Work Order
+
+**Goal:** the cargo-berth hooks write to disk in proportion to the journal records they add, not the size of the ledger. Source: the showrunner and bob, 2026-11-22, from a natedev disk-write measure.
+
+**Spec:**
+1. The fault (natedev, 2026-11-22 01:23 to 01:33 EST): the cargo-berth post-tool-use hook wrote 1.9 GiB in 10 minutes to the system disk (about 0.27 TB a day). In `~/rust/hana/.git/cargo-berth`, `replay-checkpoint.json` is 44 MB and `journal.ndjson` is 248 MB.
+2. The cause, read in the code: `ReplayCheckpoint::replay_journal` (`crates/cargo-berth/src/ledger/replay_checkpoint.rs`) writes the whole `JournalReplay` again (temporary file, then rename) each time a replay folds `REPLAY_CHECKPOINT_INTERVAL_BYTES` (256 KiB) or `REPLAY_CHECKPOINT_INTERVAL_RECORDS` (256) past the checkpoint. Every hook call replays, locked and lock-free, so with a large ledger each 256 records cost a 44 MB write, and concurrent hooks can each write one.
+3. First measure it in a test: the bytes written per appended record with a ledger of realistic size. Then fix the cause, so that the written bytes scale with the appended records. Name the choice: an append-only checkpoint, fewer writes (for example one writer under the mutation lock, or an interval that scales with the checkpoint size), or a smaller fold state.
+4. Find why the 248 MB journal does not compact below `JOURNAL_COMPACTION_THRESHOLD_BYTES` (16 MiB). The once-a-minute history check (`compact_expired_history`) replays it each time. Fix it, or name why the journal must stay that large.
+5. Two compaction temporary files stay in the hana folder: `journal.ndjson.compact.tmp.01a1ff29-…` (245 MB, 2026-11-21 12:31) and `journal.ndjson.compact.tmp.01a18696-….checkpoint.01a18696-….tmp` (13.6 MB, 2026-10-29 03:36). Find why `remove_abandoned_compaction_files` does not remove them, and fix that. Remove nothing in a live ledger by a tool in this phase: the two existing files go to the user's by-hand removal list.
+6. CPU cost ranks first: report the CPU and the read bytes of one hook call before and after, on the hana ledger size.
+
+**Files:**
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — the checkpoint write
+- `crates/cargo-berth/src/ledger/constants.rs` — the intervals
+- `crates/cargo-berth/src/ledger/journal.rs` and `crates/cargo-berth/src/ledger/handle.rs` — the replay callers
+- `crates/cargo-berth/src/ledger/compaction.rs` — compaction and its temporary files
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- The write-volume test fails before the fix and passes after it.
+- No changed test takes one second or more.
