@@ -53,6 +53,8 @@ use cargo_berth_test_support::json;
 pub(super) use tempfile::TempDir;
 pub(super) use tempfile::tempdir;
 
+use crate::edges_templates;
+use crate::edges_templates::EQUIVALENT_SUCCESSOR;
 use crate::recorded_history;
 
 pub(super) const CONFIGURATION_PATH: &str = ".claude/config/berth.toml";
@@ -1132,4 +1134,192 @@ fn commit_middle_work(middle_root: &Path) {
             "middle work",
         ],
     );
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum AbandonedEndpoint {
+    Predecessor,
+    Successor,
+}
+
+/// Two claimed endpoints before either endpoint disappears.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct AbandonablePair {
+    pub(super) predecessor_root: PathBuf,
+    pub(super) successor_root:   PathBuf,
+    pub(super) predecessor_id:   String,
+    pub(super) successor_id:     String,
+}
+
+pub(super) const BEFORE_PREDECESSOR_ABANDONMENT: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("edges-before-predecessor-abandonment", |root| {
+        build_abandonable_pair(root, AbandonedEndpoint::Predecessor);
+    });
+pub(super) const BEFORE_SUCCESSOR_ABANDONMENT: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("edges-before-successor-abandonment", |root| {
+        build_abandonable_pair(root, AbandonedEndpoint::Successor);
+    });
+
+fn build_abandonable_pair(destination: &Path, endpoint: AbandonedEndpoint) {
+    let fixture = EdgeReadinessFixture::new();
+    let (predecessor_root, successor_root) = fixture.start_case(0);
+    let (predecessor_id, successor_id) = match endpoint {
+        AbandonedEndpoint::Predecessor => {
+            dirty_source(&predecessor_root, "src/lib.rs");
+            let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
+            let predecessor_id = reservation_id(&predecessor);
+            let successor = defer_claim(
+                &successor_root,
+                "file:src/lib.rs",
+                SECOND_RUN,
+                &predecessor_id,
+            );
+            let successor_id = reservation_id(&successor);
+            (predecessor_id, successor_id)
+        },
+        AbandonedEndpoint::Successor => {
+            dirty_source(&predecessor_root, "src/lib.rs");
+            // Keep work in the successor's scope. Reconciliation retires an empty orphan
+            // before this test can confirm its abandonment.
+            dirty_source(
+                &successor_root,
+                &cargo_berth_test_support::deferring_run_path(SECOND_RUN),
+            );
+            let predecessor = claim(&predecessor_root, "tree:src", FIRST_RUN);
+            let predecessor_id = reservation_id(&predecessor);
+            let successor = defer_claim(
+                &successor_root,
+                "file:src/lib.rs",
+                SECOND_RUN,
+                &predecessor_id,
+            );
+            let successor_id = reservation_id(&successor);
+            (predecessor_id, successor_id)
+        },
+    };
+    recorded_history::save(
+        destination,
+        fixture.repository.path(),
+        &AbandonablePair {
+            predecessor_root,
+            successor_root,
+            predecessor_id,
+            successor_id,
+        },
+    );
+}
+
+/// An active predecessor has reached integration before the ordering command.
+pub(super) const ACTIVE_CROSS_TARGET_BEFORE_SEQUENCE: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template(
+        "edges-active-cross-target-before-sequence",
+        build_active_cross_target_before_sequence,
+    );
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct CrossTargetSequenceHistory {
+    pub(super) predecessor_id: String,
+    pub(super) successor_id:   String,
+}
+
+fn build_active_cross_target_before_sequence(destination: &Path) {
+    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
+    let predecessor = repo.lane("active-cross-a", "integration");
+    let successor = repo.main_lane("active-cross-x");
+    write_file(&predecessor, "shared.txt", "A\n");
+    let predecessor_id = claim_id(&repo.claim(&predecessor, "file:shared.txt", FIRST_RUN, None));
+    let successor_id =
+        claim_id(&repo.defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id));
+    repo.commit_file(&predecessor, "shared.txt", "A\n", "A work");
+    repo.merge_by_commit("active-cross-a");
+
+    recorded_history::save(
+        destination,
+        repo.root(),
+        &CrossTargetSequenceHistory {
+            predecessor_id,
+            successor_id,
+        },
+    );
+}
+
+pub(super) const WITNESS_SETTLEMENT_BOARD: &str = ".git/witness-settlement-board.json";
+
+/// The historical witness after settlement and before pruning.
+pub(super) const WITNESS_BEFORE_PRUNING: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("edges-witness-before-pruning", build_witness_before_pruning);
+
+fn build_witness_before_pruning(destination: &Path) {
+    let repository = EQUIVALENT_SUCCESSOR.instantiate();
+    let root = repository.path();
+    let fixture = edges_templates::successor_history_state(root);
+    edges_templates::append_edge_fixture_event(
+        root,
+        serde_json::json!({
+            "op": "successor_scoped_patch_equivalence_checked",
+            "predecessor_reservation_id": fixture.predecessor_id,
+            "subject": 1, "successor_head": fixture.successor_head,
+            "verdict": "different",
+        }),
+    );
+
+    assert_eq!(edges_templates::journal_operation_count(root, "release"), 0);
+    git(root, &["config", "core.hooksPath", "/dev/null"]);
+    let witness = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(witness, fixture.protected_tip);
+    assert_ne!(witness, fixture.successor_head);
+    assert!(!git_status(
+        root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &fixture.protected_tip,
+            &witness
+        ]
+    ));
+    assert!(!git_status(
+        root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            &witness,
+            &fixture.successor_head
+        ]
+    ));
+    assert_eq!(
+        git_stdout(root, &["rev-parse", &format!("{witness}^{{tree}}")]),
+        git_stdout(
+            root,
+            &["rev-parse", &format!("{}^{{tree}}", fixture.successor_head)]
+        ),
+        "the successor has equivalent content without the recorded witness"
+    );
+
+    // Establish the dependency before trunk integration so settlement must retain its witness.
+    git(root, &["reset", "--hard", &fixture.phase_start_head]);
+    let ordered = sequence(
+        root,
+        &fixture.predecessor_id,
+        &fixture.successor_id,
+        "the successor must contain the integration witness",
+    );
+    assert!(ordered.status.success(), "{}", json_output(&ordered));
+    git(root, &["reset", "--hard", &witness]);
+
+    // Model the holder after its branch was rebased onto the equivalent trunk commit.
+    let predecessor_root = root.join(".git/fixture-worktrees/predecessor");
+    git(&predecessor_root, &["reset", "--hard", &witness]);
+    edges_templates::commit_successor_fixture_file(
+        root,
+        "src/lib.rs",
+        "fn later_trunk_work() {}\n",
+        "rewrite the integrated hunk after its witness",
+    );
+    let evaluated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
+    assert_ne!(evaluated_trunk, witness);
+    let settled = run_berth(root, &["board", "--json"]);
+    assert!(settled.status.success());
+    fs::write(root.join(WITNESS_SETTLEMENT_BOARD), settled.stdout)
+        .expect("settlement board should record");
+    recorded_history::save(destination, root, &witness);
 }

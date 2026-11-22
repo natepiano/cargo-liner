@@ -25,6 +25,7 @@ use gate_fixtures::BEFORE_UNINTERRUPTED_APPLY_REBASE_REANCHORS_ACTIVE_RESERVATIO
 use gate_fixtures::BERTH_EXECUTABLE;
 use gate_fixtures::BYPASS_ENVIRONMENT;
 use gate_fixtures::CONFIGURATION_PATH;
+use gate_fixtures::ClosedStderrHistory;
 use gate_fixtures::Command;
 use gate_fixtures::CommittedFeatureRebaseHookPhasesHistory;
 use gate_fixtures::DeferredEndpointsHistory;
@@ -5298,15 +5299,24 @@ fn observe_enforce_and_one_use_force_apply_to_both_deferred_endpoints() {
 
 #[test]
 fn deferred_gate_observes_closed_stderr_then_enforces_every_entering_reservation() {
-    let deferred_pair = deferred_pair(initialized_repository());
+    let worktrees = tempdir().expect("gate worktree parent should exist");
+    let repository =
+        gate_fixtures::CLOSED_STDERR_PAIR.instantiate_with_external_worktrees(worktrees.path());
+    let ClosedStderrHistory {
+        blocked_root,
+        blocked_id,
+        holder_id,
+        base,
+        blocked_head,
+    } = recorded_history::read(repository.path());
+    let deferred_pair = DeferredPair {
+        repository,
+        worktrees,
+        blocked_root,
+        blocked_id,
+        holder_id,
+    };
     let repository = &deferred_pair.repository;
-    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
-    let blocked_head = commit_work(
-        &deferred_pair.blocked_root,
-        "src/lib.rs",
-        "pub fn blocked_work() {}\n",
-        "blocked work",
-    );
     for case in [
         DeferredGateCase::ObserveClosedStderr,
         DeferredGateCase::EnforceEnteringReservations,

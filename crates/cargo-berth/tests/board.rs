@@ -5,6 +5,12 @@
 
 //! Built-binary tests for the headless board and its coherent replay projection.
 
+#[path = "support/linked_checkout.rs"]
+mod linked_checkout;
+
+#[path = "support/recorded_history.rs"]
+mod recorded_history;
+
 #[path = "support/board_templates.rs"]
 mod board_templates;
 
@@ -17,6 +23,8 @@ mod prepared_lock_tests;
 
 #[path = "support/proof_subject_templates.rs"]
 mod proof_subject_templates;
+use board_templates::UnconstrainedHolders;
+use board_templates::UnresolvedOverlap;
 use cargo_berth_test_support::DirectorySnapshot;
 use cargo_berth_test_support::FIRST_RUN;
 use cargo_berth_test_support::GitDriver;
@@ -872,52 +880,13 @@ fn waiting_ordering_edge(entry: &serde_json::Value) -> serde_json::Value {
 
 #[test]
 fn both_unresolved_overlap_endpoints_are_queryable_and_listed_as_waiting() {
-    let repository = initialized_repository();
-    git(repository.path(), &["add", "--force", CONFIGURATION_PATH]);
-    GIT.run_without_hooks(
-        repository.path(),
-        ["commit", "--quiet", "-m", "configure berth"],
-    );
-    let (_blocker_directory, blocker_root) = foreign_worktree(&repository, "blocker");
-    let (_deferred_directory, deferred_root) = foreign_worktree(&repository, "deferred");
-    dirty_source(&blocker_root, "src/lib.rs");
-    let blocker = claim(&blocker_root, "file:src/lib.rs", FIRST_RUN);
-    let blocker_id = reservation_id(&blocker);
-    let deferred = defer_claim(&deferred_root, "file:src/lib.rs", SECOND_RUN, &blocker_id);
-    let deferred_id = reservation_id(&deferred);
-
-    fs::write(blocker_root.join("src/lib.rs"), "pub fn blocker() {}\n")
-        .expect("blocker source should write");
-    git(&blocker_root, &["add", "src/lib.rs"]);
-    git(&blocker_root, &["commit", "--quiet", "-m", "blocker work"]);
-    let blocker_tip = git_stdout(&blocker_root, &["rev-parse", "HEAD"]);
-    assert!(
-        run_berth_with_run(
-            &blocker_root,
-            &["release", &blocker_id, "--json"],
-            FIRST_RUN,
-        )
-        .status
-        .success()
-    );
-
-    fs::write(deferred_root.join("src/lib.rs"), "pub fn deferred() {}\n")
-        .expect("deferred source should write");
-    git(&deferred_root, &["add", "src/lib.rs"]);
-    git(
-        &deferred_root,
-        &["commit", "--quiet", "-m", "deferred work"],
-    );
-    let deferred_tip = git_stdout(&deferred_root, &["rev-parse", "HEAD"]);
-    assert!(
-        run_berth_with_run(
-            &deferred_root,
-            &["release", &deferred_id, "--json"],
-            SECOND_RUN,
-        )
-        .status
-        .success()
-    );
+    let repository = board_templates::UNRESOLVED_OVERLAP.instantiate();
+    let UnresolvedOverlap {
+        blocker_id,
+        deferred_id,
+        blocker_tip,
+        deferred_tip,
+    } = crate::recorded_history::read(repository.path());
 
     let complete_board = board_data(repository.path());
     let overlap = &complete_board["unresolved_overlaps"]["entries"][0];
@@ -2229,75 +2198,11 @@ fn renew_is_activity_but_unrelated_events_and_head_movement_are_not() {
 
 #[test]
 fn unconstrained_holders_show_all_liveness_states_and_distinct_history_failures() {
-    let repository = initialized_repository();
-    git(
-        repository.path(),
-        &["add", "--force", ".claude/config/berth.toml"],
-    );
-    GIT.run_without_hooks(
-        repository.path(),
-        ["commit", "--quiet", "-m", "configure berth"],
-    );
-    let worktrees = tempdir().expect("worktree directory should exist");
-    let live_root = add_worktree(repository.path(), worktrees.path(), "live-holder");
-    let unavailable_root = add_worktree(repository.path(), worktrees.path(), "unavailable-holder");
-    let candidate_root = add_worktree(repository.path(), worktrees.path(), "candidate-holder");
-    let orphaned_root = add_worktree(repository.path(), worktrees.path(), "orphaned-holder");
-    let unknown_root = add_worktree(repository.path(), worktrees.path(), "unknown-holder");
-    let unrelated_root = add_worktree(repository.path(), worktrees.path(), "unrelated-holder");
-
-    let roots = [
-        &live_root,
-        &unavailable_root,
-        &candidate_root,
-        &orphaned_root,
-        &unknown_root,
-    ];
-    let reservation_ids = roots
-        .iter()
-        .enumerate()
-        .map(|(index, root)| {
-            reservation_id(&claim(
-                root,
-                &format!("file:liveness-{index}.rs"),
-                &uuid::Uuid::now_v7().to_string(),
-            ))
-        })
-        .collect::<Vec<_>>();
-    let orphaned_administrative_directory = worktree_administrative_directory(&orphaned_root);
-    let unknown_administrative_directory = worktree_administrative_directory(&unknown_root);
-
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "lock",
-            unavailable_root
-                .to_str()
-                .expect("unavailable root should be UTF-8"),
-        ],
-    );
-    fs::remove_dir_all(&candidate_root).expect("candidate root should remove");
-    fs::remove_dir_all(&orphaned_root).expect("orphaned root should remove");
-    fs::remove_dir_all(orphaned_administrative_directory)
-        .expect("orphaned registration should remove");
-    fs::remove_file(unknown_administrative_directory.join("cargo-berth-worktree-id"))
-        .expect("unknown holder identity should remove");
-
-    git(
-        &unrelated_root,
-        &["checkout", "--quiet", "--orphan", "unrelated-root"],
-    );
-    git(&unrelated_root, &["add", "."]);
-    git(
-        &unrelated_root,
-        &["commit", "--quiet", "-m", "unrelated root"],
-    );
-    let unrelated_id = reservation_id(&claim(
-        &unrelated_root,
-        "file:unrelated.rs",
-        &uuid::Uuid::now_v7().to_string(),
-    ));
+    let repository = board_templates::UNCONSTRAINED_HOLDERS.instantiate();
+    let UnconstrainedHolders {
+        reservation_ids,
+        unrelated_id,
+    } = crate::recorded_history::read(repository.path());
 
     let data = board_data(repository.path());
     for (reservation_id, expected_liveness) in reservation_ids.iter().zip([
@@ -7636,16 +7541,6 @@ fn add_worktree(repository_root: &Path, parent: &Path, branch: &str) -> std::pat
     // journal must carry the same form the engine parses into `CanonicalWorktreeRoot`. On macOS
     // `/tmp` resolves to `/private/tmp`, which the unresolved `parent.join(branch)` would not.
     fs::canonicalize(&root).expect("new worktree should canonicalize")
-}
-
-fn worktree_administrative_directory(worktree_root: &Path) -> PathBuf {
-    let git_file = fs::read_to_string(worktree_root.join(".git")).expect("git file should read");
-    PathBuf::from(
-        git_file
-            .trim()
-            .strip_prefix("gitdir: ")
-            .expect("linked worktree git file should name its directory"),
-    )
 }
 
 /// A declared overlap needs actual uncommitted work in the holder's branch.

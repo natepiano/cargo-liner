@@ -1172,3 +1172,51 @@ pub(super) struct PrunableAndPrunedWorktreesKeepBlockingAndPrunedWorkReportsReco
     pub(super) reservation_id: String,
     pub(super) protected_tip:  String,
 }
+
+/// A claimed commit before retention publication fails.
+pub(super) const RETENTION_BEFORE_CHECKPOINT: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template(
+        "liveness-retention-before-checkpoint",
+        build_retention_before_checkpoint,
+    );
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct RetentionCheckpointHistory {
+    pub(super) observer:       PathBuf,
+    pub(super) protected_tip:  String,
+    pub(super) reservation_id: String,
+}
+
+fn build_retention_before_checkpoint(destination: &Path) {
+    let repository = initialized_repository();
+    let observer_parent = tempfile::tempdir().expect("observer worktree parent should exist");
+    let observer = observer_parent.path().join("observer");
+    git(
+        repository.path(),
+        &[
+            "worktree",
+            "add",
+            "--quiet",
+            "--detach",
+            observer.to_str().expect("observer path should be UTF-8"),
+            "main",
+        ],
+    );
+    git(repository.path(), &["switch", "--quiet", "-c", "retention"]);
+    commit_file(repository.path(), "retained", "work\n", "retained work");
+    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let claim = run_berth(
+        repository.path(),
+        &["claim", "file:retained", "--run", FIRST_RUN, "--json"],
+    );
+    let reservation_id = reservation_id(&claim);
+    recorded_history::save(
+        destination,
+        repository.path(),
+        &RetentionCheckpointHistory {
+            observer,
+            protected_tip,
+            reservation_id,
+        },
+    );
+}

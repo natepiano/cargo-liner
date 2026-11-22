@@ -1073,7 +1073,7 @@ fn assert_upper_checkpoint_survives_stacked_split(order: StackedBranchWriteOrder
     let editor = fixture.worktrees.path().join("stacked-order-editor");
     assert_ne!(old_upper, new_upper);
     assert_eq!(
-        GIT.stdout(&fixture.holder, ["rev-parse", "lower"]),
+        loose_refs::read_loose_ref(fixture.root(), "refs/heads/lower"),
         split_tip
     );
     let mut markers = reanchoring_templates::pending_markers(fixture.root());
@@ -1119,9 +1119,17 @@ pub(super) fn split_checkpoint_survives_switching_the_issuing_checkout_before_bo
 
 /// The split rebase itself: its stop, its two new commits and the rewrite its hooks capture.
 fn assert_split_captures_ref_change(change: SplitRefChange) {
-    let (fixture, state) = split_checkpoint_before_ref_change(change);
-    let editor = fixture.worktrees.path().join("split-editor");
-    reanchoring_templates::continue_split(&fixture, state, &editor, change);
+    if matches!(change, SplitRefChange::UpdatedSibling) {
+        let fixture = RewriteFixture::from_repository(
+            reanchoring_templates::SIBLING_SPLIT_BEFORE_CONTINUATION.instantiate(),
+        );
+        let state = reanchoring_templates::read_state(fixture.root());
+        reanchoring_templates::finish_split_continuation(&fixture, state, change);
+    } else {
+        let (fixture, state) = split_checkpoint_before_ref_change(change);
+        let editor = fixture.worktrees.path().join("split-editor");
+        reanchoring_templates::continue_split(&fixture, state, &editor, change);
+    }
 }
 
 /// From the finished split: reconciliation keeps each phase's accepted anchors.

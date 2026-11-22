@@ -557,6 +557,7 @@ fn assert_single_target_setup(templates: &[LedgerTemplate]) {
 }
 
 const GATE_SLOW_HISTORIES: &[LedgerTemplate] = &[
+    gate_fixtures::CLOSED_STDERR_PAIR,
     gate_fixtures::HISTORY_LOWER_BEFORE_UPDATE_REFS,
     gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_1,
     gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_2,
@@ -613,6 +614,7 @@ const GATE_SLOW_HISTORIES: &[LedgerTemplate] = &[
 ];
 
 const LIVENESS_SLOW_HISTORIES: &[LedgerTemplate] = &[
+    liveness_fixtures::RETENTION_BEFORE_CHECKPOINT,
     liveness_fixtures::ROUND_THREE_RETIRE_ORPHAN_REPLACES_LOST_INTEGRATION_EVIDENCE_AND_SURVIVES_REPLAY,
     liveness_fixtures::ROUND_THREE_RELEASE_USES_TRUNK_AFTER_THE_RESERVATION_TARGET_DISAPPEARS,
     liveness_fixtures::ROUND_THREE_RETARGET_REFUSES_RELEASED_RESERVATION,
@@ -635,6 +637,14 @@ const LIVENESS_SLOW_HISTORIES: &[LedgerTemplate] = &[
 ];
 
 const EDGES_SLOW_HISTORIES: &[LedgerTemplate] = &[
+    lifecycle_templates::RELEASED_BEFORE_TRUNK_DISAPPEARS,
+    board_templates::UNCONSTRAINED_HOLDERS,
+    board_templates::UNRESOLVED_OVERLAP,
+    edges_fixtures::ACTIVE_CROSS_TARGET_BEFORE_SEQUENCE,
+    reanchoring_templates::SIBLING_SPLIT_BEFORE_CONTINUATION,
+    edges_fixtures::BEFORE_PREDECESSOR_ABANDONMENT,
+    edges_fixtures::BEFORE_SUCCESSOR_ABANDONMENT,
+    edges_fixtures::WITNESS_BEFORE_PRUNING,
     edges_fixtures::HISTORY_SAME_TARGET_EDGE_REFUSES_INTEGRATION_BEFORE_THE_PREDECESSOR,
     edges_fixtures::HISTORY_SAME_TARGET_EDGE_REQUIRES_INCORPORATION_AFTER_THE_PREDECESSOR_LANDS,
     edges_fixtures::HISTORY_SAME_TARGET_EDGE_SETTLES_AFTER_SUCCESSOR_INCORPORATION,
@@ -681,6 +691,7 @@ const STARTING_REPOSITORIES: &[LedgerTemplate] = &[
 ];
 
 const DRIFT_HELPER_HISTORIES: &[LedgerTemplate] = &[
+    drift_fixtures::MIXED_ANCHORS_BEFORE_INCURSION,
     drift_fixtures::COMMITTED_INCURSION,
     drift_fixtures::PHASE_BEFORE_REBASE,
     drift_fixtures::INTEGRATED_MERGE,

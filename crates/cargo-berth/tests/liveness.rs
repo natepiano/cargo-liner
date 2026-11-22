@@ -49,6 +49,7 @@ use liveness_fixtures::ReleaseRecognizesACheckpointOnTheReservationTargetState;
 use liveness_fixtures::ReleaseUsesTrunkAfterTheReservationTargetDisappearsHistory;
 use liveness_fixtures::ReleasedIntegrationTargetWitnessCanBeReplacedState;
 use liveness_fixtures::RetargetRefusesReleasedReservationHistory;
+use liveness_fixtures::RetentionCheckpointHistory;
 use liveness_fixtures::RetireOrphanReplacesLostIntegrationEvidenceAndSurvivesReplayHistory;
 use liveness_fixtures::RewrittenIntegrationReplacementValidatesEvidenceState;
 use liveness_fixtures::SECOND_RUN;
@@ -1391,28 +1392,12 @@ fn foreign_administrative_directory_is_refused_without_sweeping_its_marker() {
 
 #[test]
 fn reconciliation_repairs_a_retention_ref_after_the_checkpoint_append_survives_failure() {
-    let repository = initialized_repository();
-    let observer_parent = tempdir().expect("observer worktree parent should exist");
-    let observer = observer_parent.path().join("observer");
-    git(
-        repository.path(),
-        &[
-            "worktree",
-            "add",
-            "--quiet",
-            "--detach",
-            observer.to_str().expect("observer path should be UTF-8"),
-            "main",
-        ],
-    );
-    git(repository.path(), &["switch", "--quiet", "-c", "retention"]);
-    commit_file(repository.path(), "retained", "work\n", "retained work");
-    let protected_tip = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
-    let claim = run_berth(
-        repository.path(),
-        &["claim", "file:retained", "--run", FIRST_RUN, "--json"],
-    );
-    let reservation_id = reservation_id(&claim);
+    let repository = liveness_fixtures::RETENTION_BEFORE_CHECKPOINT.instantiate();
+    let RetentionCheckpointHistory {
+        observer,
+        protected_tip,
+        reservation_id,
+    } = recorded_history::read(repository.path());
     let ref_namespace_blocker = repository.path().join(".git/refs/cargo-berth");
     fs::write(&ref_namespace_blocker, "blocks ref directory\n")
         .expect("ref namespace blocker should write");

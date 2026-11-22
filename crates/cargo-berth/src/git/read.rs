@@ -1239,7 +1239,10 @@ mod tests {
     #[test]
     fn filesystem_monitor_status_uses_git_and_keeps_dirty_paths() -> FixtureResult {
         let fixture = PatchEquivalenceFixture::new()?;
-        fixture.git(&["config", "core.fsmonitor", "true"])?;
+        let monitor = crate::git::fixture::SCRIPT_PATH;
+        fixture.write(monitor, "#!/bin/sh\nprintf 'token\\0/\\0'\n")?;
+        fixture.set_executable(monitor)?;
+        fixture.git(&["config", "core.fsmonitor", monitor])?;
         fixture.write(PRIMARY_PATH, "dirty\n")?;
         assert_status_route(&fixture, GitReadRequirement::FileSystemMonitor)
     }

@@ -19,6 +19,7 @@ use drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_ENGINE;
 use drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_FOREIGN;
 use drift_fixtures::INTEGRATED_MERGE;
 use drift_fixtures::IntegratedMerge;
+use drift_fixtures::MixedAnchorHistory;
 use drift_fixtures::Output;
 use drift_fixtures::OverlappedHolderStanding;
 use drift_fixtures::PHASE_BEFORE_REBASE;
@@ -1172,194 +1173,6 @@ fn differential_attribution_paths() -> Vec<String> {
     .to_vec()
 }
 
-struct UnreadablePhaseStartReservation {
-    reservation_id: String,
-    phase_start:    String,
-}
-
-fn create_valid_anchor_reservations(
-    repository_root: &Path,
-    reservation_count: usize,
-) -> Vec<String> {
-    (0..reservation_count)
-        .map(|index| {
-            let path = format!("valid-{index}.txt");
-            let reservation_id = claim(repository_root, &format!("file:{path}"), SECOND_RUN);
-            fs::write(repository_root.join(&path), format!("valid {index}\n"))
-                .expect("valid phase path should write");
-            git(repository_root, &["add", &path]);
-            git(
-                repository_root,
-                &[
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                    "commit",
-                    "--quiet",
-                    "-m",
-                    &format!("valid phase {index}"),
-                ],
-            );
-            reservation_id
-        })
-        .collect()
-}
-
-fn claim_independent_history_reservation(
-    repository_root: &Path,
-    configuration_source_root: &Path,
-    return_branch: &str,
-) -> String {
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "switch",
-            "--quiet",
-            "--orphan",
-            "independent-history",
-        ],
-    );
-    git(
-        repository_root,
-        &["-c", "core.hooksPath=/dev/null", "clean", "-d", "-f", "-x"],
-    );
-    fs::create_dir_all(repository_root.join(".claude/config"))
-        .expect("independent configuration directory should exist");
-    fs::copy(
-        configuration_source_root.join(CONFIGURATION_PATH),
-        repository_root.join(CONFIGURATION_PATH),
-    )
-    .expect("independent history should copy berth configuration");
-    fs::write(
-        repository_root.join("independent.txt"),
-        "independent root\n",
-    )
-    .expect("independent root should write");
-    git(repository_root, &["add", "-A"]);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "independent root",
-        ],
-    );
-    let reservation_id = claim(repository_root, "file:independent-owned.txt", SECOND_RUN);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "switch",
-            "--quiet",
-            return_branch,
-        ],
-    );
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "merge",
-            "--quiet",
-            "--no-ff",
-            "--no-edit",
-            "--allow-unrelated-histories",
-            "independent-history",
-        ],
-    );
-    reservation_id
-}
-
-fn claim_stale_anchor_reservation(repository_root: &Path) -> String {
-    let stale_parent = git_stdout(repository_root, &["rev-parse", "HEAD"]);
-    fs::write(repository_root.join("stale-anchor.txt"), "stale\n")
-        .expect("stale anchor path should write");
-    git(repository_root, &["add", "stale-anchor.txt"]);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "stale anchor",
-        ],
-    );
-    let stale_phase_start = git_stdout(repository_root, &["rev-parse", "HEAD"]);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "update-ref",
-            "refs/test/cargo-berth-stale-anchor",
-            &stale_phase_start,
-        ],
-    );
-    let reservation_id = claim(repository_root, "file:stale-owned.txt", SECOND_RUN);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "reset",
-            "--hard",
-            "--quiet",
-            &stale_parent,
-        ],
-    );
-    reservation_id
-}
-
-fn claim_unreadable_phase_start_reservation(
-    repository_root: &Path,
-) -> UnreadablePhaseStartReservation {
-    let phase_start_parent = git_stdout(repository_root, &["rev-parse", "HEAD"]);
-    fs::write(repository_root.join("missing-anchor.txt"), "missing\n")
-        .expect("missing anchor path should write");
-    git(repository_root, &["add", "missing-anchor.txt"]);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "commit",
-            "--quiet",
-            "-m",
-            "missing anchor",
-        ],
-    );
-    let phase_start = git_stdout(repository_root, &["rev-parse", "HEAD"]);
-    let reservation_id = claim(repository_root, "file:missing-owned.txt", SECOND_RUN);
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "reset",
-            "--hard",
-            "--quiet",
-            &phase_start_parent,
-        ],
-    );
-    delete_reservation_retention_and_prune(repository_root, &reservation_id);
-    let object_status = git_output(
-        repository_root,
-        &["cat-file", "-e", &format!("{phase_start}^{{commit}}")],
-    );
-    assert!(!object_status.status.success());
-    UnreadablePhaseStartReservation {
-        reservation_id,
-        phase_start,
-    }
-}
-
 #[derive(Debug, Eq, PartialEq)]
 struct ReferenceIncursionCommit {
     subject: String,
@@ -1453,25 +1266,6 @@ fn result_incursion_commits<'results>(
         .and_then(|effect| effect["commits"].as_array())
         .map(Vec::as_slice)
         .expect("reservation should report incursion commits")
-}
-
-fn delete_reservation_retention_and_prune(repository_root: &Path, reservation_id: &str) {
-    let retention_ref = format!("refs/cargo-berth/reservations/{reservation_id}");
-    git(
-        repository_root,
-        &[
-            "-c",
-            "core.hooksPath=/dev/null",
-            "update-ref",
-            "-d",
-            &retention_ref,
-        ],
-    );
-    git(
-        repository_root,
-        &["reflog", "expire", "--expire=now", "--all"],
-    );
-    git(repository_root, &["gc", "--prune=now"]);
 }
 
 impl TracedDrift {
@@ -3463,17 +3257,14 @@ fn batched_attribution_matches_per_path_history_across_git_path_cases() {
 
 #[test]
 fn mixed_anchor_batch_preserves_two_valid_and_one_independent_history() {
-    const VALID_ANCHOR_COUNT: usize = 2;
-
-    let repository = initialized_repository();
-    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "anchor-matrix");
-    dirty_source(repository.path(), "held/entered.txt");
-    claim(repository.path(), "tree:held", FIRST_RUN);
-    let valid_ids = create_valid_anchor_reservations(&foreign_root, VALID_ANCHOR_COUNT);
-    let independent_id =
-        claim_independent_history_reservation(&foreign_root, repository.path(), "anchor-matrix");
-    let stale_id = claim_stale_anchor_reservation(&foreign_root);
-    let unreadable = claim_unreadable_phase_start_reservation(&foreign_root);
+    let repository = drift_fixtures::MIXED_ANCHORS_BEFORE_INCURSION.instantiate();
+    let MixedAnchorHistory {
+        foreign_root,
+        valid_ids,
+        independent_id,
+        stale_id,
+        unreadable,
+    } = recorded_history::read(repository.path());
 
     fs::create_dir_all(foreign_root.join("held")).expect("held directory should exist");
     fs::write(

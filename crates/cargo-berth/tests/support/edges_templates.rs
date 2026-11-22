@@ -451,7 +451,7 @@ fn last_journal_event(root: &Path) -> serde_json::Value {
     )
     .expect("event should decode")
 }
-fn journal_operation_count(root: &Path, op: &str) -> usize {
+pub(super) fn journal_operation_count(root: &Path, op: &str) -> usize {
     journal_text(root)
         .lines()
         .filter(|line| {

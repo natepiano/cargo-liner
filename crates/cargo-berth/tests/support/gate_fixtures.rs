@@ -2799,3 +2799,39 @@ fn build_three_commit_rebase(destination: &Path) {
         &ThreeCommitRebaseHistory { source_tip },
     );
 }
+
+/// Deferred endpoints and the blocked commit before the gate reads closed stderr.
+pub(super) const CLOSED_STDERR_PAIR: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("gate-closed-stderr-pair", build_closed_stderr_pair);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct ClosedStderrHistory {
+    pub(super) blocked_root: PathBuf,
+    pub(super) blocked_id:   String,
+    pub(super) holder_id:    String,
+    pub(super) base:         String,
+    pub(super) blocked_head: String,
+}
+
+fn build_closed_stderr_pair(destination: &Path) {
+    let deferred_pair = deferred_pair(initialized_repository());
+    let repository = &deferred_pair.repository;
+    let base = git_stdout(repository.path(), &["rev-parse", "main"]);
+    let blocked_head = commit_work(
+        &deferred_pair.blocked_root,
+        "src/lib.rs",
+        "pub fn blocked_work() {}\n",
+        "blocked work",
+    );
+    recorded_history::save(
+        destination,
+        repository.path(),
+        &ClosedStderrHistory {
+            blocked_root: deferred_pair.blocked_root.clone(),
+            blocked_id: deferred_pair.blocked_id.clone(),
+            holder_id: deferred_pair.holder_id.clone(),
+            base,
+            blocked_head,
+        },
+    );
+}

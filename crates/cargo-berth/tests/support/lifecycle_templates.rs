@@ -10,6 +10,7 @@ use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::berth_command;
 
 use crate::git_configuration;
+use crate::recorded_history;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 pub(crate) const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -95,4 +96,84 @@ fn build_initialized_repository(root: &Path, git_reference_storage: GitReference
         initialized.status.success(),
         "cargo-berth init should succeed"
     );
+}
+
+/// The released holder before the trunk reference disappears.
+pub(crate) const RELEASED_BEFORE_TRUNK_DISAPPEARS: LedgerTemplate = recorded_history::template(
+    "lifecycle-released-before-trunk-disappears",
+    build_released_before_trunk_disappears,
+);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct ReleasedBeforeMissingTrunk {
+    pub(crate) second_root:    std::path::PathBuf,
+    pub(crate) reservation_id: String,
+}
+
+fn build_released_before_trunk_disappears(destination: &Path) {
+    let repository = INITIALIZED_REPOSITORY.instantiate();
+    let second_root = repository.path().join(".git/fixture-worktrees/second");
+    GIT.add_worktree_without_hooks(repository.path(), &second_root, "second", "HEAD");
+    fs::create_dir_all(second_root.join(".claude/config"))
+        .expect("foreign configuration directory should exist");
+    fs::copy(
+        repository.path().join(CONFIGURATION_PATH),
+        second_root.join(CONFIGURATION_PATH),
+    )
+    .expect("foreign configuration should copy");
+    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "phase"]);
+    fs::create_dir_all(repository.path().join("src")).expect("phase source directory should exist");
+    fs::write(repository.path().join("src/lib.rs"), "phase work\n")
+        .expect("phase source should write");
+    GIT.run(repository.path(), ["add", "src/lib.rs"]);
+    GIT.run(repository.path(), ["commit", "--quiet", "-m", "phase work"]);
+    let claim = run_berth(
+        repository.path(),
+        &[
+            "claim",
+            "tree:src",
+            "--run",
+            cargo_berth_test_support::FIRST_RUN,
+            "--json",
+        ],
+    );
+    let reservation_id = cargo_berth_test_support::claim_id(&claim);
+    assert!(
+        run_berth(repository.path(), &["release", &reservation_id])
+            .status
+            .success()
+    );
+    GIT.run(repository.path(), ["switch", "--quiet", "main"]);
+    GIT.run(
+        repository.path(),
+        ["merge", "--quiet", "--ff-only", "phase"],
+    );
+    assert!(
+        run_berth(repository.path(), &["release", &reservation_id])
+            .status
+            .success()
+    );
+    assert!(
+        run_berth(repository.path(), &["release", &reservation_id])
+            .status
+            .success()
+    );
+    recorded_history::save(
+        destination,
+        repository.path(),
+        &ReleasedBeforeMissingTrunk {
+            second_root,
+            reservation_id,
+        },
+    );
+}
+
+fn run_berth(root: &Path, arguments: &[&str]) -> std::process::Output {
+    berth_command(BERTH_EXECUTABLE)
+        .current_dir(root)
+        .args(arguments)
+        .env_remove(RUN_ENVIRONMENT)
+        .env_remove(SESSION_ENVIRONMENT)
+        .output()
+        .expect("lifecycle fixture command should run")
 }

@@ -7,6 +7,7 @@
 
 #[path = "support/edges_fixtures.rs"]
 mod edges_fixtures;
+use edges_fixtures::AbandonablePair;
 use edges_fixtures::BEFORE_RELEASED_PREDECESSOR_REF_RETIRES_ONLY_AFTER_EVERY_SUCCESSOR_IS_TERMINAL;
 use edges_fixtures::BEFORE_SAME_TARGET_EDGE_WAITS_FOR_PREDECESSOR_TO_REACH_INTEGRATION;
 use edges_fixtures::BEFORE_SEQUENCE_REJECTS_EACH_INVALID_IDENTITY_AND_CARRIES_ALERTS;
@@ -15,6 +16,7 @@ use edges_fixtures::BERTH_EXECUTABLE;
 use edges_fixtures::CONFIGURATION_PATH;
 use edges_fixtures::CheckpointReadiness;
 use edges_fixtures::CheckpointReadinessHistory;
+use edges_fixtures::CrossTargetSequenceHistory;
 use edges_fixtures::EdgeReadinessFixture;
 use edges_fixtures::FIFTH_RUN;
 use edges_fixtures::FIRST_RUN;
@@ -65,6 +67,7 @@ mod edges_templates;
 #[path = "support/recorded_history.rs"]
 mod recorded_history;
 
+use cargo_berth_test_support::FixtureCommand;
 pub use cargo_berth_test_support::deferring_run_path;
 use cargo_berth_test_support::json;
 pub use cargo_berth_test_support::reservation_row;
@@ -140,7 +143,7 @@ const BRANCH_PATH_DIFF_QUERY: &str = "diff --name-only -z --no-renames ";
 
 const TRACING_GIT_WRAPPER: &str = r#"#!/bin/sh
 
-if [ "$1" = "--no-optional-locks" ]; then
+if [ -n "${CARGO_BERTH_TEST_GIT_TRACE:-}" ] && [ "$1" = "--no-optional-locks" ]; then
     command_line="$*"
     printf '%s\n' "${command_line#--no-optional-locks }" >> "$CARGO_BERTH_TEST_GIT_TRACE"
 fi
@@ -171,11 +174,7 @@ fn settled_edge_for(board: &serde_json::Value, successor_id: &str) -> bool {
         })
 }
 
-#[derive(Clone, Copy)]
-enum AbandonedEndpoint {
-    Predecessor,
-    Successor,
-}
+use edges_fixtures::AbandonedEndpoint;
 
 fn assert_checkpoint_transition(readiness: CheckpointReadiness) {
     let template = match readiness {
@@ -202,47 +201,35 @@ fn assert_checkpoint_transition(readiness: CheckpointReadiness) {
     );
 }
 
-fn assert_abandoned_endpoint(
-    fixture: &EdgeReadinessFixture,
-    case: AbandonedEndpoint,
-    case_index: usize,
-) {
-    let (predecessor_root, successor_root) = fixture.start_case(case_index);
+fn assert_abandoned_endpoint(case: AbandonedEndpoint) {
+    let template = match case {
+        AbandonedEndpoint::Predecessor => edges_fixtures::BEFORE_PREDECESSOR_ABANDONMENT,
+        AbandonedEndpoint::Successor => edges_fixtures::BEFORE_SUCCESSOR_ABANDONMENT,
+    };
+    let repository = template.instantiate();
+    let history = recorded_history::read(repository.path());
     match case {
         AbandonedEndpoint::Predecessor => {
-            assert_predecessor_abandonment(fixture, &predecessor_root, &successor_root);
+            assert_predecessor_abandonment(repository.path(), &history);
         },
-        AbandonedEndpoint::Successor => {
-            assert_successor_abandonment(fixture, &predecessor_root, &successor_root);
-        },
+        AbandonedEndpoint::Successor => assert_successor_abandonment(repository.path(), &history),
     }
 }
 
-fn assert_predecessor_abandonment(
-    fixture: &EdgeReadinessFixture,
-    predecessor_root: &Path,
-    successor_root: &Path,
-) {
-    dirty_source(predecessor_root, "src/lib.rs");
-    let predecessor = claim(predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
-        successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
+fn assert_predecessor_abandonment(root: &Path, history: &AbandonablePair) {
+    let AbandonablePair {
+        predecessor_root,
+        predecessor_id,
+        successor_id,
+        ..
+    } = history;
     fs::remove_dir_all(predecessor_root).expect("predecessor worktree should be removable");
-    git(
-        fixture.repository.path(),
-        &["worktree", "prune", "--expire", "now"],
-    );
+    git(root, &["worktree", "prune", "--expire", "now"]);
     let abandoned = run_berth(
-        fixture.repository.path(),
+        root,
         &[
             "resolve",
-            &predecessor_id,
+            predecessor_id,
             "--abandon",
             "--why",
             "confirmed predecessor abandonment",
@@ -252,9 +239,9 @@ fn assert_predecessor_abandonment(
     assert!(abandoned.status.success());
 
     let sequence = sequence(
-        fixture.repository.path(),
-        &predecessor_id,
-        &successor_id,
+        root,
+        predecessor_id,
+        successor_id,
         "record the resolved order",
     );
 
@@ -265,35 +252,20 @@ fn assert_predecessor_abandonment(
     );
 }
 
-fn assert_successor_abandonment(
-    fixture: &EdgeReadinessFixture,
-    predecessor_root: &Path,
-    successor_root: &Path,
-) {
-    dirty_source(predecessor_root, "src/lib.rs");
-    // Work in the successor's own scope: the answer's reconciliation would otherwise observe a
-    // clean successor, and `append_orphan_retirements` retires a provably empty orphan before
-    // the abandonment this test confirms.
-    dirty_source(successor_root, &deferring_run_path(SECOND_RUN));
-    let predecessor = claim(predecessor_root, "tree:src", FIRST_RUN);
-    let predecessor_id = reservation_id(&predecessor);
-    let successor = defer_claim(
+fn assert_successor_abandonment(root: &Path, history: &AbandonablePair) {
+    let AbandonablePair {
         successor_root,
-        "file:src/lib.rs",
-        SECOND_RUN,
-        &predecessor_id,
-    );
-    let successor_id = reservation_id(&successor);
+        predecessor_id,
+        successor_id,
+        ..
+    } = history;
     fs::remove_dir_all(successor_root).expect("successor worktree should be removable");
-    git(
-        fixture.repository.path(),
-        &["worktree", "prune", "--expire", "now"],
-    );
+    git(root, &["worktree", "prune", "--expire", "now"]);
     let abandoned = run_berth(
-        fixture.repository.path(),
+        root,
         &[
             "resolve",
-            &successor_id,
+            successor_id,
             "--abandon",
             "--why",
             "confirmed successor abandonment",
@@ -303,9 +275,9 @@ fn assert_successor_abandonment(
     assert!(abandoned.status.success(), "{}", json_output(&abandoned));
 
     let sequence = sequence(
-        fixture.repository.path(),
-        &predecessor_id,
-        &successor_id,
+        root,
+        predecessor_id,
+        successor_id,
         "record the terminal successor edge",
     );
     let sequence_json = json_output(&sequence);
@@ -612,63 +584,10 @@ fn assert_explicit_witness_evidence(
     }
 }
 
-/// Rebase the holder, settle against its trunk witness, and collect the original protected tip.
+/// Check the recorded settlement and prune the original protected tip.
 fn prepare_pruned_witness(fixture: &RewrittenSuccessorFixture) -> String {
     let root = fixture.repository.path();
-    assert_eq!(journal_operation_count(root, "release"), 0);
-    git(root, &["config", "core.hooksPath", "/dev/null"]);
-    let witness = git_stdout(root, &["rev-parse", "HEAD"]);
-    assert_ne!(witness, fixture.protected_tip);
-    assert_ne!(witness, fixture.successor_head);
-    assert!(!git_status(
-        root,
-        &[
-            "merge-base",
-            "--is-ancestor",
-            &fixture.protected_tip,
-            &witness
-        ]
-    ));
-    assert!(!git_status(
-        root,
-        &[
-            "merge-base",
-            "--is-ancestor",
-            &witness,
-            &fixture.successor_head
-        ]
-    ));
-    assert_eq!(
-        git_stdout(root, &["rev-parse", &format!("{witness}^{{tree}}")]),
-        git_stdout(
-            root,
-            &["rev-parse", &format!("{}^{{tree}}", fixture.successor_head)]
-        ),
-        "the successor has equivalent content without the recorded witness"
-    );
-
-    // Establish the dependency before trunk integration so settlement must retain its witness.
-    git(root, &["reset", "--hard", &fixture.phase_start_head]);
-    let ordered = sequence(
-        root,
-        &fixture.predecessor_id,
-        &fixture.successor_id,
-        "the successor must contain the integration witness",
-    );
-    assert!(ordered.status.success(), "{}", json_output(&ordered));
-    git(root, &["reset", "--hard", &witness]);
-
-    // Model the holder after its branch was rebased onto the equivalent trunk commit.
-    let predecessor_root = fixture.worktrees.path().join("predecessor");
-    git(&predecessor_root, &["reset", "--hard", &witness]);
-    commit_successor_fixture_file(
-        root,
-        "src/lib.rs",
-        "fn later_trunk_work() {}\n",
-        "rewrite the integrated hunk after its witness",
-    );
-    let evaluated_trunk = git_stdout(root, &["rev-parse", "HEAD"]);
-    assert_ne!(evaluated_trunk, witness);
+    let witness: String = recorded_history::read(root);
     assert_equivalence_settlement(fixture, &witness);
     assert_eq!(
         git_stdout(
@@ -678,6 +597,7 @@ fn prepare_pruned_witness(fixture: &RewrittenSuccessorFixture) -> String {
         witness
     );
 
+    let predecessor_root = fixture.worktrees.path().join("predecessor");
     // Remove every ref and reflog retaining the old tip, then prove actual collection.
     git(
         &predecessor_root,
@@ -706,9 +626,11 @@ fn prepare_pruned_witness(fixture: &RewrittenSuccessorFixture) -> String {
 /// Settlement records the affirmative scoped proof directly before its witness disposition.
 fn assert_equivalence_settlement(fixture: &RewrittenSuccessorFixture, witness: &str) {
     let root = fixture.repository.path();
-    let settled = run_berth_with_git_trace(root, &["board", "--json"], "");
-    assert!(settled.output.status.success());
-    let settled_board = json_output(&settled.output);
+    let settled_board = serde_json::from_slice(
+        &fs::read(root.join(edges_fixtures::WITNESS_SETTLEMENT_BOARD))
+            .expect("recorded settlement board should read"),
+    )
+    .expect("settlement board should decode");
     let predecessor = witness_reservation_snapshot(&settled_board, &fixture.predecessor_id);
     assert_eq!(predecessor["lifecycle"]["stage"], "released");
     assert_eq!(
@@ -935,12 +857,18 @@ fn assert_claim_time_direction(flag: &str, direction: &str) {
 }
 
 fn rewritten_successor_fixture(successor_is_equivalent: bool) -> RewrittenSuccessorFixture {
-    let worktrees = tempdir().expect("worktree parent should exist");
     let template = if successor_is_equivalent {
         edges_templates::EQUIVALENT_SUCCESSOR
     } else {
         edges_templates::DIFFERENT_SUCCESSOR
     };
+    rewritten_successor_fixture_from(template)
+}
+
+fn rewritten_successor_fixture_from(
+    template: cargo_berth_test_support::LedgerTemplate,
+) -> RewrittenSuccessorFixture {
+    let worktrees = tempdir().expect("worktree parent should exist");
     let repository = template.instantiate_with_external_worktrees(worktrees.path());
     let edges_templates::RewrittenSuccessorState {
         predecessor_id,
@@ -1124,7 +1052,6 @@ fn run_berth_with_git_trace(
     unavailable_target: &str,
 ) -> TracedBerth {
     let directory = cargo_berth_test_support::fixture_tempdir("git-trace-");
-    let wrapper_path = directory.path().join(GIT_BINARY);
     let trace_path = directory.path().join("trace");
     if unavailable_target.is_empty() {
         let mut command = berth_command(BERTH_EXECUTABLE);
@@ -1141,32 +1068,44 @@ fn run_berth_with_git_trace(
             _directory: directory,
         };
     }
-    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
-        &wrapper_path,
-        TRACING_GIT_WRAPPER,
-    );
-    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
-    let wrapped_path = std::env::join_paths(
-        std::iter::once(directory.path().to_path_buf())
-            .chain(std::env::split_paths(&original_path)),
-    )
-    .expect("wrapped PATH should join");
-    let output = berth_command(env!("CARGO_BIN_EXE_cargo-berth"))
-        .args(arguments)
-        .current_dir(repository_root)
-        .env("PATH", wrapped_path)
-        .env(REAL_GIT_ENVIRONMENT, git_binary())
-        .env(TRACE_ENVIRONMENT, &trace_path)
-        .env(UNAVAILABLE_TARGET_ENVIRONMENT, unavailable_target)
-        .env_remove("CARGO_BERTH_RUN")
-        .env_remove(SESSION_ENVIRONMENT)
-        .output()
-        .expect("cargo-berth should run with traced git");
+    let output =
+        berth_command_with_unavailable_git(repository_root, unavailable_target, directory.path())
+            .args(arguments)
+            .env(TRACE_ENVIRONMENT, &trace_path)
+            .output()
+            .expect("cargo-berth should run with traced git");
     TracedBerth {
         output,
         trace_path,
         _directory: directory,
     }
+}
+
+fn berth_command_with_unavailable_git(
+    repository_root: &Path,
+    unavailable_target: &str,
+    wrapper_directory: &Path,
+) -> FixtureCommand {
+    cargo_berth_test_support::DirectorySnapshot::write_shared_shell_script(
+        &wrapper_directory.join(GIT_BINARY),
+        TRACING_GIT_WRAPPER,
+    );
+    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+    let wrapped_path = std::env::join_paths(
+        std::iter::once(wrapper_directory.to_path_buf())
+            .chain(std::env::split_paths(&original_path)),
+    )
+    .expect("wrapped PATH should join");
+    let mut command = berth_command(BERTH_EXECUTABLE);
+    command
+        .current_dir(repository_root)
+        .env("PATH", wrapped_path)
+        .env(REAL_GIT_ENVIRONMENT, git_binary())
+        .env_remove(TRACE_ENVIRONMENT)
+        .env(UNAVAILABLE_TARGET_ENVIRONMENT, unavailable_target)
+        .env_remove("CARGO_BERTH_RUN")
+        .env_remove(SESSION_ENVIRONMENT);
+    command
 }
 
 fn git_trace(traced: &TracedBerth) -> Vec<String> {
@@ -1433,15 +1372,13 @@ fn same_target_edge_waits_for_predecessor_to_reach_integration() {
 
 #[test]
 fn active_cross_target_predecessor_released_during_sequence_has_trunk_evidence() {
-    let repo = IntegrationRepository::from_recorded_template(INITIAL_INTEGRATION_PAIR);
-    let predecessor = repo.lane("active-cross-a", "integration");
-    let successor = repo.main_lane("active-cross-x");
-    write_file(&predecessor, "shared.txt", "A\n");
-    let predecessor_id = claim_id(&repo.claim(&predecessor, "file:shared.txt", FIRST_RUN, None));
-    let successor_id =
-        claim_id(&repo.defer_claim(&successor, "file:shared.txt", SECOND_RUN, &predecessor_id));
-    repo.commit_file(&predecessor, "shared.txt", "A\n", "A work");
-    repo.merge_by_commit("active-cross-a");
+    let repo = IntegrationRepository::from_recorded_template(
+        edges_fixtures::ACTIVE_CROSS_TARGET_BEFORE_SEQUENCE,
+    );
+    let CrossTargetSequenceHistory {
+        predecessor_id,
+        successor_id,
+    } = recorded_history::read(repo.root());
 
     let ordered = sequence(repo.root(), &predecessor_id, &successor_id, "A before X");
     assert_success(&ordered);
@@ -1584,12 +1521,8 @@ fn checkpoint_readiness_covers_incorporation_and_missing_objects() {
 
 #[test]
 fn confirmed_abandonment_of_either_endpoint_cancels_the_edge() {
-    let fixture = EdgeReadinessFixture::new();
-    for (case_index, case) in [AbandonedEndpoint::Predecessor, AbandonedEndpoint::Successor]
-        .into_iter()
-        .enumerate()
-    {
-        assert_abandoned_endpoint(&fixture, case, case_index);
+    for case in [AbandonedEndpoint::Predecessor, AbandonedEndpoint::Successor] {
+        assert_abandoned_endpoint(case);
     }
 }
 
@@ -2124,18 +2057,8 @@ fn a_successor_that_merged_trunk_incorporates_its_predecessor_without_a_comparis
 
 #[test]
 fn witness_survives_pruning_and_controls_successors() {
-    let fixture = rewritten_successor_fixture(true);
+    let fixture = rewritten_successor_fixture_from(edges_fixtures::WITNESS_BEFORE_PRUNING);
     let root = fixture.repository.path();
-    append_edge_fixture_event(
-        root,
-        serde_json::json!({
-            "op": "successor_scoped_patch_equivalence_checked",
-            "predecessor_reservation_id": fixture.predecessor_id,
-            "subject": 1, "successor_head": fixture.successor_head,
-            "verdict": "different",
-        }),
-    );
-
     let witness = prepare_pruned_witness(&fixture);
 
     let revalidated = run_berth_with_git_trace(root, &["board", "--json"], "");
@@ -2299,13 +2222,19 @@ fn successor_board_has_fixed_cold_cost() {
 #[test]
 fn successor_round_robin_covers_every_head() {
     let four = successor_scale_fixture(successor_templates::FOUR_SUCCESSORS);
-    let mut latest_unavailable =
-        run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
-    assert!(latest_unavailable.output.status.success());
+    let directory = cargo_berth_test_support::fixture_tempdir("git-trace-");
+    let mut unavailable_board =
+        berth_command_with_unavailable_git(four.repository.path(), "*", directory.path());
+    unavailable_board.args(["board", "--json"]);
+    let mut latest_unavailable = unavailable_board
+        .output()
+        .expect("board should run with unavailable Git comparisons");
+    assert!(latest_unavailable.status.success());
     for _ in 1..four.successor_heads.len() {
-        latest_unavailable =
-            run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "*");
-        assert!(latest_unavailable.output.status.success());
+        latest_unavailable = unavailable_board
+            .output()
+            .expect("board should run with unavailable Git comparisons");
+        assert!(latest_unavailable.status.success());
     }
     let attempted_heads = journal_operation_field_values(
         four.repository.path(),
@@ -2317,28 +2246,26 @@ fn successor_round_robin_covers_every_head() {
         assert!(attempted_heads.contains(successor_head));
     }
     let unavailable_board =
-        String::from_utf8(latest_unavailable.output.stdout).expect("board output should be UTF-8");
+        String::from_utf8(latest_unavailable.stdout).expect("board output should be UTF-8");
     assert!(unavailable_board.contains("successor_must_incorporate_predecessor"));
     assert!(!unavailable_board.contains("\"state\":\"fulfilled\""));
 
     let available_comparison_count = four.successor_heads.len() / 2;
-    let mut partially_checked =
-        run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "");
-    assert!(partially_checked.output.status.success());
+    let mut partially_checked = run_berth(four.repository.path(), &["board", "--json"]);
+    assert!(partially_checked.status.success());
     for _ in 1..available_comparison_count {
-        partially_checked =
-            run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "");
-        assert!(partially_checked.output.status.success());
+        partially_checked = run_berth(four.repository.path(), &["board", "--json"]);
+        assert!(partially_checked.status.success());
     }
     assert_successor_round_robin_progress(
-        &partially_checked.output,
+        &partially_checked,
         four.successor_heads.len(),
         available_comparison_count,
     );
 
     for _ in available_comparison_count..four.successor_heads.len() {
-        let remaining = run_berth_with_git_trace(four.repository.path(), &["board", "--json"], "");
-        assert!(remaining.output.status.success());
+        let remaining = run_berth(four.repository.path(), &["board", "--json"]);
+        assert!(remaining.status.success());
     }
     let checked_heads = journal_operation_field_values(
         four.repository.path(),

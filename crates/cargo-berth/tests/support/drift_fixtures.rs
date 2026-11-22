@@ -465,3 +465,252 @@ pub(super) struct IntegratedMerge {
     pub(super) lane:           PathBuf,
     pub(super) reservation_id: String,
 }
+
+/// Independent, stale, unreadable, and valid anchors before one entering commit.
+pub(super) const MIXED_ANCHORS_BEFORE_INCURSION: LedgerTemplate = recorded_history::template(
+    "drift-mixed-anchors-before-incursion",
+    build_mixed_anchors_before_incursion,
+);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct MixedAnchorHistory {
+    pub(super) foreign_root:   PathBuf,
+    pub(super) valid_ids:      Vec<String>,
+    pub(super) independent_id: String,
+    pub(super) stale_id:       String,
+    pub(super) unreadable:     UnreadablePhaseStartReservation,
+}
+
+fn build_mixed_anchors_before_incursion(destination: &Path) {
+    const VALID_ANCHOR_COUNT: usize = 2;
+
+    let repository = initialized_repository();
+    let (_foreign_directory, foreign_root) = foreign_worktree(&repository, "anchor-matrix");
+    dirty_source(repository.path(), "held/entered.txt");
+    claim(repository.path(), "tree:held", FIRST_RUN);
+    let valid_ids = create_valid_anchor_reservations(&foreign_root, VALID_ANCHOR_COUNT);
+    let independent_id =
+        claim_independent_history_reservation(&foreign_root, repository.path(), "anchor-matrix");
+    let stale_id = claim_stale_anchor_reservation(&foreign_root);
+    let unreadable = claim_unreadable_phase_start_reservation(&foreign_root);
+
+    recorded_history::save(
+        destination,
+        repository.path(),
+        &MixedAnchorHistory {
+            foreign_root,
+            valid_ids,
+            independent_id,
+            stale_id,
+            unreadable,
+        },
+    );
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct UnreadablePhaseStartReservation {
+    pub(super) reservation_id: String,
+    pub(super) phase_start:    String,
+}
+
+fn create_valid_anchor_reservations(
+    repository_root: &Path,
+    reservation_count: usize,
+) -> Vec<String> {
+    (0..reservation_count)
+        .map(|index| {
+            let path = format!("valid-{index}.txt");
+            let reservation_id = claim(repository_root, &format!("file:{path}"), SECOND_RUN);
+            fs::write(repository_root.join(&path), format!("valid {index}\n"))
+                .expect("valid phase path should write");
+            git(repository_root, &["add", &path]);
+            git(
+                repository_root,
+                &[
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "commit",
+                    "--quiet",
+                    "-m",
+                    &format!("valid phase {index}"),
+                ],
+            );
+            reservation_id
+        })
+        .collect()
+}
+
+fn claim_independent_history_reservation(
+    repository_root: &Path,
+    configuration_source_root: &Path,
+    return_branch: &str,
+) -> String {
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "switch",
+            "--quiet",
+            "--orphan",
+            "independent-history",
+        ],
+    );
+    git(
+        repository_root,
+        &["-c", "core.hooksPath=/dev/null", "clean", "-d", "-f", "-x"],
+    );
+    fs::create_dir_all(repository_root.join(".claude/config"))
+        .expect("independent configuration directory should exist");
+    fs::copy(
+        configuration_source_root.join(CONFIGURATION_PATH),
+        repository_root.join(CONFIGURATION_PATH),
+    )
+    .expect("independent history should copy berth configuration");
+    fs::write(
+        repository_root.join("independent.txt"),
+        "independent root\n",
+    )
+    .expect("independent root should write");
+    git(repository_root, &["add", "-A"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "independent root",
+        ],
+    );
+    let reservation_id = claim(repository_root, "file:independent-owned.txt", SECOND_RUN);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "switch",
+            "--quiet",
+            return_branch,
+        ],
+    );
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "merge",
+            "--quiet",
+            "--no-ff",
+            "--no-edit",
+            "--allow-unrelated-histories",
+            "independent-history",
+        ],
+    );
+    reservation_id
+}
+
+fn claim_stale_anchor_reservation(repository_root: &Path) -> String {
+    let stale_parent = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    fs::write(repository_root.join("stale-anchor.txt"), "stale\n")
+        .expect("stale anchor path should write");
+    git(repository_root, &["add", "stale-anchor.txt"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "stale anchor",
+        ],
+    );
+    let stale_phase_start = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "update-ref",
+            "refs/test/cargo-berth-stale-anchor",
+            &stale_phase_start,
+        ],
+    );
+    let reservation_id = claim(repository_root, "file:stale-owned.txt", SECOND_RUN);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            "--quiet",
+            &stale_parent,
+        ],
+    );
+    reservation_id
+}
+
+fn claim_unreadable_phase_start_reservation(
+    repository_root: &Path,
+) -> UnreadablePhaseStartReservation {
+    let phase_start_parent = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    fs::write(repository_root.join("missing-anchor.txt"), "missing\n")
+        .expect("missing anchor path should write");
+    git(repository_root, &["add", "missing-anchor.txt"]);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "--quiet",
+            "-m",
+            "missing anchor",
+        ],
+    );
+    let phase_start = git_stdout(repository_root, &["rev-parse", "HEAD"]);
+    let reservation_id = claim(repository_root, "file:missing-owned.txt", SECOND_RUN);
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "reset",
+            "--hard",
+            "--quiet",
+            &phase_start_parent,
+        ],
+    );
+    delete_reservation_retention_and_prune(repository_root, &reservation_id);
+    let object_status = GIT.output(
+        repository_root,
+        ["cat-file", "-e", &format!("{phase_start}^{{commit}}")],
+    );
+    assert!(!object_status.status.success());
+    UnreadablePhaseStartReservation {
+        reservation_id,
+        phase_start,
+    }
+}
+
+fn delete_reservation_retention_and_prune(repository_root: &Path, reservation_id: &str) {
+    let retention_ref = format!("refs/cargo-berth/reservations/{reservation_id}");
+    git(
+        repository_root,
+        &[
+            "-c",
+            "core.hooksPath=/dev/null",
+            "update-ref",
+            "-d",
+            &retention_ref,
+        ],
+    );
+    git(
+        repository_root,
+        &["reflog", "expire", "--expire=now", "--all"],
+    );
+    git(repository_root, &["gc", "--prune=now"]);
+}

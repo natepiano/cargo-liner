@@ -31,6 +31,9 @@ use target_rebase_templates::ADVANCED_TARGET_CHECKPOINT;
 use target_rebase_templates::MISSING_TARGET_CHECKPOINT;
 use target_rebase_templates::STATE as TARGET_REBASE_STATE;
 
+#[path = "support/recorded_history.rs"]
+mod recorded_history;
+
 #[path = "support/loose_refs.rs"]
 mod loose_refs;
 
@@ -115,6 +118,7 @@ use lifecycle_templates::INITIAL_COMMIT_TAG;
 use lifecycle_templates::INITIALIZED_REFTABLE_REPOSITORY;
 use lifecycle_templates::INITIALIZED_REPOSITORY;
 use lifecycle_templates::RUN_ENVIRONMENT;
+use lifecycle_templates::ReleasedBeforeMissingTrunk;
 use lifecycle_templates::SESSION_ENVIRONMENT;
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -1273,37 +1277,11 @@ fn loose_reference_reads_spawn_no_git_process() {
 
 #[test]
 fn released_reservation_remains_clear_after_git_confirms_an_unresolvable_trunk() {
-    let repository = initialized_repository();
-    let (_second_directory, second_root) = foreign_worktree(&repository, "second");
-    GIT.run_without_hooks(repository.path(), ["switch", "--quiet", "-c", "phase"]);
-    commit_file(
-        repository.path(),
-        "src/lib.rs",
-        "phase work\n",
-        "phase work",
-    );
-    let claim = claim(repository.path(), "tree:src", FIRST_RUN);
-    let reservation_id = reservation_id(&claim);
-    assert!(
-        run_berth(repository.path(), &["release", &reservation_id])
-            .status
-            .success()
-    );
-    git(repository.path(), &["switch", "--quiet", "main"]);
-    git(
-        repository.path(),
-        &["merge", "--quiet", "--ff-only", "phase"],
-    );
-    assert!(
-        run_berth(repository.path(), &["release", &reservation_id])
-            .status
-            .success()
-    );
-    assert!(
-        run_berth(repository.path(), &["release", &reservation_id])
-            .status
-            .success()
-    );
+    let repository = lifecycle_templates::RELEASED_BEFORE_TRUNK_DISAPPEARS.instantiate();
+    let ReleasedBeforeMissingTrunk {
+        second_root,
+        reservation_id,
+    } = recorded_history::read(repository.path());
     git(repository.path(), &["switch", "--quiet", "--detach"]);
     git(repository.path(), &["update-ref", "-d", "refs/heads/main"]);
 

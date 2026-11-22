@@ -1163,23 +1163,59 @@ pub(super) fn continue_split(
     editor: &Path,
     change: SplitRefChange,
 ) -> ContinuedSplitState {
+    let prepared = prepare_split_continuation(fixture, state, editor, change);
+    finish_split_continuation(fixture, prepared, change)
+}
+
+/// The replacement commits exist, but Git has not written the branch references.
+#[derive(Serialize, Deserialize)]
+pub(super) struct SplitBeforeContinuation {
+    checkpoint:  SplitLowerCheckpointState,
+    first_split: String,
+    split_tip:   String,
+}
+
+fn prepare_split_continuation(
+    fixture: &RewriteRepository,
+    state: SplitLowerCheckpointState,
+    editor: &Path,
+    change: SplitRefChange,
+) -> SplitBeforeContinuation {
+    if matches!(change, SplitRefChange::UpdatedSibling) {
+        split_rebase::stop_for_split(&fixture.holder, editor, &state.trunk);
+    } else {
+        write_first_rebase_action(editor, "edit");
+        stop_stacked_split_rebase(fixture, change, editor, &state.trunk);
+    }
+    fixture.commit("one", "base");
+    let first_split = fixture.head();
+    fixture.commit("one", "two");
+    let split_tip = fixture.head();
+    SplitBeforeContinuation {
+        checkpoint: state,
+        first_split,
+        split_tip,
+    }
+}
+
+/// Run the real reference transactions and check their captured rewrite map.
+pub(super) fn finish_split_continuation(
+    fixture: &RewriteRepository,
+    prepared: SplitBeforeContinuation,
+    change: SplitRefChange,
+) -> ContinuedSplitState {
+    let SplitBeforeContinuation {
+        checkpoint,
+        first_split,
+        split_tip,
+    } = prepared;
     let SplitLowerCheckpointState {
         trunk,
         lower,
         old_lower,
         old_upper,
         active_phases,
-    } = state;
-    if matches!(change, SplitRefChange::UpdatedSibling) {
-        split_rebase::stop_for_split(&fixture.holder, editor, &trunk);
-    } else {
-        write_first_rebase_action(editor, "edit");
-        stop_stacked_split_rebase(fixture, change, editor, &trunk);
-    }
-    fixture.commit("one", "base");
-    let first_split = fixture.head();
-    fixture.commit("one", "two");
-    let split_tip = fixture.head();
+    } = checkpoint;
     split_rebase::continue_rebase(&fixture.holder);
     let new_upper = fixture.head();
     assert_ne!(old_upper, new_upper);
@@ -1776,3 +1812,25 @@ pub(super) fn reconcile_first_split(
         fixture.checkpoint(&interval.id);
     }
 }
+
+/// A real stacked rebase stopped after both replacement commits exist.
+pub(super) const SIBLING_SPLIT_BEFORE_CONTINUATION: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "sibling-split-before-continuation",
+        build: |root| {
+            SPLIT_LOWER_CHECKPOINT_UPDATED_SIBLING.restore_into(root);
+            let fixture = RewriteRepository::at_root(root);
+            let state = read_state(root);
+            let editor = root.join(".git/split-editor");
+            let prepared = prepare_split_continuation(
+                &fixture,
+                state,
+                &editor,
+                SplitRefChange::UpdatedSibling,
+            );
+            write_state(root, &prepared);
+        },
+        ..REWRITE_MAIN
+    },
+    ..TWO_REBASE_HISTORY
+};
