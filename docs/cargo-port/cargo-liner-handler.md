@@ -1199,3 +1199,30 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - The new test fails before the fix and passes after it.
 - No changed test takes one second or more.
+
+### Phase 56 — a cargo-berth hook call no longer decodes the whole replay checkpoint  · status: todo
+
+#### Work Order
+
+**Goal:** the base CPU of a cargo-berth hook call falls well below its Phase 53 cost at Hana ledger size. Source: the Phase 53 Mac probe; the showrunner approved it 2026-11-23. CPU cost ranks first, so it runs right after Phase 54.
+
+**Spec:**
+1. The fault (Mac, 2026-11-22, Phase 53 probe): with no replay tail, one hook call costs about 1.6 s CPU and reads about 35 MB. Most of it is reading and decoding the 35-40 MB `replay-checkpoint.json` (`ReplayCheckpoint::decode_replay`, `crates/cargo-berth/src/ledger/replay_checkpoint.rs`) into a whole `JournalReplay`.
+2. First measure the decode share of hook CPU: time `serde_json::from_slice::<JournalReplay>` with thread CPU time on the Mac sample of the Phase 53 probe.
+3. Then cut the cost at its cause. Name the choice: a smaller fold state (drop or move what no hook reads), a lazy decode that reads only the parts a hook needs, or a faster encoding. Each hook path must keep the same answers.
+4. Report the CPU and read bytes of one hook call before and after on the same Mac sample, three runs each.
+
+**Files:**
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — the checkpoint format and decode
+- `crates/cargo-berth/src/ledger/journal.rs` — `JournalReplay`
+- the hook callers, found in step 3
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- A test shows that replay answers from the new checkpoint equal a whole-journal replay.
+- No changed test takes one second or more.
