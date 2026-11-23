@@ -1140,7 +1140,7 @@ The copies are deleted. No source changes.
 
 **Ruled out:** an append-only checkpoint; a ratio of 128.
 
-### Phase 54 — mend adds no import that hides a name a glob import brings in  · status: todo
+### Phase 54 — mend adds no import that hides a name a glob import brings in  · status: done
 
 #### Work Order
 
