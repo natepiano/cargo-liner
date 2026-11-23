@@ -1241,3 +1241,29 @@ The copies are deleted. No source changes.
 - A test shows that replay answers from the new checkpoint equal a whole-journal replay.
 - `a_large_checkpoint_limits_bytes_written_per_appended_record` and `compaction_leaves_a_checkpoint_for_the_new_journal` pass.
 - No changed test takes one second or more.
+
+### Phase 57 — mend --fix names each fix it applies  · status: todo
+
+#### Work Order
+
+**Goal:** after `mend --fix`, the output names the file and line of each fix it applied, so a reader can check each fix without a second run. Source: the showrunner, 2026-11-23.
+
+**Spec:**
+1. The fault (hana lint copy, 2026-11-23): mend printed only `mend: applied 11 import fix(es)` and `No findings.` No line named a file or a line, so a second run without `--fix` was needed to find the 11 fixes.
+2. After the count notice, print one line per applied fix: the path, the line, the finding kind, and the text before and after where it is short. Use the location the finding had before the fix.
+3. Apply this to every fix kind the count notice names (import fixes, annotation rewrites, `pub use` fixes).
+4. Keep the count notice as it is. A run that applies no fix prints no new line.
+
+**Files:**
+- `crates/cargo-mend/src/reporting/outcome.rs` — the count notice (`"import fix(es)"`)
+- the fix pass that applies the edits and knows each finding's location; the writer names it
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- A test applies two fixes in two files and checks one output line for each, with its path and line.
+- No changed test takes one second or more.
