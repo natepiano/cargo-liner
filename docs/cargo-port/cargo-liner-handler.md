@@ -1119,7 +1119,7 @@ The copies are deleted. No source changes.
 - The idle CPU pairs show no increase, or the reply names the cost.
 - No changed test takes one second or more.
 
-### Phase 53 — cargo-berth hooks stop rewriting the whole replay checkpoint  · status: todo
+### Phase 53 — cargo-berth hooks stop rewriting the whole replay checkpoint  · status: done
 
 #### Work Order
 
