@@ -143,24 +143,30 @@ fn assert_outside_reply<'a>(root: &Path, oracle: &'a OracleReplies) -> TestResul
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stderr.as_slice(), b"");
-    let reply: Value = serde_json::from_slice(&output.stdout)?;
+    let mut reply: Value = serde_json::from_slice(&output.stdout)?;
     let findings = reply["findings"]
-        .as_array()
+        .as_array_mut()
         .ok_or("missing finding replies")?;
     assert_eq!(findings.len(), ids.len());
-    let mismatches = findings
-        .iter()
-        .zip(&oracle.cases)
-        .filter(|(actual, expected)| *actual != &expected.answer)
-        .map(|(actual, expected)| {
-            format!(
+    let mut mismatches = Vec::new();
+    for (actual, expected) in findings.iter_mut().zip(&oracle.cases) {
+        if expected.answer["status"] != "unknown_finding" {
+            let fields = actual.as_object_mut().ok_or("expected a finding object")?;
+            for field in ["rename_admission", "rename_applied", "footprint"] {
+                let _ = fields
+                    .remove(field)
+                    .ok_or_else(|| format!("{}: missing {field}", expected.name))?;
+            }
+        }
+        if *actual != expected.answer {
+            mismatches.push(format!(
                 "Finding {}\n  Rust: {actual}\nPython: {}",
                 expected.name, expected.answer
-            )
-        })
-        .collect::<Vec<_>>();
+            ));
+        }
+    }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
-    assert_eq!(reply["schema"], 4);
+    assert_eq!(reply["schema"], 6);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip": oracle.synced_tip, "ledger_revision": "absent"})

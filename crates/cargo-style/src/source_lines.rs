@@ -1,5 +1,6 @@
 //! Read source coordinates and map equal lines across a patch.
 
+use std::cell::OnceCell;
 use std::ops::RangeInclusive;
 
 use crate::tokenizer;
@@ -19,50 +20,58 @@ pub(crate) enum LineContinuity {
 
 pub(crate) struct SourceLines {
     text: String,
-    ends: Vec<usize>,
+    ends: OnceCell<Vec<usize>>,
 }
 
 impl From<String> for SourceLines {
     fn from(text: String) -> Self {
-        let mut offset = 0;
-        let ends = split_lines(&text)
-            .map(|line| {
-                offset += line.len();
-                offset
-            })
-            .collect();
-        Self { text, ends }
+        Self {
+            text,
+            ends: OnceCell::new(),
+        }
     }
 }
 
 impl SourceLines {
     pub(crate) const fn text(&self) -> &str { self.text.as_str() }
 
-    pub(crate) const fn count(&self) -> usize { self.ends.len() }
+    pub(crate) fn count(&self) -> usize { self.ends().len() }
 
     pub(crate) fn lines(&self) -> impl Iterator<Item = &str> + '_ {
         let mut start = 0;
-        self.ends.iter().map(move |&end| {
+        self.ends().iter().map(move |&end| {
             let line = &self.text[start..end];
             start = end;
             line
         })
     }
 
+    fn ends(&self) -> &[usize] {
+        self.ends.get_or_init(|| {
+            split_lines(&self.text)
+                .scan(0, |offset, line| {
+                    *offset += line.len();
+                    Some(*offset)
+                })
+                .collect()
+        })
+    }
+
     pub(crate) fn slice(&self, lines: RangeInclusive<usize>) -> &str {
+        let ends = self.ends();
         let start = lines.start().saturating_sub(2);
         let end = lines.end().saturating_sub(1);
         let start = if *lines.start() <= 1 {
             0
         } else {
-            self.ends.get(start).copied().unwrap_or(self.text.len())
+            ends.get(start).copied().unwrap_or(self.text.len())
         };
-        let end = self.ends.get(end).copied().unwrap_or(self.text.len());
+        let end = ends.get(end).copied().unwrap_or(self.text.len());
         &self.text[start..end]
     }
 
     pub(crate) fn line(&self, line: usize) -> SiteLine<'_> {
-        if line == 0 || line > self.ends.len() {
+        if line == 0 || line > self.count() {
             SiteLine::Unavailable
         } else {
             SiteLine::Text(self.slice(line..=line))

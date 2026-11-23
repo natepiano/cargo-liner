@@ -24,6 +24,7 @@ use crate::declarations::ImplementedPath;
 use crate::finding_anchor::FindingAnchor;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
+use crate::finding_source::NamingSearch;
 use crate::ledger_read::HeldAnchor;
 use crate::outside_bindings;
 use crate::outside_bindings::ChildSite;
@@ -469,7 +470,7 @@ impl<'a> OutsideSearch<'a, '_> {
         let crate_name = self.tip.crate_of(old.location.path);
         let paths = self
             .source
-            .files_naming(self.read, name)
+            .paths_naming(self.read, name, NamingSearch::DeclarationProof)
             .map_err(source_failure(
                 "find files that name the original trait",
                 old.location.path,
