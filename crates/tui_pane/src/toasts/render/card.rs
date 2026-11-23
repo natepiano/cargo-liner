@@ -281,8 +281,8 @@ pub(super) fn area_between_pane_borders(
     selected
 }
 
-/// Clear the card and plain gap cells. Keep pane borders and whole title rows in the gaps.
-fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
+/// Return `card` with its side and row gaps, inside `area`: the cells that a card draw clears.
+pub(super) fn cleared_surroundings(area: Rect, card: Rect) -> Rect {
     let clear_left = card.x.saturating_sub(TOAST_SIDE_GAP).max(area.x);
     let clear_right = card
         .right()
@@ -293,12 +293,17 @@ fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
         .bottom()
         .saturating_add(TOAST_ROW_GAP)
         .min(area.bottom());
-    let gaps = Rect::new(
+    Rect::new(
         clear_left,
         clear_top,
         clear_right.saturating_sub(clear_left),
         clear_bottom.saturating_sub(clear_top),
-    );
+    )
+}
+
+/// Clear the card and plain gap cells. Keep pane borders and whole title rows in the gaps.
+fn clear_toast_surroundings(frame: &mut Frame, area: Rect, card: Rect) {
+    let gaps = cleared_surroundings(area, card);
     for y in gaps.top()..gaps.bottom() {
         let frame_row = (gaps.left()..gaps.right())
             .any(|x| is_horizontal_frame(frame.buffer_mut()[(x, y)].symbol()));

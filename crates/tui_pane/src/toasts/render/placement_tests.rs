@@ -5,6 +5,7 @@ use std::time::Instant;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
+use ratatui::layout::Position;
 use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
@@ -13,16 +14,123 @@ use super::ToastsRenderCtx;
 use super::card;
 use super::test_support::TestApp;
 use crate::ColorMode;
+use crate::Hittable as _;
 use crate::PaneFocusState;
 use crate::Renderable;
 use crate::Toasts;
+use crate::constants::TOAST_ROW_GAP;
 use crate::toasts::ToastCountdownState;
 use crate::toasts::ToastFocus;
+use crate::toasts::ToastHit;
+use crate::toasts::ToastId;
+use crate::toasts::ToastStyle;
 
 fn row(buffer: &Buffer, y: u16) -> String {
     (buffer.area.left()..buffer.area.right())
         .map(|x| buffer[(x, y)].symbol())
         .collect()
+}
+
+/// The grid in the toast-over-grid tests; a summary cell starts at its top-left corner.
+const GRID: Rect = Rect::new(0, 0, 80, 30);
+/// The lifetime of the startup notice in the toast-over-grid tests.
+const NOTICE_SECONDS: u64 = 12;
+
+/// A startup notice and the instant when its entrance is complete.
+struct GridNotice {
+    toasts:  Toasts<TestApp>,
+    id:      ToastId,
+    settled: Instant,
+}
+
+impl GridNotice {
+    fn new() -> Self {
+        let mut toasts = Toasts::<TestApp>::new();
+        let id = toasts.push_timed_styled(
+            "Startup",
+            "Read projects and check the registry.",
+            Duration::from_secs(NOTICE_SECONDS),
+            1,
+            ToastStyle::Success,
+        );
+        let settled = toasts.entries[0].created_at + Duration::from_secs(1);
+        Self {
+            toasts,
+            id,
+            settled,
+        }
+    }
+
+    /// Draw the grid with a summary cell `summary_height` rows tall, `elapsed` seconds after
+    /// the entrance, then the notice over it. Return the notice card.
+    fn draw(
+        &mut self,
+        terminal: &mut Terminal<TestBackend>,
+        summary_height: u16,
+        elapsed: u64,
+    ) -> Result<Rect, Box<dyn Error>> {
+        let now = self.settled + Duration::from_secs(elapsed);
+        terminal.draw(|frame| {
+            let chrome = crate::default_pane_chrome(ColorMode::Colored);
+            frame.render_widget(chrome.block("Grid".to_owned(), false), GRID);
+            let summary = Rect::new(GRID.x, GRID.y, GRID.width, summary_height);
+            frame.render_widget(chrome.block("Summary".to_owned(), false), summary);
+            self.toasts.render_over_grid(
+                frame,
+                crate::frame_inner(GRID),
+                &[summary],
+                &ToastsRenderCtx {
+                    now,
+                    pane_focus_state: PaneFocusState::Inactive,
+                },
+            );
+        })?;
+        let hit = self.toasts.hits().first().ok_or("the notice is drawn")?;
+        let buffer = terminal.backend().buffer();
+        let remaining = NOTICE_SECONDS - 1 - elapsed;
+        let close = Position::new(hit.close_rect.x + 1, hit.close_rect.y);
+        assert!(row(buffer, hit.card_rect.y).contains("Startup"));
+        assert!(
+            row(buffer, hit.card_rect.bottom() - 1).contains(&format!("Closing in {remaining}"))
+        );
+        assert_eq!(buffer[close].symbol(), "x");
+        assert_eq!(
+            self.toasts.hit_test_at(close),
+            Some(ToastHit::Close(self.id))
+        );
+        Ok(hit.card_rect)
+    }
+}
+
+#[test]
+fn a_drawn_toast_keeps_its_position_when_grid_frames_change_height() -> Result<(), Box<dyn Error>> {
+    let mut notice = GridNotice::new();
+    let mut terminal = Terminal::new(TestBackend::new(GRID.width, GRID.height))?;
+    let first = notice.draw(&mut terminal, 8, 0)?;
+    // The summary foot and bottom border stay above the cleared gap over the card.
+    let tall = first.top() - TOAST_ROW_GAP;
+    for (elapsed, summary_height) in (1..).zip([tall, 12]) {
+        let card = notice.draw(&mut terminal, summary_height, elapsed)?;
+        assert_eq!(card, first, "summary height {summary_height}");
+    }
+    Ok(())
+}
+
+#[test]
+fn a_held_toast_moves_once_when_a_protected_foot_reaches_it() -> Result<(), Box<dyn Error>> {
+    let mut notice = GridNotice::new();
+    let mut terminal = Terminal::new(TestBackend::new(GRID.width, GRID.height))?;
+    let first = notice.draw(&mut terminal, 8, 0)?;
+    // The summary foot is the row under the card's top border.
+    let reaching = first.top() + 3;
+    let moved = notice.draw(&mut terminal, reaching, 1)?;
+    assert_ne!(moved, first);
+    assert!(moved.bottom() + TOAST_ROW_GAP <= reaching - 2, "{moved:?}");
+    for (elapsed, summary_height) in (2..).zip([reaching, 8]) {
+        let card = notice.draw(&mut terminal, summary_height, elapsed)?;
+        assert_eq!(card, moved, "summary height {summary_height}");
+    }
+    Ok(())
 }
 
 #[test]
