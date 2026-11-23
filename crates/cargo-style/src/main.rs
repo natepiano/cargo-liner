@@ -6,6 +6,8 @@
 //! the value. Each fact matches the Python reader in `scripts/style` that it ports.
 //! `RAYON_NUM_THREADS` sets the thread count; the default is one thread for each CPU.
 
+mod applied_tickets;
+mod binding;
 mod blob_reader;
 mod cache_constants;
 mod constants;
@@ -18,6 +20,7 @@ mod facts;
 mod finding;
 mod finding_anchor;
 mod finding_source;
+mod footprint;
 mod ledger_read;
 mod module_scan;
 mod module_sites;
@@ -27,6 +30,9 @@ mod outside_bindings;
 mod outside_mapping;
 mod outside_rename;
 mod relocation_ledger;
+mod rename_admission;
+mod rename_applied;
+mod rename_classifiers;
 mod request;
 mod rule_snapshot;
 mod same_declaration;

@@ -204,7 +204,7 @@ def add_destination_cases(fixture: RelocationFixture) -> None:
     split = "fn split() {}\n"
     fixture.after[f"{ALPHA}split_first.rs"] = split
     fixture.after[f"{ALPHA}split_second.rs"] = split
-    fixture.source("split", split, REMOVED, split.strip(), "several_destinations", build="missing")
+    fixture.source("split", split, REMOVED, split.strip(), "several_destinations")
     twice = "fn twice() {}\n"
     fixture.move("twice", twice, twice * 2, twice.strip(), "several_destinations")
 

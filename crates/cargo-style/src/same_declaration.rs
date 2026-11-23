@@ -20,6 +20,7 @@ use crate::declarations::ImplementationState;
 use crate::finding_anchor::FindingAnchor;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
+use crate::finding_source::NamingSearch;
 use crate::ledger_read::HeldAnchor;
 use crate::relocation_ledger::JudgingState;
 use crate::relocation_ledger::LinkedBuild;
@@ -328,7 +329,7 @@ impl RelocationReader {
         }
 
         let tip = source.tip(synced_tip)?;
-        let named = source.files_naming(synced_tip, &old.name)?;
+        let named = source.paths_naming(synced_tip, &old.name, NamingSearch::DeclarationProof)?;
         let candidates = named.iter().filter(|path| {
             path.as_str() != original_path
                 && changed.contains(path.as_str())

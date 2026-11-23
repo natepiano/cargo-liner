@@ -5,13 +5,6 @@ use rusqlite::Row;
 use crate::ledger_read;
 use crate::ledger_read::LedgerReadFailure;
 
-pub(crate) const WITH_ANCHOR: &str = "SELECT h.path, h.line, h.text, h.followed_at, h.anchor_commit, \
-    h.ticket, t.id AS judging_ticket, t.checkpoint, t.base, h.state, h.build_ticket, \
-    t.state AS judging_state, b.id AS build_id, b.state AS build_state \
-    FROM held_findings h LEFT JOIN tickets t ON t.id = h.ticket \
-    LEFT JOIN tickets b ON b.id = h.build_ticket \
-    WHERE h.finding_id = ?1";
-
 pub(crate) struct RelocationEvidence {
     pub(crate) finding: RelocationFindingState,
     pub(crate) judging: JudgingState,

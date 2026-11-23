@@ -1,6 +1,7 @@
 //! Read complete item identities and the lines whose owners are proved.
 
 use std::collections::BTreeMap;
+use std::ops::Range;
 use std::ops::RangeInclusive;
 
 use super::nested_syntax::NestedSyntax;
@@ -9,27 +10,40 @@ use crate::tokenizer::Token;
 use crate::tokenizer::TokenKind;
 use crate::word_syntax;
 
+pub(crate) enum OwnerHeader {
+    Proved { keyword: usize, end: usize },
+    Unproved,
+}
+
 pub(crate) struct EnclosingItem {
-    pub(crate) identity: Vec<String>,
-    pub(crate) kind:     String,
-    pub(crate) lines:    RangeInclusive<usize>,
-    pub(crate) header:   Vec<String>,
-    pub(crate) body:     OwnerBody,
+    pub(crate) identity:      Vec<String>,
+    pub(crate) kind:          String,
+    pub(crate) lines:         RangeInclusive<usize>,
+    pub(crate) header:        Vec<String>,
+    pub(crate) body:          OwnerBody,
+    pub(crate) tokens:        Range<usize>,
+    pub(crate) header_tokens: OwnerHeader,
 }
 
 pub(crate) enum OwnerBody {
-    Proved,
+    Proved(Range<usize>),
     Unproved(RangeInclusive<usize>),
 }
 
-pub(crate) struct UnreadableItems;
+#[derive(Clone, Copy, Debug, thiserror::Error)]
+pub(crate) enum UnreadableItems {
+    #[error("unreadable Rust tokens")]
+    Tokens,
+    #[error("partly unreadable Rust items")]
+    Items,
+}
 
 pub(crate) fn read(
     source: &SourceLines,
     tokens: &[Token],
 ) -> Result<Vec<EnclosingItem>, UnreadableItems> {
     if tokens.iter().any(|token| token.kind == TokenKind::Unknown) {
-        return Err(UnreadableItems);
+        return Err(UnreadableItems::Tokens);
     }
     let words: Vec<_> = tokens.iter().map(|token| token.value.clone()).collect();
     let ends = word_syntax::delimiter_ends(&words);
@@ -52,7 +66,7 @@ pub(crate) fn read(
         items: Vec::new(),
     };
     if !reader.visit(0, tokens.len(), &[]) {
-        return Err(UnreadableItems);
+        return Err(UnreadableItems::Items);
     }
     Ok(reader.items)
 }
@@ -314,11 +328,13 @@ impl ItemReader<'_> {
         let lines = self.first_line(item.first)..=self.last_line(item.last - 1);
         let position = self.items.len();
         self.items.push(EnclosingItem {
-            identity: identity.clone(),
-            kind:     item.kind.clone(),
-            lines:    lines.clone(),
-            header:   Vec::new(),
-            body:     OwnerBody::Unproved(lines),
+            identity:      identity.clone(),
+            kind:          item.kind.clone(),
+            lines:         lines.clone(),
+            header:        Vec::new(),
+            body:          OwnerBody::Unproved(lines),
+            tokens:        item.first..item.last,
+            header_tokens: OwnerHeader::Unproved,
         });
         if self.closed_prefix(item.first, item.keyword) {
             self.read_body(item, &identity, position);
@@ -328,11 +344,19 @@ impl ItemReader<'_> {
         }
     }
 
+    fn record_header(&mut self, item: &ItemSyntax, position: usize, end: usize) {
+        self.items[position].header = self.words[item.first..end].to_vec();
+        self.items[position].header_tokens = OwnerHeader::Proved {
+            keyword: item.keyword,
+            end,
+        };
+    }
+
     fn read_body(&mut self, item: &ItemSyntax, owner: &[String], position: usize) {
         if matches!(item.kind.as_str(), "macro_rules" | "macro") {
             let opening = item.keyword + if item.kind == "macro_rules" { 3 } else { 2 };
             if let Some(close) = self.close(opening, item.last) {
-                self.items[position].header = self.words[item.first..opening].to_vec();
+                self.record_header(item, position, opening);
                 self.items[position].body =
                     OwnerBody::Unproved(self.first_line(opening)..=self.last_line(close));
             }
@@ -357,11 +381,11 @@ impl ItemReader<'_> {
             };
             let body = opening == "{" && close == item.last - 1;
             if body {
-                self.items[position].header = self.words[item.first..cursor].to_vec();
+                self.record_header(item, position, cursor);
             }
             if body && matches!(item.kind.as_str(), "mod" | "impl" | "trait" | "extern") {
                 if self.visit(cursor + 1, close, owner) {
-                    self.items[position].body = OwnerBody::Proved;
+                    self.items[position].body = OwnerBody::Proved(cursor..item.last);
                 }
                 return;
             }
@@ -370,9 +394,11 @@ impl ItemReader<'_> {
             }
             cursor = close + 1;
         }
-        if self.items[position].header.is_empty() {
-            self.items[position].header = self.words[item.first..item.last].to_vec();
+        if matches!(self.items[position].header_tokens, OwnerHeader::Unproved) {
+            self.record_header(item, position, item.last);
         }
-        self.items[position].body = OwnerBody::Proved;
+        if let OwnerHeader::Proved { end, .. } = self.items[position].header_tokens {
+            self.items[position].body = OwnerBody::Proved(end..item.last);
+        }
     }
 }

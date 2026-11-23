@@ -13,6 +13,7 @@ use crate::declarations::ImplementationState;
 use crate::declarations::ImportPosition;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
+use crate::finding_source::NamingSearch;
 use crate::word_syntax;
 
 #[derive(Default)]
@@ -243,7 +244,7 @@ fn trait_home(
     let tip = source.tip(location.commit)?;
     let crate_name = tip.crate_of(location.path);
     let mut homes = Vec::new();
-    let files = source.files_naming(location.commit, name)?;
+    let files = source.paths_naming(location.commit, name, NamingSearch::DeclarationProof)?;
     for candidate in files
         .iter()
         .filter(|path| tip.has_rust_path(path) && tip.crate_of(path) == crate_name)

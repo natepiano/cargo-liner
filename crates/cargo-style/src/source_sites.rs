@@ -47,7 +47,7 @@ impl SourceSites {
             .iter()
             .any(|item| matches!(&item.body, OwnerBody::Unproved(lines) if lines.contains(&line)))
         {
-            Err(UnreadableItems)
+            Err(UnreadableItems::Items)
         } else {
             Ok(())
         }
