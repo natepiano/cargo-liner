@@ -37,6 +37,7 @@ mod request;
 mod rule_snapshot;
 mod same_declaration;
 mod site_ledger;
+mod sites;
 mod source_lines;
 mod source_sites;
 mod sqlite_read;
@@ -62,11 +63,13 @@ use crate::constants::VERSION_FLAG;
 use crate::finding::FINDING_SUBCOMMAND;
 use crate::finding::FindingRequest;
 use crate::request::Request;
+use crate::sites::SITES_SUBCOMMAND;
 
 /// The operation selected by a direct call or the Cargo subcommand.
 enum ReaderCommand {
     Facts,
     Finding(IntoIter<OsString>),
+    Sites(IntoIter<OsString>),
     Version,
 }
 
@@ -84,6 +87,7 @@ impl From<Vec<OsString>> for ReaderCommand {
             Some(argument) if argument == OsStr::new(FINDING_SUBCOMMAND) => {
                 Self::Finding(arguments)
             },
+            Some(argument) if argument == OsStr::new(SITES_SUBCOMMAND) => Self::Sites(arguments),
             _ => Self::Facts,
         }
     }
@@ -115,6 +119,19 @@ fn main() -> ExitCode {
             };
         },
         ReaderCommand::Facts => {},
+        ReaderCommand::Sites(arguments) => {
+            return match sites::SitesRequest::parse(arguments).and_then(sites::SitesRequest::answer)
+            {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!(
+                        "cargo-style: {}",
+                        error_chain(&error).replace(['\r', '\n'], " ")
+                    );
+                    ExitCode::FAILURE
+                },
+            };
+        },
     }
 
     // SAFETY: The locale changes before the reader starts any worker threads.
