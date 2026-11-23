@@ -1034,10 +1034,19 @@ The copies are deleted. No source changes.
 **Spec:**
 1. The fault: `BlockBindings::collect` (`crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`) treats an attribute that is not in `BUILT_IN_ATTRIBUTES` as a possible macro. It then returns `BlockBindings::Unknown`, so mend leaves every site in the block. `#[link(name = "c")]` on an `extern` block is one case: `std::time::Duration` beside it does not shorten. This is a missed fix only. Mend never writes a wrong import here.
 2. Make `BUILT_IN_ATTRIBUTES.names` the complete list from the Rust Reference built-in attributes index (https://doc.rust-lang.org/reference/attributes.html#built-in-attributes-index). Keep it one named constant. An attribute that is not on the list still counts as a possible macro.
-3. Add `#[link(name = "c")]` on the `extern` block in the positive control of the `BlockBindings` unit table. That row fails before the fix.
+3. Add `#[link(name = "c")]` on the `unsafe extern "C"` block of `unbound_first_segment` in `BLOCK_BINDINGS_SOURCE`. That fixture is the positive control: `inline_type_fix_leaves_paths_with_block_bindings` asserts that `std::time::Duration` shortens. The assert fails before the fix.
+4. Add a unit table in the `block_bindings.rs` tests: blocks with built-in attributes give `BlockBinding::Absent` for an unbound first segment. Include the `#[link(name = "c")]` `extern` block row; it fails before the fix.
+
+**Constraints from prior phases:**
+- `meta_binding` matches an attribute by `meta.path().get_ident()`, and a path with more than one segment gives `MayBind`. The Reference index lists two-segment entries in the `diagnostic` namespace (`diagnostic::on_unimplemented`, `diagnostic::do_not_recommend`). Match those on the full path.
+- `derive` and `cfg_attr` keep their own checks in `meta_binding`: `derive` accepts only `BUILT_IN_ATTRIBUTES.derives`, and `cfg_attr` checks each attribute after its predicate. A new name goes to the `_ => true` arm.
+- The existing unit test `item_macros_can_bind_the_first_path_segment` holds only `MayBind` rows. Keep it.
+- A fixture that builds a proc-macro crate takes over 1 s on the Mac. Do not add one.
+- The import-hiding checks of other mend fixes (`NamingTokens` in `facade_redirect/source_text.rs`, `ModuleImports::collides` with `RewrittenPaths`, the macro-body footprint in `inline_path_qualified_type/visitor.rs`) are not part of this change.
 
 **Files:**
 - `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — `BLOCK_BINDINGS_SOURCE`, the positive control
 
 **Workers:** 1 writer.
 - `impl`: all files.
@@ -1142,29 +1151,26 @@ The copies are deleted. No source changes.
 
 ### Phase 54 — mend adds no import that hides a name a glob import brings in  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `cargo mend --fix` never adds an import whose name a glob import in the same scope already brings in. Source: hana inspectors via builds and the showrunner, 2026-11-23. A mend bug always gets a phase. It runs after Phase 53 and before the rest of Phase 49.
-
-**Spec:**
-1. The fault: a hana test file has `use super::*;`. The glob brings in a test module `fold`. Mend rewrote a `super::super::fold::net_root_face` call into an import of the production `fold` module. That import hid the glob's `fold`, so `fold::fold_faces` failed with E0425. Mend rolled back: "compiler failed after applying mend fixes".
-2. The files: `crates/hana/tests/control_panel/flight.rs`, `grid_interactions.rs` and `form_routes.rs` in `/home/natepiano/worktrees/hana/inspectors/fold4`. Inspectors changed them to an explicit import, so read the old text from git history there. Read only; never write to hana.
-3. Find the fix that writes this import. Before it adds an import of name N, it checks whether a glob import in the same scope can bring in N. If one can, it leaves the path as it is. A glob whose names mend cannot list counts as one that can bring in every name.
-4. Add a fixture test: a file with a glob import that brings in a module `fold`, and a qualified path to another `fold`. The test fails before the fix (the compiler rollback) and passes after it.
+- `prefer_module_import` adds no module import that hides a name a glob in the same scope brings in. In a scope with a glob, a new binding of `name` collides only when the file uses `name` outside the paths the fix rewrites, macro bodies included. Mend then leaves the path as written, and the hana `use super::*;` test files keep `fold::fold_faces()` compiling.
+- `ModuleImports::collides(offset, name, absolute_module, proposal, rewritten_paths: &RewrittenPaths<'_>)` checks in order: a binding of another target collides; `ScopeGlobs::Absent` does not; an ungated binding of the same target does not; else `RewrittenPaths::name_use(name)` collides on `Present` or `Unparseable`. `ModuleImports::scope_globs` gives `ScopeGlobs { Absent, Unlisted }` to `collides` and `move_import`.
+- `drop_colliding_candidates` excludes, for each `absolute_module`, every `use` item span of that module and each inline call's `prefix_start..leaf_start`. The leaf and its turbofish stay in the check. An `ImportTarget::ParentModule` candidate adds no `use`, so it skips `collides`.
+- `NamingTokens<'a>` (`From<&str>`) lexes a file once on the first `word_use(&self, excluded: &[Range<usize>], word) -> IdentifierUse`. A token that overlaps an excluded range does not count. A bracket group is a doc body only after `#` or `#!`. `owner_edit::edit_region` and `parent_boundary::locally_used_exports` keep one `NamingTokens` for each loop.
+- `inline_path_qualified_type` counts a `PascalCase` path start in a macro body (`GatedInlinePaths::visit_macro`, `record_macro_footprint`) and the second segment of a `self::` path in `bare_type_names`. An identifier after `::` or `.` in a macro body does not count.
+- Mac suite: 1059 of 1059.
 
 **Files:**
-- `crates/cargo-mend/src/fixes/` — the fix that adds the import, found in step 3
-- `crates/cargo-mend/tests/diagnostics/` — the fixture and its test, beside the existing fix fixture tests
+- `crates/cargo-mend/src/fixes/imports/module_imports.rs` — `collides`, `RewrittenPaths`, `ScopeGlobs`, `scope_globs` and their unit tests; `imports/mod.rs` re-exports `RewrittenPaths`
+- `crates/cargo-mend/src/fixes/prefer_module_import/scan.rs` — `drop_colliding_candidates` and the rewritten ranges
+- `crates/cargo-mend/src/fixes/facade_redirect/source_text.rs`, `mod.rs` — `NamingTokens`, `NamingToken`, `NamingText`, `WordNeedles`, `GroupOpener`
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/visitor.rs`, `scan.rs` — the macro-body and `self::` footprint and its tests
+- `crates/cargo-mend/src/fixes/subtree_reexport/owner_edit.rs`, `crates/cargo-mend/src/fixes/pub_use_fixes/parent_boundary.rs` — one `NamingTokens` for each loop
+- `crates/cargo-mend/tests/diagnostics/prefer_module_import.rs` — the glob `fold`, turbofish, `RewriteAt`, parent and bevy-style fixture tests
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Gotchas:** a file-local token scan cannot see a `macro_rules!` from another file that expands to the hidden name; the `cargo check` rollback catches that case. The glob check uses `ImportCondition::Always`, so a gated glob and a gated import that do not overlap still collide.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- The fixture test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Ruled out:** "any glob blocks the import" — it dropped the finding in 1032 of 2344 hana files; a whole-file word scan for the `inline_path_qualified_type` footprint — it blocks `crate::a::Foo::new()` beside an inline `crate::a::Foo`.
 
 ### Phase 55 — a cargo-berth hold answer names only paths in the holder's scope  · status: todo
 
