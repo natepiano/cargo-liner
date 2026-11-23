@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Command cells show the number of hidden processes on the last body row when the processes do not fit.
+- Notices and their close buttons keep their place while grid cells change height.
 - Hidden process counts keep their last letter when the label fits and use the cell background. Fading process text stays readable. Shortened crate names keep their ellipsis. The compiler options `-L`, `--out-dir`, and `--check-cfg` wrap with their values.
 - An unheld capture shim lock file no longer blocks installation.
 - Compiler rows retain their crate with all arguments shown. The status bar uses `processes` and hint ink for display modes.

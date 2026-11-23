@@ -438,6 +438,7 @@ pub use overlays::handle_keymap_capture_command;
 pub use overlays::handle_keymap_navigation_key;
 pub use overlays::keymap_toml;
 pub use overlays::render_toasts;
+pub use overlays::render_toasts_over_grid;
 pub use overlays::save_keymap_to_disk;
 pub use pane::FocusedPane;
 pub use pane::FrameworkFocusId;

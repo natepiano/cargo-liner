@@ -23,15 +23,29 @@ pub fn render_toasts<Ctx: AppContext>(
     framework: &mut Framework<Ctx>,
     rect: Rect,
 ) {
-    Renderable::render(
-        &mut framework.toasts,
-        frame,
-        rect,
-        &ToastsRenderCtx {
-            now:              Instant::now(),
-            pane_focus_state: PaneFocusState::Inactive,
-        },
-    );
+    Renderable::render(&mut framework.toasts, frame, rect, &frame_toasts_ctx());
+}
+
+/// Draw the framework's toasts over a tile grid in `viewport`. Keep the cards
+/// out of the feet of `protected_frames`, and keep a card in place while grid
+/// cells change height.
+pub fn render_toasts_over_grid<Ctx: AppContext>(
+    frame: &mut Frame,
+    framework: &mut Framework<Ctx>,
+    viewport: Rect,
+    protected_frames: &[Rect],
+) {
+    framework
+        .toasts
+        .render_over_grid(frame, viewport, protected_frames, &frame_toasts_ctx());
+}
+
+/// The `ToastsRenderCtx` for toasts drawn after the app's panes: now, with no pane focus.
+fn frame_toasts_ctx() -> ToastsRenderCtx {
+    ToastsRenderCtx {
+        now:              Instant::now(),
+        pane_focus_state: PaneFocusState::Inactive,
+    }
 }
 
 /// Draw whichever framework overlay is open: settings with the app's
