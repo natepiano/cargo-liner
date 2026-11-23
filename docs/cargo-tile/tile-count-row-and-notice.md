@@ -14,6 +14,7 @@
 ## Delegation Context
 
 - **Project:** cargo-tile — a terminal grid of the cargo processes on the machine; tui_pane — its shared TUI framework (tiles, toasts, input).
+- **Project started:** 2026-11-22T16:41:37.664+00:00
 - **Stack:** Rust 2024, ratatui, crossterm.
 - **Layout:**
   - `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/` — cell tables, the hidden-process count row.
@@ -34,7 +35,7 @@
 
 ## Phases
 
-### Phase 1 — A full-width cell shows "+N more", and a notice stays still while cells change height  · status: todo
+### Phase 1 — A full-width cell shows "+N more", and a notice stays still while cells change height  · status: done
 
 #### Work Order
 
@@ -91,3 +92,50 @@ Live check recipe for both items (scratch only; read the scripts before use):
 - `bash ~/.claude/scripts/direct/verify.sh test tui_pane` passes, with the new notice tests.
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` are clean.
 - Live on natedev: the full-width cell ends with "+N more"; the notice does not hide or slide while cells change; one click on [x] closes it.
+
+### Phase 2 — A notice settles once with the grid, and the count-row tests regain their strength  · status: todo
+
+#### Work Order
+
+**Goal:** A notice that first shows while the grid moves keeps that place only until the grid settles, then takes its settled place once. The count-row tests prove their rules at every grid height again.
+
+**Source:** showrunner ruling 2026-11-23 01:28 PST (Phase 73 lands after its 3 repair rounds; these items move here), and the round 3 review of Phase 1.
+
+**Spec:**
+
+Item 1 — the notice place after a moving first draw.
+1. Fault: `a_toast_outside_the_summary_columns_keeps_its_original_rect` (render.rs). The first draw comes while the grid moves. `GridToastStack` keeps that place, one row above the settled place, for the notice's whole life. Phase 1 changed the assert to the held place, with a comment.
+2. Fix: cargo-tile tells the notice draw whether the grid moves (an enum argument to `tui_pane::render_toasts_over_grid`). A place found while the grid moves is held only until the first settled frame. That frame searches once and holds the result. A place found on a settled frame stays held through later grid motion, as in Phase 1.
+3. Restore the original assert `assert_eq!(actual, expected)` and remove the Phase 74 comment.
+4. Keep every Phase 1 notice test green. The live fault (hide and slide in again while cells change height) must not return.
+
+Item 2 — count-row test strength (round 3 review findings).
+1. `a_command_cell_leaves_no_spare_row_while_a_column_mate_is_short`: test a range of heights (for example 53..=67), not one even height. Assert `repaired` is empty for every command cell.
+2. `a_separator_loan_paints_the_recipients_new_process_rows`: assert that each recipient paints a pid that the former grid (`KeepTogether`) does not paint. Run it at an odd and an even height.
+3. `nested_unrowed_descendants_add_to_their_nearest_drawn_row`: draw the parent and the child again (add a descendant, height 5), and assert the parent's own share and the child's sum, as main did.
+4. `a_near_full_summary_yields_separators_for_hidden_process_rows`: also assert no blank rows in the command cells, and make height 63 pass too.
+5. Derive the literals in the new count-row tests (45, 4115) from `TABLE_HEADER_HEIGHT`.
+
+Item 3 — the lone blank row above "+N more" (known defect).
+1. At width 200, roster [4,5,4,5,4,5], odd heights 57-67, one command cell keeps a blank row above "+N more" while its column mates are short. Cells grow in steps of 2 (heading and row), so one row has no use. Main has the same lone row at the other parity, without a count row.
+2. A fix changes the look (for example, `TableSeparators::for_visible_groups` keeps the last `remaining` gaps, and `measured_table_row_use` models the same rule). A look change needs the user's approval: file the question before any code.
+
+Item 4 — count-row code cleanups (round 3 review findings).
+1. Build `CommandRowBudget` once: `reserve_command_rows` returns the hidden count and the count row; delete `hidden_count_row`; keep only the Summary arm in `prepare_table_viewport`.
+2. Make `(AllFit, Reserved)` unrepresentable: one enum, for example `AllFit | SomeHidden { count_row }`.
+3. Share one label function between `draw_hidden_process_count` and the test helper `has_blank_row_above_foot`, so a truncated label is also checked.
+4. Model the separator that `TableSeparators::for_visible_groups` paints in the spare row in the single-line budget path, so measurement and painting agree on `kept`.
+
+**Files:**
+- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/` — the notice call, the count-row code and the tests.
+- `crates/tui_pane/src/overlays/frame_tail.rs`, `crates/tui_pane/src/toasts/` — the grid motion argument and the hold rule.
+- `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — one line for each user-visible fix.
+
+**Workers:** Claude subagents (no-worker mode): one for item 1, one for items 2 and 4. Item 3 waits for the user's answer.
+
+**State:** none
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh test tui_pane` pass, with the original toast assert restored.
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` are clean.
+- Live on natedev: the startup notice moves at most once, when the grid settles; it does not hide or slide while cells change.

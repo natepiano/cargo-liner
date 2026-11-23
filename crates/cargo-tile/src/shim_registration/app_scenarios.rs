@@ -39,6 +39,7 @@ use tui_pane::SettingStep;
 use tui_pane::SettingsNavigation;
 use tui_pane::TILE_ROWS_CONTENT_LABEL;
 use tui_pane::TerminalApp;
+use tui_pane::TileView;
 use tui_pane::ToastDuration;
 use tui_pane::ToastHit;
 use tui_pane::ToastVisualDeadline;
@@ -290,6 +291,61 @@ fn capture_shim_lock_notice_closes_with_its_button() {
 #[test]
 fn capture_shim_lock_notice_closes_with_escape_from_the_grid() {
     assert_capture_shim_lock_notice_closes(press_escape);
+}
+
+#[test]
+fn one_click_closes_the_startup_notice_after_the_grid_changes_height() {
+    let mut app = App::new_for_test().expect("startup app");
+    app.loaded_config.config.tiles.view = TileView::Cells;
+    let mut terminal = Terminal::new(TestBackend::new(100, 32)).expect("startup terminal");
+    drop(draw_settled(&mut terminal, &mut app));
+    app.framework
+        .toasts
+        .settings_mut()
+        .animation
+        .entrance_duration =
+        ToastDuration::try_from_secs("entrance_duration", 0.0).expect("instant toast entrance");
+    capture::report(
+        &mut app,
+        Ok(Startup {
+            installed: vec!["stable".into()],
+            ..Startup::default()
+        }),
+    );
+    let initial = draw(&mut terminal, &mut app);
+    assert!(initial.contains(CAPTURE_PROGRESS_TITLE), "{initial}");
+    let summary = app.tiles.painted_summary_frames()[0];
+    let hit = app.framework.toasts.hits()[0];
+    let close = Position::new(hit.close_rect.x + 1, hit.close_rect.y);
+    assert_eq!(terminal.backend().buffer()[close].symbol(), "x");
+
+    let commands =
+        ["check", "build", "test", "clippy"].map(|command| ["cargo", command].map(OsString::from));
+    let records = ProcessObservations::new(
+        (100..)
+            .zip(&commands)
+            .map(|(pid, argv)| ProcessObservation::cargo(pid, argv)),
+    );
+    let mut sequence = CensusSequence::default();
+    app.roster.observe(
+        sequence.sample_capture(&records, &Capture::default()),
+        Instant::now(),
+    );
+    let changed = draw_settled(&mut terminal, &mut app);
+    assert_ne!(
+        app.tiles.painted_summary_frames()[0].height,
+        summary.height,
+        "{changed}"
+    );
+    assert!(changed.contains(CAPTURE_PROGRESS_TITLE), "{changed}");
+    assert_eq!(terminal.backend().buffer()[close].symbol(), "x");
+    assert_eq!(
+        app.framework.hit_test_at(close),
+        Some(FrameworkHit::Toast(ToastHit::Close(hit.id)))
+    );
+
+    app.click(close);
+    assert!(!app.framework.toasts.has_active(), "{changed}");
 }
 
 fn assert_capture_shim_lock_notice_closes(close: impl FnOnce(&mut App, Position)) {

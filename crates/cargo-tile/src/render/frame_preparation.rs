@@ -21,6 +21,7 @@ use super::GROUP_HEADER_HEIGHT;
 use super::GibibytePrecision;
 use super::GroupRowUse;
 use super::HashMap;
+use super::HiddenProcessCountRow;
 use super::InvocationId;
 use super::Line;
 use super::PaintStage;
@@ -1032,15 +1033,6 @@ fn measured_table_row_use(
     } else {
         0
     };
-    if groups.iter().all(|group| {
-        group.arguments == ArgumentDetail::Default
-            && group
-                .rows
-                .windows(2)
-                .all(|pair| pair[1].saturating_sub(pair[0]) <= 1)
-    }) {
-        return single_line_table_use(groups, height, retained_gaps, separation);
-    }
     let processes = groups
         .iter()
         .map(|group| group.rows.len().saturating_sub(1))
@@ -1049,8 +1041,27 @@ fn measured_table_row_use(
         .iter()
         .map(|group| usize::from(group.heading.rows()))
         .sum();
-    let mut budget =
-        CommandRowBudget::new(available.saturating_sub(retained_gaps), processes, headings);
+    let first_heading = groups.first().map_or(0, |group| group.heading.rows());
+    let mut budget = CommandRowBudget::new(
+        available.saturating_sub(retained_gaps),
+        processes,
+        headings,
+        first_heading,
+    );
+    let single_line = groups.iter().all(|group| {
+        group.arguments == ArgumentDetail::Default
+            && group
+                .rows
+                .windows(2)
+                .all(|pair| pair[1].saturating_sub(pair[0]) <= 1)
+    });
+    // A command table that hides processes keeps its count row, which `CommandRowBudget` measures.
+    let count_reserved = groups
+        .first()
+        .is_some_and(|group| budget.reserves_hidden_count_row(group.kind));
+    if single_line && !count_reserved {
+        return single_line_table_use(groups, height, retained_gaps, separation);
+    }
     let mut hidden = 0;
     let mut shown = 0;
     for group in groups {
@@ -1239,23 +1250,41 @@ struct CommandRowBudget {
     remaining:  u16,
     extra:      u16,
     visibility: ProcessRowVisibility,
+    count_row:  HiddenProcessCountRow,
 }
 
 impl CommandRowBudget {
-    fn new(height: u16, processes: usize, headings: usize) -> Self {
+    fn for_directories(height: u16, directories: &[PathGroup<'_>]) -> Self {
+        let processes = directories.iter().map(|group| group.rows.len()).sum();
+        let headings = directories
+            .iter()
+            .map(|group| usize::from(group.heading.rows()))
+            .sum();
+        let first_heading = directories.first().map_or(0, |group| group.heading.rows());
+        Self::new(height, processes, headings, first_heading)
+    }
+
+    fn new(height: u16, processes: usize, headings: usize, first_heading: u16) -> Self {
         let minimum = processes.saturating_add(headings);
         let visibility = if minimum > usize::from(height) {
             ProcessRowVisibility::SomeHidden
         } else {
             ProcessRowVisibility::AllFit
         };
+        // The count row needs a row below the first heading and one process row.
+        let count_row = if visibility == ProcessRowVisibility::SomeHidden
+            && height > first_heading.saturating_add(1)
+        {
+            HiddenProcessCountRow::Reserved
+        } else {
+            HiddenProcessCountRow::Absent
+        };
         Self {
-            remaining: height.saturating_sub(u16::from(
-                visibility == ProcessRowVisibility::SomeHidden
-                    && usize::from(height) > usize::from(headings > 0).saturating_add(1),
-            )),
+            remaining: height
+                .saturating_sub(u16::from(count_row == HiddenProcessCountRow::Reserved)),
             extra: height.saturating_sub(u16::try_from(minimum).unwrap_or(u16::MAX)),
             visibility,
+            count_row,
         }
     }
 
@@ -1278,6 +1307,29 @@ impl CommandRowBudget {
         self.remaining = self.remaining.saturating_sub(budget);
         budget
     }
+
+    /// A command table keeps its last row for the hidden count when its processes do not fit.
+    fn reserves_hidden_count_row(&self, kind: TableKind) -> bool {
+        kind == TableKind::Command && self.count_row == HiddenProcessCountRow::Reserved
+    }
+}
+
+/// Whether a table of `kind` keeps a row for the hidden count when `directories` do not fit in
+/// `height`. `hidden` is the count from `reserve_command_rows`. Any table that hides a process
+/// there keeps the row. A command table keeps it also when its rows are single-line, which
+/// `reserve_command_rows` skips.
+pub(super) fn hidden_count_row(
+    directories: &[PathGroup<'_>],
+    height: u16,
+    kind: TableKind,
+    hidden: usize,
+) -> HiddenProcessCountRow {
+    let budget = CommandRowBudget::for_directories(height, directories);
+    if hidden > 0 || budget.reserves_hidden_count_row(kind) {
+        budget.count_row
+    } else {
+        HiddenProcessCountRow::Absent
+    }
 }
 
 /// `reserve_command_rows` applies `CommandRowBudget` before the painting path selects visible rows.
@@ -1293,12 +1345,7 @@ pub(super) fn reserve_command_rows(
     {
         return 0;
     }
-    let process_count = groups.iter().map(Vec::len).sum();
-    let headings = directories
-        .iter()
-        .map(|group| usize::from(group.heading.rows()))
-        .sum();
-    let mut budget = CommandRowBudget::new(height, process_count, headings);
+    let mut budget = CommandRowBudget::for_directories(height, directories);
     let mut hidden = 0;
     for (rows, directory) in groups.iter_mut().zip(directories) {
         if !budget.heading(directory.heading.rows()) {
