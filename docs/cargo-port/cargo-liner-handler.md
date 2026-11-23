@@ -1013,7 +1013,7 @@ The copies are deleted. No source changes.
 - `crates/cargo-berth/src/verb/claim/` — the claim path and outcome that drop the scope
 - `crates/cargo-berth/src/scope/` — when the scope filter is the cause
 - `crates/cargo-berth/src/session/`, `crates/cargo-berth/src/hook/` — the session mapping and the edit-hook reservation selection
-- the cargo-berth claim test of the same behavior
+- `crates/cargo-berth/tests/answers.rs` and `crates/cargo-berth/tests/hooks.rs` — the claim test and the edit-hook selection test of the same behavior
 
 **Workers:** 1 writer.
 - `impl`: all files.
@@ -1121,33 +1121,24 @@ The copies are deleted. No source changes.
 
 ### Phase 53 — cargo-berth hooks stop rewriting the whole replay checkpoint  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the cargo-berth hooks write to disk in proportion to the journal records they add, not the size of the ledger. Source: the showrunner and bob, 2026-11-22, from a natedev disk-write measure.
-
-**Spec:**
-1. The fault (natedev, 2026-11-22 01:23 to 01:33 EST): the cargo-berth post-tool-use hook wrote 1.9 GiB in 10 minutes to the system disk (about 0.27 TB a day). In `~/rust/hana/.git/cargo-berth`, `replay-checkpoint.json` is 44 MB and `journal.ndjson` is 248 MB.
-2. The cause, read in the code: `ReplayCheckpoint::replay_journal` (`crates/cargo-berth/src/ledger/replay_checkpoint.rs`) writes the whole `JournalReplay` again (temporary file, then rename) each time a replay folds `REPLAY_CHECKPOINT_INTERVAL_BYTES` (256 KiB) or `REPLAY_CHECKPOINT_INTERVAL_RECORDS` (256) past the checkpoint. Every hook call replays, locked and lock-free, so with a large ledger each 256 records cost a 44 MB write, and concurrent hooks can each write one.
-3. First measure it in a test: the bytes written per appended record with a ledger of realistic size. Then fix the cause, so that the written bytes scale with the appended records. Name the choice: an append-only checkpoint, fewer writes (for example one writer under the mutation lock, or an interval that scales with the checkpoint size), or a smaller fold state.
-4. Find why the 248 MB journal does not compact below `JOURNAL_COMPACTION_THRESHOLD_BYTES` (16 MiB). The once-a-minute history check (`compact_expired_history`) replays it each time. Fix it, or name why the journal must stay that large.
-5. Two compaction temporary files stay in the hana folder: `journal.ndjson.compact.tmp.01a1ff29-…` (245 MB, 2026-11-21 12:31) and `journal.ndjson.compact.tmp.01a18696-….checkpoint.01a18696-….tmp` (13.6 MB, 2026-10-29 03:36). Find why `remove_abandoned_compaction_files` does not remove them, and fix that. Remove nothing in a live ledger by a tool in this phase: the two existing files go to the user's by-hand removal list.
-6. CPU cost ranks first: report the CPU and the read bytes of one hook call before and after, on the hana ledger size.
+- A replay refreshes the checkpoint after the 256 KiB or 256 record interval only when `WriteBudget` admits it: at most `REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO` (8) checkpoint bytes per journal byte appended since the checkpoint. A replay from byte 0 has no limit.
+- One writer publishes: it takes `try_lock` on the journal, and `publication_decision` writes only over the header the replay read, or over none. A failed write never fails the replay. Tests count writes through the `write_temporary` field.
+- `Ledger::maintain_compaction` runs at most one check per 60 s under the `history-compaction-checked` lock. It removes abandoned temporary files, then compacts. A history plan that removes nothing waits 15 min or a threshold of journal growth. Automatic compaction gives up when the mutation lock or the original journal lock is held.
+- Cleanup removes `journal.ndjson.compact.tmp.<uuid>` with its `.checkpoint` and `.checkpoint.<uuid>.tmp` sidecars, and `replay-checkpoint.json.<uuid>.tmp`, after 24 h when no writer holds the owner lock.
+- Mac hook cycle at Hana size (79 calls): mean CPU 2144 ms against 2548 ms; checkpoint bytes written 43 MB against 842 MB.
 
 **Files:**
-- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — the checkpoint write
-- `crates/cargo-berth/src/ledger/constants.rs` — the intervals
-- `crates/cargo-berth/src/ledger/journal.rs` and `crates/cargo-berth/src/ledger/handle.rs` — the replay callers
-- `crates/cargo-berth/src/ledger/compaction.rs` — compaction and its temporary files
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — checkpoint format, write budget, publication
+- `crates/cargo-berth/src/ledger/constants.rs` — intervals, write ratio, maintenance times
+- `crates/cargo-berth/src/ledger/compaction/` — `journal_compaction.rs`, `superseded_extents.rs`, `maintenance.rs` (check, history retry, cleanup), `fixtures.rs`
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Binds later work:** a format change bumps `FOLD_FORMAT_VERSION`; compaction writes its checkpoint through `ReplayCheckpoint::store_for_journal_file`.
 
-**State:** none.
+**Gotchas:** the ratio 8 is calibrated against a full rewrite of about 2 s CPU; a cheaper checkpoint needs a new measure. The Hana journal stays about 240 MB: it has no superseded bytes, and dependencies keep every reservation.
 
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- The write-volume test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Ruled out:** an append-only checkpoint; a ratio of 128.
 
 ### Phase 54 — mend adds no import that hides a name a glob import brings in  · status: todo
 
@@ -1163,7 +1154,7 @@ The copies are deleted. No source changes.
 
 **Files:**
 - `crates/cargo-mend/src/fixes/` — the fix that adds the import, found in step 3
-- the cargo-mend fixture and its test
+- `crates/cargo-mend/tests/diagnostics/` — the fixture and its test, beside the existing fix fixture tests
 
 **Workers:** 1 writer.
 - `impl`: all files.
@@ -1207,15 +1198,27 @@ The copies are deleted. No source changes.
 **Goal:** the base CPU of a cargo-berth hook call falls well below its Phase 53 cost at Hana ledger size. Source: the Phase 53 Mac probe; the showrunner approved it 2026-11-23. CPU cost ranks first, so it runs right after Phase 54.
 
 **Spec:**
-1. The fault (Mac, 2026-11-22, Phase 53 probe): with no replay tail, one hook call costs about 1.6 s CPU and reads about 35 MB. Most of it is reading and decoding the 35-40 MB `replay-checkpoint.json` (`ReplayCheckpoint::decode_replay`, `crates/cargo-berth/src/ledger/replay_checkpoint.rs`) into a whole `JournalReplay`.
-2. First measure the decode share of hook CPU: time `serde_json::from_slice::<JournalReplay>` with thread CPU time on the Mac sample of the Phase 53 probe.
+1. The fault (Mac, 2026-11-22, Phase 53 probe): with no replay tail, one hook call costs about 1.6 s CPU and reads about 35 MB. Most of it is reading and decoding the 35-40 MB `replay-checkpoint.json` (`ReplayCheckpoint::decode_replay`, `crates/cargo-berth/src/ledger/replay_checkpoint.rs`) into a whole `JournalReplay`. The baseline for this phase is the Phase 53 Mac cycle at write ratio 8: 79 hook calls, mean hook CPU 2144 ms, mean read 43.5 MB per call, checkpoint 40.3 MB.
+2. First measure the decode share of hook CPU: time `serde_json::from_slice::<JournalReplay>` with thread CPU time on the Mac sample of the Phase 53 probe. The probe is `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py` (arguments: candidate binary, write ratio, baseline binary, mode `cycle`, and an optional decode binary). The Mac sample is `/tmp/claude/scratch/p53-probe-4406cc` (its `ledger` folder beside the binaries; scratch end 2026-11-25). Run it through `~/.claude/scripts/mac_test/mac_queue_run.py --kind probe`. With a decode binary, the probe sets `PHASE53_DECODE_CPU=1` and reads a `phase53-decode-cpu-ns <n>` stderr line: add that print only in a probe build, never in the commit. If the sample is gone, copy the Hana ledger (`/home/natepiano/rust/hana/.git/cargo-berth`) read-only to a new Mac sample.
 3. Then cut the cost at its cause. Name the choice: a smaller fold state (drop or move what no hook reads), a lazy decode that reads only the parts a hook needs, or a faster encoding. Each hook path must keep the same answers.
 4. Report the CPU and read bytes of one hook call before and after on the same Mac sample, three runs each.
+5. Measure the checkpoint write ratio again with the probe's `cycle` mode at the new checkpoint cost. Keep `REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO` at 8, or set the value the cycle shows is better, and update its comment with the new numbers.
+
+**Constraints from prior phases:**
+- `replay-checkpoint.json` holds two JSON lines: a `CheckpointHeader`, then the `JournalReplay` of the first `end_offset` journal bytes. `load` decodes the header first and the replay line only when the header still describes the journal (fold version, repository, journal device and inode, length, last record digest). A new format keeps a header that is checked before the large part is decoded.
+- A checkpoint format change bumps `FOLD_FORMAT_VERSION` (`crates/cargo-berth/src/ledger/constants.rs`, now 3), so an old checkpoint is ignored and the journal replays from byte 0.
+- A refresh writes the whole checkpoint only when `WriteBudget` admits it: `REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO` (8) checkpoint bytes per complete journal byte appended since the checkpoint, after the 256 KiB or 256 record interval. A replay from byte 0 has `WriteBudget::Unlimited`. The ratio 8 is calibrated against the current full-rewrite cost.
+- One writer per journal file: the writer takes `try_lock` on the journal, then `publication_decision` rereads the published header and writes only when it is the header the replay read, or absent. A failed write never fails the replay.
+- `ReplayCheckpoint` takes its temporary-file writer as the `write_temporary` field (`fn(&mut File, &[u8]) -> io::Result<()>`). Tests set `counting_write` to count bytes. Keep this seam for the write-volume tests.
+- Compaction also writes a checkpoint for the compacted journal: `ReplayCheckpoint::store_for_journal_file`, called from `crates/cargo-berth/src/ledger/compaction/journal_compaction.rs`. The new format must cover that path (`compaction_leaves_a_checkpoint_for_the_new_journal`).
+- Compaction is the folder `crates/cargo-berth/src/ledger/compaction/` (`mod.rs`, `journal_compaction.rs`, `superseded_extents.rs`, `maintenance.rs`, `fixtures.rs`). `SupersededExtents` and `finished_history` are fold state that maintenance reads from the transaction replay.
 
 **Files:**
 - `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — the checkpoint format and decode
 - `crates/cargo-berth/src/ledger/journal.rs` — `JournalReplay`
-- the hook callers, found in step 3
+- `crates/cargo-berth/src/ledger/constants.rs` — `FOLD_FORMAT_VERSION` and `REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO`
+- `crates/cargo-berth/src/ledger/compaction/journal_compaction.rs` — the checkpoint written for a compacted journal
+- `crates/cargo-berth/src/ledger/handle.rs` and `crates/cargo-berth/src/hook/` — the hook replay callers; step 3 names the exact ones
 
 **Workers:** 1 writer.
 - `impl`: all files.
@@ -1225,4 +1228,5 @@ The copies are deleted. No source changes.
 **Verification:**
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - A test shows that replay answers from the new checkpoint equal a whole-journal replay.
+- `a_large_checkpoint_limits_bytes_written_per_appended_record` and `compaction_leaves_a_checkpoint_for_the_new_journal` pass.
 - No changed test takes one second or more.
