@@ -1148,3 +1148,54 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - The write-volume test fails before the fix and passes after it.
 - No changed test takes one second or more.
+
+### Phase 54 — mend adds no import that hides a name a glob import brings in  · status: todo
+
+#### Work Order
+
+**Goal:** `cargo mend --fix` never adds an import whose name a glob import in the same scope already brings in. Source: hana inspectors via builds and the showrunner, 2026-11-23. A mend bug always gets a phase. It runs after Phase 53 and before the rest of Phase 49.
+
+**Spec:**
+1. The fault: a hana test file has `use super::*;`. The glob brings in a test module `fold`. Mend rewrote a `super::super::fold::net_root_face` call into an import of the production `fold` module. That import hid the glob's `fold`, so `fold::fold_faces` failed with E0425. Mend rolled back: "compiler failed after applying mend fixes".
+2. The files: `crates/hana/tests/control_panel/flight.rs`, `grid_interactions.rs` and `form_routes.rs` in `/home/natepiano/worktrees/hana/inspectors/fold4`. Inspectors changed them to an explicit import, so read the old text from git history there. Read only; never write to hana.
+3. Find the fix that writes this import. Before it adds an import of name N, it checks whether a glob import in the same scope can bring in N. If one can, it leaves the path as it is. A glob whose names mend cannot list counts as one that can bring in every name.
+4. Add a fixture test: a file with a glob import that brings in a module `fold`, and a qualified path to another `fold`. The test fails before the fix (the compiler rollback) and passes after it.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/` — the fix that adds the import, found in step 3
+- the cargo-mend fixture and its test
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The fixture test fails before the fix and passes after it.
+- No changed test takes one second or more.
+
+### Phase 55 — a cargo-berth hold answer names only paths in the holder's scope  · status: todo
+
+#### Work Order
+
+**Goal:** when cargo-berth refuses a write because another reservation holds a path, it names a holder only for paths in that holder's scope. Source: the style unit via the showrunner, 2026-11-23.
+
+**Spec:**
+1. The fault: a mac_test write-back step in worktree `style/s4-sites-regex` or `s4-coverage` said: "not written: crates/cargo-style/src/coverage/{comparison,ledger,lint,mod}.rs is held by reservation 01a1f42e-39a1-7450-a4f3-3f4f92384784 (refs/heads/style-s3-footprint)".
+2. That reservation was outstanding and merge-protected at tip c2000830d. None of its 25 merge scopes holds a coverage path (`cargo-berth board --reservation 01a1f42e-39a1-7450-a4f3-3f4f92384784 --json`).
+3. Find the cause in cargo-berth: which hold rule matched these paths, and why. Fix it so the hold answer, and the hold itself, follow the holder's scope. If the hold is correct by design, make the answer name the rule that holds the path.
+4. Add a test with a merge-protected reservation and a path outside its scopes. The write is not refused for that holder.
+
+**Files:**
+- `crates/cargo-berth/src/` — the hold check and its answer, found in step 3
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- The new test fails before the fix and passes after it.
+- No changed test takes one second or more.
