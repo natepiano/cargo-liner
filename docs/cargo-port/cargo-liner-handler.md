@@ -1267,3 +1267,32 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
 - A test applies two fixes in two files and checks one output line for each, with its path and line.
 - No changed test takes one second or more.
+
+### Phase 58 — mend keeps its findings in blocks with assert and other macros that bind no name  · status: todo
+
+#### Work Order
+
+**Goal:** mend reports a qualified path in a block that holds a standard macro which binds no name, such as `assert!`. It skips the block only for a macro that can bind a name. Source: the hana mend check, 2026-11-23 (research at `${SESSION_DIR}/tmp/mend-hana-research.md`).
+
+**Spec:**
+1. The fault, part 1 (Phase 47, 105aec11c): `BlockBindings::collect` returns `Unknown` for any block with a statement macro (`Stmt::Macro` or `Expr::Macro`). `lookup` then returns `MayBind` for every name in that block, and `check_path` drops the path. So nearly every qualified path in a test fn body gets no finding. On hana init/catalyst 6147f7fcd9 this also changed which sites mend saw, so the count of fixes changed from 0 to 11.
+2. The fault, part 2 (Phase 54, f19a0c2a9): `record_macro_footprint` adds a PascalCase path start in a macro body to `bare_type_names`. `find_collision_names` then blocks the import, also when the name in the macro resolves to the same item through an existing import. Example: `TooltipPhase` in an `assert_eq!` body in `crates/hana_diegetic/src/widgets/tooltip/placement/screen.rs` (lines 1270-1271) blocks a correct fix at line 124.
+3. Fix part 1: name the standard macros that bind no name in the block (`assert`, `assert_eq`, `assert_ne`, `debug_assert*`, `panic`, `unreachable`, `todo`, `print*`, `eprint*`, `format`, `write*`, `vec`, `matches`, and the `log` and `tracing` macros). A block with only these macros keeps its bindings `Known`. Any other macro keeps `Unknown`.
+4. Fix part 2: a macro-body name does not block the import when the new import names the same item that the name resolves to in that scope.
+5. Keep the Phase 47 positive control (`unbound_first_segment` in `BLOCK_BINDINGS_SOURCE`, `tests/diagnostics/import_fixes.rs`) and the Phase 54 glob tests passing.
+
+**Files:**
+- `crates/cargo-mend/src/` — `BlockBindings` (Phase 47) and the macro footprint and collision check (Phase 54); the writer names the exact files
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- A fixture test: a qualified path in a test fn with `assert!` gets its finding and fix.
+- A fixture test: a block with an unknown macro (a `macro_rules!` that binds a name) still skips the path.
+- A fixture test: a name in an `assert_eq!` body that resolves to the same item does not block the import.
+- No changed test takes one second or more.
+- Phase 54 must be on main first, because part 2 changes Phase 54 code.
