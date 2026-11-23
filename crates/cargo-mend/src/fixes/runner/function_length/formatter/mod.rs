@@ -1,35 +1,29 @@
+mod formatting_group;
+mod probe;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
-use std::process::Output;
 use std::process::Stdio;
 use std::sync::OnceLock;
 
 use anyhow::Context;
 use anyhow::Result;
 use anyhow::ensure;
-use toml::Value;
 
-use super::constants::CLIPPY_DEFAULT_TOO_MANY_LINES_THRESHOLD;
-use super::constants::DEFAULT_EDITION;
-use super::constants::NIGHTLY_RUSTFMT_ARGUMENTS;
-use super::constants::NIGHTLY_RUSTFMT_LOOKUP_ARGUMENTS;
+use self::formatting_group::FormattingGroup;
+use self::formatting_group::edition;
+pub(super) use self::formatting_group::threshold;
+use self::probe::FormatterProbe;
+use self::probe::nightly_command;
+use self::probe::nightly_probe;
+use self::probe::probe;
 use super::constants::RUSTFMT_ARGUMENTS;
 use super::constants::RUSTFMT_COMMAND;
 use super::constants::RUSTFMT_LOCAL_FILE_ARGUMENTS;
-use super::constants::RUSTUP_COMMAND;
-use super::constants::VERSION_ARGUMENT;
-
-#[cfg(test)]
-thread_local! {
-    static FORMATTING_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(super) fn formatting_commands() -> usize { FORMATTING_COMMANDS.get() }
 
 /// The formatter available for function length protection.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,30 +31,6 @@ pub(super) enum Formatter {
     Nightly,
     Path,
     Unavailable { cause: String },
-}
-
-#[derive(Debug)]
-pub(super) enum FormatterProbe {
-    Available,
-    Unavailable(String),
-}
-
-enum NightlyExecutable {
-    Direct(PathBuf),
-    Rustup,
-}
-
-/// Files in this group use the same parser edition and formatter configuration.
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-struct FormattingGroup {
-    edition:       String,
-    configuration: FormatterConfiguration,
-}
-
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
-enum FormatterConfiguration {
-    Default,
-    File(PathBuf),
 }
 
 impl Formatter {
@@ -77,7 +47,7 @@ impl Formatter {
     }
 
     /// Select a formatter from probe results without consulting the host.
-    pub(super) fn from_probes(nightly: FormatterProbe, path: FormatterProbe) -> Self {
+    fn from_probes(nightly: FormatterProbe, path: FormatterProbe) -> Self {
         match (nightly, path) {
             (FormatterProbe::Available, _) => Self::Nightly,
             (FormatterProbe::Unavailable(_), FormatterProbe::Available) => Self::Path,
@@ -95,28 +65,10 @@ impl Formatter {
         sources: &BTreeMap<PathBuf, String>,
         workspace: &Path,
     ) -> Result<BTreeMap<PathBuf, String>> {
-        let mut groups = BTreeMap::<FormattingGroup, Vec<(&PathBuf, &String)>>::new();
-        for (path, text) in sources {
-            let directory = path.parent().context("source has no parent directory")?;
-            groups
-                .entry(FormattingGroup {
-                    edition:       edition(directory, workspace)?,
-                    configuration: formatter_configuration(directory)?,
-                })
-                .or_default()
-                .push((path, text));
-        }
+        let groups = FormattingGroup::from_sources(sources, workspace)?;
         let mut formatted = BTreeMap::new();
         for (group, members) in groups {
-            // File input applies ignore rules that stdin does not apply.
-            // Preserve stdin behavior when a configuration supplies those rules.
-            let stdin_required = match &group.configuration {
-                FormatterConfiguration::Default => false,
-                FormatterConfiguration::File(path) => {
-                    let configuration: Value = toml::from_str(&fs::read_to_string(path)?)?;
-                    configuration.get("ignore").is_some()
-                },
-            };
+            let stdin_required = group.requires_stdin()?;
             if !matches!(self, Self::Nightly) || stdin_required {
                 for (path, text) in members {
                     formatted.insert(path.clone(), self.formatted(text, path, workspace)?);
@@ -125,21 +77,14 @@ impl Formatter {
             }
             let temporary =
                 tempfile::tempdir().context("create formatter measurement directory")?;
-            let configuration = match &group.configuration {
-                FormatterConfiguration::File(path) => path.clone(),
-                FormatterConfiguration::Default => {
-                    let path = temporary.path().join("rustfmt.toml");
-                    fs::write(&path, "")?;
-                    path
-                },
-            };
+            let configuration = group.configuration_path(temporary.path())?;
             let mut command = nightly_command();
             command
                 .args(["--emit", "files", "--quiet", "--edition"])
                 .arg(&group.edition)
                 .arg("--config-path")
                 .arg(configuration)
-                // Stdin formats generated sources. File input must do the same.
+                // Set format_generated_files to match rustfmt's stdin behavior.
                 .args(["--config", "skip_children=true,format_generated_files=true"])
                 .current_dir(temporary.path());
             let mut staged = Vec::new();
@@ -202,161 +147,13 @@ impl Formatter {
     }
 }
 
-fn formatter_configuration(directory: &Path) -> Result<FormatterConfiguration> {
-    let directory = directory.canonicalize()?;
-    let user_directories = [
-        dirs::home_dir(),
-        dirs::config_dir().map(|path| path.join("rustfmt")),
-    ];
-    for directory in directory
-        .ancestors()
-        .chain(user_directories.iter().flatten().map(PathBuf::as_path))
-    {
-        for name in [".rustfmt.toml", "rustfmt.toml"] {
-            let path = directory.join(name);
-            match fs::metadata(&path) {
-                Ok(metadata) if metadata.is_file() => {
-                    return Ok(FormatterConfiguration::File(path.canonicalize()?));
-                },
-                Ok(_) => {},
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                    ) => {},
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-    Ok(FormatterConfiguration::Default)
+#[cfg(test)]
+thread_local! {
+    static FORMATTING_COMMANDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-fn nightly_executable() -> &'static NightlyExecutable {
-    static EXECUTABLE: OnceLock<NightlyExecutable> = OnceLock::new();
-    EXECUTABLE.get_or_init(|| {
-        match Command::new(RUSTUP_COMMAND)
-            .args(NIGHTLY_RUSTFMT_LOOKUP_ARGUMENTS)
-            .output()
-        {
-            Ok(output) if output.status.success() => {
-                let path = String::from_utf8_lossy(&output.stdout);
-                if path.trim().is_empty() {
-                    NightlyExecutable::Rustup
-                } else {
-                    NightlyExecutable::Direct(PathBuf::from(path.trim()))
-                }
-            },
-            _ => NightlyExecutable::Rustup,
-        }
-    })
-}
-
-fn nightly_command() -> Command {
-    match nightly_executable() {
-        NightlyExecutable::Direct(path) => Command::new(path),
-        NightlyExecutable::Rustup => {
-            let mut command = Command::new(RUSTUP_COMMAND);
-            command.args(NIGHTLY_RUSTFMT_ARGUMENTS);
-            command
-        },
-    }
-}
-
-/// `rustup which` names the nightly `rustfmt` file only when the toolchain
-/// has the component, so an existing file needs no `--version` run. Each
-/// `rustfmt` start loads the compiler library, which is the cost this saves.
-fn nightly_probe() -> FormatterProbe {
-    match nightly_executable() {
-        NightlyExecutable::Direct(path) if path.is_file() => FormatterProbe::Available,
-        NightlyExecutable::Direct(_) | NightlyExecutable::Rustup => probe_result(
-            nightly_command().arg(VERSION_ARGUMENT).output(),
-            "nightly rustfmt",
-            "nightly rustfmt",
-        ),
-    }
-}
-
-fn probe(program: &str, arguments: &[&str]) -> FormatterProbe {
-    probe_result(
-        Command::new(program)
-            .args(arguments)
-            .arg(VERSION_ARGUMENT)
-            .output(),
-        &format!("{program} {}", arguments.join(" ")),
-        program,
-    )
-}
-
-fn probe_result(
-    output: std::io::Result<Output>,
-    failure_label: &str,
-    error_label: &str,
-) -> FormatterProbe {
-    match output {
-        Ok(output) if output.status.success() => FormatterProbe::Available,
-        Ok(output) => FormatterProbe::Unavailable(format!(
-            "{failure_label}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
-        Err(error) => FormatterProbe::Unavailable(format!("{error_label}: {error}")),
-    }
-}
-
-pub(super) fn threshold(workspace: &Path) -> Result<usize> {
-    for name in ["clippy.toml", ".clippy.toml"] {
-        let path = workspace.join(name);
-        if path.is_file() {
-            let text = std::fs::read_to_string(&path)?;
-            let config: Value = toml::from_str(&text)?;
-            return config.get("too-many-lines-threshold").map_or(
-                Ok(CLIPPY_DEFAULT_TOO_MANY_LINES_THRESHOLD),
-                |value| {
-                    usize::try_from(
-                        value
-                            .as_integer()
-                            .context("invalid too-many-lines-threshold")?,
-                    )
-                    .context("invalid too-many-lines-threshold")
-                },
-            );
-        }
-    }
-    Ok(CLIPPY_DEFAULT_TOO_MANY_LINES_THRESHOLD)
-}
-
-fn edition(directory: &Path, workspace: &Path) -> Result<String> {
-    for ancestor in directory.ancestors() {
-        let manifest = ancestor.join("Cargo.toml");
-        if manifest.is_file() {
-            let config: Value = toml::from_str(&std::fs::read_to_string(manifest)?)?;
-            if let Some(package) = config.get("package") {
-                let Some(edition) = package.get("edition") else {
-                    return Ok(DEFAULT_EDITION.to_string());
-                };
-                if let Some(value) = edition.as_str() {
-                    return Ok(value.to_string());
-                }
-                break;
-            }
-        }
-        if ancestor == workspace {
-            break;
-        }
-    }
-    let manifest = workspace.join("Cargo.toml");
-    if manifest.is_file() {
-        let config: Value = toml::from_str(&std::fs::read_to_string(manifest)?)?;
-        if let Some(value) = config
-            .get("workspace")
-            .and_then(|value| value.get("package"))
-            .and_then(|value| value.get("edition"))
-            .and_then(toml::Value::as_str)
-        {
-            return Ok(value.to_string());
-        }
-    }
-    Ok(DEFAULT_EDITION.to_string())
-}
+#[cfg(test)]
+pub(super) fn formatting_commands() -> usize { FORMATTING_COMMANDS.get() }
 
 #[cfg(test)]
 mod tests {
