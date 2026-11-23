@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
 use proc_macro2::LineColumn;
+use proc_macro2::TokenStream;
+use proc_macro2::TokenTree;
 use syn::Block;
 use syn::ExprPath;
 use syn::ExprStruct;
@@ -12,6 +14,7 @@ use syn::ItemImpl;
 use syn::ItemMod;
 use syn::ItemStatic;
 use syn::ItemUse;
+use syn::Macro;
 use syn::PatStruct;
 use syn::PatTupleStruct;
 use syn::Path;
@@ -66,6 +69,36 @@ enum ModuleSite {
 pub(super) enum IdentifierCase {
     Pascal,
     NonPascal,
+}
+
+/// The token before an identifier in a macro body. An identifier after a `PathSeparator`
+/// (`::`) or a `MemberDot` (`.`) is a later path segment or a member, not a path start.
+/// `SelfModule` is a `self` that starts a path, and `SelfModuleColon` is the first `:` after
+/// it. The identifier after `self::` resolves through the module scope, like a path start.
+#[derive(Clone, Copy)]
+enum PrecedingMacroToken {
+    Other,
+    Colon,
+    PathSeparator,
+    MemberDot,
+    SelfModule,
+    SelfModuleColon,
+}
+
+impl PrecedingMacroToken {
+    /// The preceding token after `punct`. A second `:` makes `::`, except after a path-start
+    /// `self`, where it returns to `Other`. A second `.` makes the `..` of a range, whose end
+    /// resolves through scope.
+    const fn after_punct(self, punct: char) -> Self {
+        match (self, punct) {
+            (Self::SelfModule, ':') => Self::SelfModuleColon,
+            (Self::SelfModuleColon, ':') | (Self::MemberDot, '.') => Self::Other,
+            (Self::Colon, ':') => Self::PathSeparator,
+            (_, ':') => Self::Colon,
+            (_, '.') => Self::MemberDot,
+            _ => Self::Other,
+        }
+    }
 }
 
 enum BareNameFootprint {
@@ -274,12 +307,26 @@ impl InlinePathVisitor {
     /// references `Result` / `Alignment` / `MyEnum` as a type — so adding
     /// `use other_crate::Result;` would silently change which type those
     /// expressions resolve through. Register the leading `PascalCase` segment
-    /// in either case.
+    /// in either case. After a leading `self`, the second segment resolves
+    /// through the module scope, glob imports included, so `self::Foo::X`
+    /// registers `Foo`.
     fn record_bare_name_footprint(&mut self, path: &Path) {
-        let Some(first) = path.segments.first() else {
+        let mut segments = path.segments.iter();
+        let Some(first) = segments.next() else {
             return;
         };
-        let name = first.ident.unraw().to_string();
+        let first_name = first.ident.unraw().to_string();
+        let name = match PathAnchor::from(first_name.as_str()) {
+            PathAnchor::SelfMod => {
+                let Some(second) = segments.next() else {
+                    return;
+                };
+                second.ident.unraw().to_string()
+            },
+            PathAnchor::Crate | PathAnchor::Super | PathAnchor::SelfType | PathAnchor::Name => {
+                first_name
+            },
+        };
         if is_pascal_case(&name) == IdentifierCase::NonPascal {
             return;
         }
@@ -288,6 +335,45 @@ impl InlinePathVisitor {
                 self.bare_type_names.insert(name);
             },
             BareNameFootprint::SelfReference => {},
+        }
+    }
+
+    /// Register each `PascalCase` identifier that starts a path in a macro body, nested
+    /// groups included. `syn` does not parse the body, so `record_bare_name_footprint` never
+    /// sees `Foo` in `assert_eq!(Foo::X, 1)`. An import of `Foo` would hide the `Foo` the body
+    /// uses. Like `record_bare_name_footprint`, it skips a later path segment or a member: the
+    /// `Foo` in `crate::other::Foo::X` or `value.Foo` does not resolve through scope. The `Foo`
+    /// in `self::Foo::X` does, so a path-start `self` keeps the next identifier a path start.
+    fn record_macro_footprint(&mut self, tokens: TokenStream) {
+        let mut preceding = PrecedingMacroToken::Other;
+        for token in tokens {
+            preceding = match token {
+                TokenTree::Ident(ident) => match preceding {
+                    PrecedingMacroToken::Other
+                    | PrecedingMacroToken::Colon
+                    | PrecedingMacroToken::SelfModule
+                    | PrecedingMacroToken::SelfModuleColon => {
+                        let name = ident.unraw().to_string();
+                        match (PathAnchor::from(name.as_str()), is_pascal_case(&name)) {
+                            (PathAnchor::SelfMod, _) => PrecedingMacroToken::SelfModule,
+                            (_, IdentifierCase::Pascal) => {
+                                self.bare_type_names.insert(name);
+                                PrecedingMacroToken::Other
+                            },
+                            (_, IdentifierCase::NonPascal) => PrecedingMacroToken::Other,
+                        }
+                    },
+                    PrecedingMacroToken::PathSeparator | PrecedingMacroToken::MemberDot => {
+                        PrecedingMacroToken::Other
+                    },
+                },
+                TokenTree::Punct(punct) => preceding.after_punct(punct.as_char()),
+                TokenTree::Group(group) => {
+                    self.record_macro_footprint(group.stream());
+                    PrecedingMacroToken::Other
+                },
+                TokenTree::Literal(_) => PrecedingMacroToken::Other,
+            };
         }
     }
 }
@@ -419,6 +505,11 @@ impl Visit<'_> for GatedInlinePaths<'_, '_> {
         visit::visit_item_mod(self, node);
         self.visitor.mod_depth = nesting.depth();
         self.module_site = module_site;
+    }
+
+    fn visit_macro(&mut self, node: &Macro) {
+        self.visitor.record_macro_footprint(node.tokens.clone());
+        visit::visit_macro(self, node);
     }
 
     fn visit_item_static(&mut self, node: &ItemStatic) {
