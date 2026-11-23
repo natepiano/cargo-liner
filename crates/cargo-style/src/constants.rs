@@ -12,6 +12,7 @@ pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 // command arguments
+pub(crate) const COVERAGE_SUBCOMMAND: &str = "coverage";
 pub(crate) const FINDING_RULES_FLAG: &str = "--rules";
 /// The subcommand argument that Cargo inserts.
 pub(crate) const STYLE_SUBCOMMAND: &str = "style";
