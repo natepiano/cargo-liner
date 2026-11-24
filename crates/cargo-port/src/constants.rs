@@ -137,9 +137,9 @@ pub(crate) const KEYMAP_FILE: &str = "keymap.toml";
 pub(crate) const MIN_CPU_POLL_MS: u64 = 250;
 
 // Byte-unit constants for `crate::config::canonical_cache_size_unit`.
-pub(crate) const BYTES_PER_GIB: u64 = BYTES_PER_MIB * 1024;
-pub(crate) const BYTES_PER_KIB: u64 = 1024;
-pub(crate) const BYTES_PER_MIB: u64 = BYTES_PER_KIB * 1024;
+pub(crate) use tui_pane::BYTES_PER_GIB;
+pub(crate) use tui_pane::BYTES_PER_KIB;
+pub(crate) use tui_pane::BYTES_PER_MIB;
 
 // `crate::sccache::read_stats` uses these command arguments and output labels.
 pub(crate) const SCCACHE_BINARY: &str = "sccache";
