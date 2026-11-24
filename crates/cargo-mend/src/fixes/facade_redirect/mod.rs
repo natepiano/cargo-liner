@@ -31,6 +31,7 @@ pub(super) use redirect::RedirectTarget;
 pub(super) use redirect::TargetSide;
 pub(super) use self_crate_alias::SelfCrateAlias;
 pub(super) use source_text::IdentifierUse;
+pub(super) use source_text::NamingTokens;
 pub(super) use source_text::SourceLines;
 pub(super) use source_text::dedup_fixes;
 pub(super) use source_text::find_source_root;

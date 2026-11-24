@@ -76,52 +76,30 @@ impl CargoPortConfigurationPathResolution {
     }
 }
 
-/// Resolve the one supported Cargo Port configuration root.
-pub(crate) fn cargo_port_configuration_root() -> CargoPortConfigurationPathResolution {
-    resolve_configuration_root(
-        std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
-        dirs::config_dir(),
-    )
+#[cfg(test)]
+#[derive(Clone)]
+enum ConfigPathOverrideState {
+    Ambient,
+    Installed(PathBuf),
 }
 
 #[cfg(test)]
-fn resolve_configuration_child_path(
-    test_path_override: ConfigPathOverrideState,
-    configuration_root_override: Option<OsString>,
-    platform_configuration_directory: Option<PathBuf>,
-    child_name: &str,
-) -> CargoPortConfigurationPathResolution {
-    match test_path_override {
-        ConfigPathOverrideState::Ambient => resolve_configuration_root(
-            configuration_root_override,
-            platform_configuration_directory,
-        )
-        .child(child_name),
-        ConfigPathOverrideState::Installed(path) => {
-            CargoPortConfigurationPathResolution::Resolved(path)
-        },
-    }
+thread_local! {
+    static CONFIG_PATH_OVERRIDE: RefCell<ConfigPathOverrideState> = const {
+        RefCell::new(ConfigPathOverrideState::Ambient)
+    };
 }
 
-fn resolve_configuration_root(
-    configuration_root_override: Option<OsString>,
-    platform_configuration_directory: Option<PathBuf>,
-) -> CargoPortConfigurationPathResolution {
-    match configuration_root_override {
-        Some(configuration_root_override) if configuration_root_override.is_empty() => {
-            CargoPortConfigurationPathResolution::InvalidEmptyOverride
-        },
-        Some(configuration_root_override) => CargoPortConfigurationPathResolution::Resolved(
-            PathBuf::from(configuration_root_override),
-        ),
-        None => platform_configuration_directory.map_or(
-            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
-            |platform_configuration_directory| {
-                CargoPortConfigurationPathResolution::Resolved(
-                    platform_configuration_directory.join(APP_NAME),
-                )
-            },
-        ),
+#[cfg(test)]
+pub(crate) struct ConfigPathOverrideGuard {
+    previous: ConfigPathOverrideState,
+}
+
+#[cfg(test)]
+impl Drop for ConfigPathOverrideGuard {
+    fn drop(&mut self) {
+        let previous = std::mem::replace(&mut self.previous, ConfigPathOverrideState::Ambient);
+        CONFIG_PATH_OVERRIDE.with(|slot| *slot.borrow_mut() = previous);
     }
 }
 
@@ -134,16 +112,16 @@ pub enum NonRustInclusion {
     Exclude,
 }
 
+impl NonRustInclusion {
+    pub(crate) const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
+}
+
 impl From<bool> for NonRustInclusion {
     fn from(b: bool) -> Self { if b { Self::Include } else { Self::Exclude } }
 }
 
 impl From<NonRustInclusion> for bool {
     fn from(val: NonRustInclusion) -> Self { matches!(val, NonRustInclusion::Include) }
-}
-
-impl NonRustInclusion {
-    pub(crate) const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
 }
 
 /// Scroll direction for mouse wheel events.
@@ -155,16 +133,16 @@ pub enum ScrollDirection {
     Inverted,
 }
 
+impl ScrollDirection {
+    pub(crate) const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
+}
+
 impl From<bool> for ScrollDirection {
     fn from(b: bool) -> Self { if b { Self::Inverted } else { Self::Normal } }
 }
 
 impl From<ScrollDirection> for bool {
     fn from(val: ScrollDirection) -> Self { matches!(val, ScrollDirection::Inverted) }
-}
-
-impl ScrollDirection {
-    pub(crate) const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
 }
 
 /// Whether newly discovered projects trigger an immediate lint run or wait
@@ -179,16 +157,16 @@ pub enum DiscoveryLint {
     Deferred,
 }
 
+impl DiscoveryLint {
+    pub(crate) const fn is_immediate(self) -> bool { matches!(self, Self::Immediate) }
+}
+
 impl From<bool> for DiscoveryLint {
     fn from(b: bool) -> Self { if b { Self::Immediate } else { Self::Deferred } }
 }
 
 impl From<DiscoveryLint> for bool {
     fn from(val: DiscoveryLint) -> Self { matches!(val, DiscoveryLint::Immediate) }
-}
-
-impl DiscoveryLint {
-    pub(crate) const fn is_immediate(self) -> bool { matches!(self, Self::Immediate) }
 }
 
 /// Whether `hjkl` should mirror arrow-key navigation in non-text panes.
@@ -198,6 +176,10 @@ pub enum NavigationKeys {
     #[default]
     ArrowsOnly,
     ArrowsAndVim,
+}
+
+impl NavigationKeys {
+    pub(crate) const fn uses_vim(self) -> bool { matches!(self, Self::ArrowsAndVim) }
 }
 
 impl From<bool> for NavigationKeys {
@@ -214,10 +196,6 @@ impl From<NavigationKeys> for bool {
     fn from(value: NavigationKeys) -> Self { matches!(value, NavigationKeys::ArrowsAndVim) }
 }
 
-impl NavigationKeys {
-    pub(crate) const fn uses_vim(self) -> bool { matches!(self, Self::ArrowsAndVim) }
-}
-
 /// Whether scrolling past the top or bottom of a list rolls focus to the
 /// adjacent pane in tab order, or stops at the edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +204,10 @@ pub enum EdgeScroll {
     #[default]
     Stops,
     AdvancesPane,
+}
+
+impl EdgeScroll {
+    pub(crate) const fn advances_pane(self) -> bool { matches!(self, Self::AdvancesPane) }
 }
 
 impl From<bool> for EdgeScroll {
@@ -242,10 +224,6 @@ impl From<EdgeScroll> for bool {
     fn from(value: EdgeScroll) -> Self { matches!(value, EdgeScroll::AdvancesPane) }
 }
 
-impl EdgeScroll {
-    pub(crate) const fn advances_pane(self) -> bool { matches!(self, Self::AdvancesPane) }
-}
-
 /// Whether lint status indicators render for projects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -253,6 +231,10 @@ pub enum LintIndicator {
     Enabled,
     #[default]
     Disabled,
+}
+
+impl LintIndicator {
+    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 impl From<bool> for LintIndicator {
@@ -269,10 +251,6 @@ impl From<LintIndicator> for bool {
     fn from(value: LintIndicator) -> Self { matches!(value, LintIndicator::Enabled) }
 }
 
-impl LintIndicator {
-    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
-}
-
 /// Whether the focused pane receives a background tint.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -280,6 +258,10 @@ pub enum FocusedPaneTint {
     #[default]
     Enabled,
     Disabled,
+}
+
+impl FocusedPaneTint {
+    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 impl From<bool> for FocusedPaneTint {
@@ -296,10 +278,6 @@ impl From<FocusedPaneTint> for bool {
     fn from(value: FocusedPaneTint) -> Self { matches!(value, FocusedPaneTint::Enabled) }
 }
 
-impl FocusedPaneTint {
-    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
-}
-
 /// Whether the main screen is left transparent or painted solid.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -307,6 +285,10 @@ pub enum Transparency {
     #[default]
     Transparent,
     Solid,
+}
+
+impl Transparency {
+    pub(crate) const fn is_transparent(self) -> bool { matches!(self, Self::Transparent) }
 }
 
 impl From<bool> for Transparency {
@@ -323,10 +305,6 @@ impl From<Transparency> for bool {
     fn from(value: Transparency) -> Self { matches!(value, Transparency::Transparent) }
 }
 
-impl Transparency {
-    pub(crate) const fn is_transparent(self) -> bool { matches!(self, Self::Transparent) }
-}
-
 /// Whether GitHub HTTP calls synthesize rate-limit responses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -334,6 +312,10 @@ pub enum GitHubRateLimitMode {
     Forced,
     #[default]
     Normal,
+}
+
+impl GitHubRateLimitMode {
+    pub(crate) const fn is_forced(self) -> bool { matches!(self, Self::Forced) }
 }
 
 impl From<bool> for GitHubRateLimitMode {
@@ -344,10 +326,6 @@ impl From<GitHubRateLimitMode> for bool {
     fn from(value: GitHubRateLimitMode) -> Self { matches!(value, GitHubRateLimitMode::Forced) }
 }
 
-impl GitHubRateLimitMode {
-    pub(crate) const fn is_forced(self) -> bool { matches!(self, Self::Forced) }
-}
-
 /// Whether a crates.io release group includes every publishable member of the
 /// representative crate's root workspace.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -356,6 +334,10 @@ pub enum WorkspaceMemberInclusion {
     Include,
     #[default]
     Exclude,
+}
+
+impl WorkspaceMemberInclusion {
+    const fn includes(self) -> bool { matches!(self, Self::Include) }
 }
 
 impl From<bool> for WorkspaceMemberInclusion {
@@ -372,10 +354,6 @@ impl From<WorkspaceMemberInclusion> for bool {
     fn from(inclusion: WorkspaceMemberInclusion) -> Self {
         matches!(inclusion, WorkspaceMemberInclusion::Include)
     }
-}
-
-impl WorkspaceMemberInclusion {
-    const fn includes(self) -> bool { matches!(self, Self::Include) }
 }
 
 /// Crates that publish one coordinated release represented by a single crate.
@@ -488,10 +466,6 @@ pub struct LintConfig {
     pub(crate) stale_timeout_mins: NonZeroU64,
 }
 
-impl Default for LintConfig {
-    fn default() -> Self { configuration_defaults() }
-}
-
 impl LintConfig {
     pub(crate) const fn stale_timeout(&self) -> Duration {
         Duration::from_secs(
@@ -515,6 +489,446 @@ impl LintConfig {
 
     fn normalized_cache_size(&self) -> Result<String, String> {
         parse_cache_size(&self.cache_size).map(|parsed| parsed.normalized)
+    }
+}
+
+impl Default for LintConfig {
+    fn default() -> Self { configuration_defaults() }
+}
+
+pub(crate) struct ParsedCacheSize {
+    pub bytes:      Option<u64>,
+    pub normalized: String,
+}
+
+enum CacheSizeUnitResolution {
+    Supported {
+        canonical_label: &'static str,
+        bytes_per_unit:  u64,
+    },
+    Unsupported,
+}
+
+/// A finite storage threshold, parsed with the shared cache-size grammar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct StorageFreeSpaceThreshold {
+    bytes:      u64,
+    normalized: String,
+}
+
+impl StorageFreeSpaceThreshold {
+    pub(crate) const fn bytes(&self) -> u64 { self.bytes }
+}
+
+impl<'de> Deserialize<'de> for StorageFreeSpaceThreshold {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        let parsed = parse_cache_size(&value).map_err(serde::de::Error::custom)?;
+        let bytes = parsed.bytes.ok_or_else(|| {
+            serde::de::Error::custom(
+                "storage free-space thresholds must be finite sizes with units",
+            )
+        })?;
+        Ok(Self {
+            bytes,
+            normalized: parsed.normalized,
+        })
+    }
+}
+
+impl Serialize for StorageFreeSpaceThreshold {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.normalized)
+    }
+}
+
+/// Scan worker limits, metadata timing and storage headroom policy.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub(super) struct ScanConfig {
+    /// Maximum simultaneous scan disk walks. Must be positive.
+    #[config(default = 6)]
+    pub(crate) disk_concurrency:     NonZeroUsize,
+    /// Maximum simultaneous cargo metadata jobs. Must be positive.
+    #[config(default = 4)]
+    pub(crate) metadata_concurrency: NonZeroUsize,
+    /// Wall-clock timeout for cargo metadata, in seconds. Must be positive.
+    #[config(default = 10)]
+    metadata_timeout_secs:           NonZeroU64,
+    /// Free space above which storage headroom is ample. Finite size with units.
+    #[config(default = "100 GiB")]
+    pub(crate) storage_ample_free:   StorageFreeSpaceThreshold,
+    /// Free space below which storage headroom is critical. Must be below `storage_ample_free`.
+    #[config(default = "50 GiB")]
+    pub(crate) storage_low_free:     StorageFreeSpaceThreshold,
+}
+
+impl ScanConfig {
+    pub(crate) const fn metadata_timeout(&self) -> Duration {
+        Duration::from_secs(self.metadata_timeout_secs.get())
+    }
+}
+
+impl Default for ScanConfig {
+    fn default() -> Self { configuration_defaults() }
+}
+
+/// File watcher scheduling and worker limits. All values must be positive.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub(super) struct WatcherConfig {
+    /// Quiet time before recalculating after filesystem changes, in milliseconds.
+    #[config(default = 500)]
+    pub(crate) debounce_ms:      NonZeroU64,
+    /// Maximum delay before recalculating during continuous changes, in milliseconds.
+    #[config(default = 1000)]
+    pub(crate) max_wait_ms:      NonZeroU64,
+    /// Settling time for new project directories, in milliseconds.
+    #[config(default = 2000)]
+    new_project_debounce_ms:     NonZeroU64,
+    /// Interval between watcher timer checks, in milliseconds.
+    #[config(default = 500)]
+    poll_interval_ms:            NonZeroU64,
+    /// Maximum simultaneous watcher disk walks.
+    #[config(default = 2)]
+    pub(crate) disk_concurrency: NonZeroUsize,
+    /// Maximum simultaneous watcher Git probes.
+    #[config(default = 2)]
+    pub(crate) git_concurrency:  NonZeroUsize,
+}
+
+impl WatcherConfig {
+    pub(crate) const fn debounce(&self) -> Duration {
+        Duration::from_millis(self.debounce_ms.get())
+    }
+    pub(crate) const fn max_wait(&self) -> Duration {
+        Duration::from_millis(self.max_wait_ms.get())
+    }
+    pub(crate) const fn new_project_debounce(&self) -> Duration {
+        Duration::from_millis(self.new_project_debounce_ms.get())
+    }
+    pub(crate) const fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.poll_interval_ms.get())
+    }
+}
+
+impl Default for WatcherConfig {
+    fn default() -> Self { configuration_defaults() }
+}
+
+/// HTTP request timing and recovery probes. All values must be positive.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "raw numeric unit suffixes mirror stable file keys (avoid-repeated-field-affixes exceptions)"
+)]
+pub(super) struct HttpConfig {
+    /// Request timeout, in seconds.
+    #[config(default = 5)]
+    timeout_secs:           NonZeroU64,
+    /// Recovery probe timeout and interval between retries, in seconds.
+    #[config(default = 1)]
+    retry_secs:             NonZeroU64,
+    /// Delay before confirming an unreachable service, in seconds.
+    #[config(default = 3)]
+    unavailable_grace_secs: NonZeroU64,
+}
+
+impl HttpConfig {
+    pub(crate) const fn timeout(&self) -> Duration { Duration::from_secs(self.timeout_secs.get()) }
+    pub(crate) const fn retry(&self) -> Duration { Duration::from_secs(self.retry_secs.get()) }
+    pub(crate) const fn unavailable_grace(&self) -> Duration {
+        Duration::from_secs(self.unavailable_grace_secs.get())
+    }
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self { configuration_defaults() }
+}
+
+/// Theme selection and OS appearance tracking.
+///
+/// `mode` selects between three resolution strategies:
+/// - `"auto"`: follow the OS light/dark setting (Phase 5 plugs OS state in; until then `auto`
+///   behaves identically to `"dark"`).
+/// - `"light"`: always use `light_theme` regardless of OS state.
+/// - `"dark"`: always use `dark_theme` regardless of OS state.
+///
+/// `light_theme` and `dark_theme` are theme ids (display names) looked up
+/// in [`tui_pane::ThemeRegistry`]. Unknown names fall back to the
+/// compiled-in built-ins with a toast naming the missing id.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub struct AppearanceConfig {
+    /// Theme appearance mode: `"auto"`, `"light"`, or `"dark"`.
+    #[config(default = "dark")]
+    pub mode:              String,
+    /// Theme name to use when the resolved appearance is light.
+    #[config(default = "Default Light")]
+    pub light_theme:       String,
+    /// Theme name to use when the resolved appearance is dark.
+    #[config(default = "Default Dark")]
+    pub dark_theme:        String,
+    /// Controls whether the focused pane gets a subtle background tint so it
+    /// lifts away from neighbouring panes. Disabling it keeps every pane drawn
+    /// against the terminal's native background (preserves iTerm2 /
+    /// window-level transparency).
+    #[config(default = true)]
+    pub focused_pane_tint: FocusedPaneTint,
+    /// Leaves the main screen transparent: nothing paints a background
+    /// under it, the focused-pane tint included, so a transparent
+    /// terminal window shows the desktop behind every cell. `false`
+    /// paints it solid in the theme's ground.
+    #[config(default = true)]
+    pub transparent:       Transparency,
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            mode:              DEFAULT_APPEARANCE_MODE.to_string(),
+            light_theme:       DEFAULT_LIGHT_THEME.to_string(),
+            dark_theme:        DEFAULT_DARK_THEME.to_string(),
+            focused_pane_tint: FocusedPaneTint::Enabled,
+            transparent:       Transparency::Transparent,
+        }
+    }
+}
+
+/// Developer / testing affordances. Intentionally narrow — anything here
+/// exists only to exercise code paths that are hard to reproduce
+/// organically (e.g. GitHub rate-limit behaviour).
+#[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
+pub struct DebugConfig {
+    /// When true, all GitHub HTTP requests short-circuit to a synthetic
+    /// rate-limited response without hitting the network. Lets the
+    /// rate-limit toast, `/rate_limit` display, and recovery probe be
+    /// verified deterministically. Default false.
+    #[config(default = false)]
+    pub force_github_rate_limit: GitHubRateLimitMode,
+}
+
+/// CPU meter settings for the TUI host metrics pane.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub struct CpuConfig {
+    /// How often to refresh CPU utilization values in milliseconds.
+    #[config(default = 1000)]
+    pub poll_ms: u64,
+
+    /// Upper bound for the low CPU utilization band.
+    #[config(default = 60)]
+    pub low_utilization_max_percent: u8,
+
+    /// Upper bound for the medium CPU utilization band.
+    #[config(default = 85)]
+    pub medium_utilization_max_percent: u8,
+}
+
+impl Default for CpuConfig {
+    fn default() -> Self {
+        Self {
+            poll_ms:                        DEFAULT_CPU_POLL_MS,
+            low_utilization_max_percent:    DEFAULT_LOW_CPU_UTILIZATION_MAX_PERCENT,
+            medium_utilization_max_percent: DEFAULT_MEDIUM_CPU_UTILIZATION_MAX_PERCENT,
+        }
+    }
+}
+
+/// TUI display and behaviour settings.
+#[derive(Clone, Debug, PartialEq, confique::Config, Serialize)]
+pub struct TuiConfig {
+    /// Directory names whose members are shown inline (pulled up to the
+    /// workspace level). For example, `["crates"]` means projects under
+    /// `workspace/crates/` appear directly under the workspace rather than
+    /// in a "crates" folder.
+    #[config(default = ["crates"])]
+    pub inline_dirs: Vec<String>,
+
+    /// Number of recent CI runs to fetch per project.
+    #[config(default = 5)]
+    pub ci_run_count: u32,
+
+    /// Whether `hjkl` mirrors arrow navigation in non-text panes.
+    #[config(default = false)]
+    pub navigation_keys: NavigationKeys,
+
+    /// Whether scrolling past the top or bottom of a list moves focus to the
+    /// adjacent pane in tab order instead of stopping at the edge.
+    #[config(default = false)]
+    pub edge_scroll: EdgeScroll,
+
+    /// Directories to scan for projects (relative to the scan root, or
+    /// absolute paths). When empty, the entire scan root is walked.
+    #[config(default = [])]
+    pub include_dirs: Vec<String>,
+
+    /// Directory-name glob patterns to skip while scanning. A matching
+    /// directory is not descended into and never becomes a project row.
+    /// Patterns match the directory name alone, not the full path; `*` matches
+    /// any run of characters and `?` matches exactly one. Example:
+    /// `[".tmp*"]` hides the temporary directories test runs leave behind.
+    #[config(default = [])]
+    pub exclude_dirs: Vec<String>,
+
+    /// Whether to include non-Rust projects (git repos without Cargo.toml).
+    #[config(default = false)]
+    pub include_non_rust: NonRustInclusion,
+
+    /// Editor application name, opened via `open -a <editor> <path>`.
+    #[config(default = "zed")]
+    pub editor: String,
+
+    /// OS/terminal-specific shell command used by the global terminal shortcut.
+    /// Leave blank to disable terminal opening. The command runs with the
+    /// selected project-list path as cwd; use `{path}` if your terminal needs
+    /// that path explicitly. Do not add shell quotes around `{path}`.
+    /// Examples:
+    /// - `open -a Terminal .`
+    /// - `osascript -e "tell application \"iTerm2\" to create window with default profile command
+    ///   \"cd {path} && exec zsh\""`
+    #[config(default = "")]
+    pub terminal_command: String,
+
+    /// Preferred local branch used for Git-panel `M` comparisons.
+    /// Example: `main`
+    #[config(default = "main")]
+    pub main_branch: String,
+
+    /// Optional fallback local branch names checked after `main_branch`.
+    /// Example: `["primary"]`
+    #[config(default = [])]
+    pub other_primary_branches: Vec<String>,
+
+    /// Default remote host URL prefix. Remote URLs beginning with this prefix
+    /// are shortened in the Git panel's Remotes table to `owner/repo` form;
+    /// remotes on other hosts are shown with the full URL.
+    #[config(default = "https://github.com/")]
+    pub default_remote_host_url: String,
+
+    /// How long (in seconds) newly discovered project names shimmer in the
+    /// project list. `0.0` disables the effect.
+    #[config(default = 10.0)]
+    pub discovery_shimmer_secs: f64,
+}
+
+impl Default for TuiConfig {
+    fn default() -> Self {
+        Self {
+            inline_dirs:             vec![DEFAULT_INLINE_DIR.to_string()],
+            ci_run_count:            DEFAULT_CI_RUN_COUNT,
+            navigation_keys:         NavigationKeys::ArrowsOnly,
+            edge_scroll:             EdgeScroll::Stops,
+            include_dirs:            Vec::new(),
+            exclude_dirs:            Vec::new(),
+            include_non_rust:        NonRustInclusion::Exclude,
+            editor:                  DEFAULT_EDITOR.to_string(),
+            terminal_command:        String::new(),
+            main_branch:             DEFAULT_MAIN_BRANCH.to_string(),
+            other_primary_branches:  Vec::new(),
+            default_remote_host_url: DEFAULT_REMOTE_HOST_URL.to_string(),
+            discovery_shimmer_secs:  DEFAULT_DISCOVERY_SHIMMER_SECS,
+        }
+    }
+}
+
+/// Mouse input settings.
+#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
+pub struct MouseConfig {
+    /// Whether to invert mouse scroll direction.
+    #[config(default = true)]
+    pub invert_scroll: ScrollDirection,
+}
+
+impl Default for MouseConfig {
+    fn default() -> Self {
+        Self {
+            invert_scroll: ScrollDirection::Inverted,
+        }
+    }
+}
+
+/// Top-level application configuration.
+#[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
+pub struct CargoPortConfig {
+    #[config(nested)]
+    pub(crate) scan:    ScanConfig,
+    #[config(nested)]
+    pub(crate) watcher: WatcherConfig,
+    #[config(nested)]
+    pub(crate) http:    HttpConfig,
+    #[config(nested)]
+    pub cache:          CacheConfig,
+    #[config(nested)]
+    pub crates_io:      CratesIoConfig,
+    #[config(nested)]
+    pub cpu:            CpuConfig,
+    #[config(nested)]
+    pub mouse:          MouseConfig,
+    #[config(nested)]
+    pub tui:            TuiConfig,
+    #[config(nested)]
+    pub lint:           LintConfig,
+    #[config(nested)]
+    pub debug:          DebugConfig,
+    #[config(nested)]
+    pub appearance:     AppearanceConfig,
+}
+
+impl CargoPortConfig {
+    pub(crate) fn from_table(table: &Table) -> Result<Self, String> {
+        let value = Value::Table(table.clone());
+        let layer: <Self as confique::Config>::Layer = value
+            .try_into()
+            .map_err(|err| format!("config from table: {err}"))?;
+        Self::from_layer(layer.with_fallback(<Self as confique::Config>::Layer::default_values()))
+            .map_err(|err| format!("config from table: {err}"))
+            .and_then(normalize_config)
+    }
+}
+
+/// Resolve the one supported Cargo Port configuration root.
+pub(crate) fn cargo_port_configuration_root() -> CargoPortConfigurationPathResolution {
+    resolve_configuration_root(
+        std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
+        dirs::config_dir(),
+    )
+}
+
+#[cfg(test)]
+fn resolve_configuration_child_path(
+    test_path_override: ConfigPathOverrideState,
+    configuration_root_override: Option<OsString>,
+    platform_configuration_directory: Option<PathBuf>,
+    child_name: &str,
+) -> CargoPortConfigurationPathResolution {
+    match test_path_override {
+        ConfigPathOverrideState::Ambient => resolve_configuration_root(
+            configuration_root_override,
+            platform_configuration_directory,
+        )
+        .child(child_name),
+        ConfigPathOverrideState::Installed(path) => {
+            CargoPortConfigurationPathResolution::Resolved(path)
+        },
+    }
+}
+
+fn resolve_configuration_root(
+    configuration_root_override: Option<OsString>,
+    platform_configuration_directory: Option<PathBuf>,
+) -> CargoPortConfigurationPathResolution {
+    match configuration_root_override {
+        Some(configuration_root_override) if configuration_root_override.is_empty() => {
+            CargoPortConfigurationPathResolution::InvalidEmptyOverride
+        },
+        Some(configuration_root_override) => CargoPortConfigurationPathResolution::Resolved(
+            PathBuf::from(configuration_root_override),
+        ),
+        None => platform_configuration_directory.map_or(
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            |platform_configuration_directory| {
+                CargoPortConfigurationPathResolution::Resolved(
+                    platform_configuration_directory.join(APP_NAME),
+                )
+            },
+        ),
     }
 }
 
@@ -580,19 +994,6 @@ pub(crate) fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<Lin
             LintCommandResolution::Command(command) => Some(command),
         })
         .collect()
-}
-
-pub(crate) struct ParsedCacheSize {
-    pub bytes:      Option<u64>,
-    pub normalized: String,
-}
-
-enum CacheSizeUnitResolution {
-    Supported {
-        canonical_label: &'static str,
-        bytes_per_unit:  u64,
-    },
-    Unsupported,
 }
 
 fn normalize_cache_size_number(number: &str) -> Result<String, String> {
@@ -843,18 +1244,6 @@ fn normalize_crate_name(value: &str, field: &str) -> Result<String, String> {
     Ok(name.to_string())
 }
 
-impl CargoPortConfig {
-    pub(crate) fn from_table(table: &Table) -> Result<Self, String> {
-        let value = Value::Table(table.clone());
-        let layer: <Self as confique::Config>::Layer = value
-            .try_into()
-            .map_err(|err| format!("config from table: {err}"))?;
-        Self::from_layer(layer.with_fallback(<Self as confique::Config>::Layer::default_values()))
-            .map_err(|err| format!("config from table: {err}"))
-            .and_then(normalize_config)
-    }
-}
-
 pub(crate) fn normalize_branch_name(value: &str, field: &str) -> Result<String, String> {
     let branch = value.trim();
     if branch.is_empty() {
@@ -936,368 +1325,6 @@ fn configuration_defaults<T: confique::Config>() -> T {
         .expect("complete built-in configuration defaults")
 }
 
-/// A finite storage threshold, parsed with the shared cache-size grammar.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StorageFreeSpaceThreshold {
-    bytes:      u64,
-    normalized: String,
-}
-
-impl StorageFreeSpaceThreshold {
-    pub(crate) const fn bytes(&self) -> u64 { self.bytes }
-}
-
-impl<'de> Deserialize<'de> for StorageFreeSpaceThreshold {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = String::deserialize(deserializer)?;
-        let parsed = parse_cache_size(&value).map_err(serde::de::Error::custom)?;
-        let bytes = parsed.bytes.ok_or_else(|| {
-            serde::de::Error::custom(
-                "storage free-space thresholds must be finite sizes with units",
-            )
-        })?;
-        Ok(Self {
-            bytes,
-            normalized: parsed.normalized,
-        })
-    }
-}
-
-impl Serialize for StorageFreeSpaceThreshold {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(&self.normalized)
-    }
-}
-
-/// Scan worker limits, metadata timing and storage headroom policy.
-#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub(super) struct ScanConfig {
-    /// Maximum simultaneous scan disk walks. Must be positive.
-    #[config(default = 6)]
-    pub(crate) disk_concurrency:     NonZeroUsize,
-    /// Maximum simultaneous cargo metadata jobs. Must be positive.
-    #[config(default = 4)]
-    pub(crate) metadata_concurrency: NonZeroUsize,
-    /// Wall-clock timeout for cargo metadata, in seconds. Must be positive.
-    #[config(default = 10)]
-    metadata_timeout_secs:           NonZeroU64,
-    /// Free space above which storage headroom is ample. Finite size with units.
-    #[config(default = "100 GiB")]
-    pub(crate) storage_ample_free:   StorageFreeSpaceThreshold,
-    /// Free space below which storage headroom is critical. Must be below `storage_ample_free`.
-    #[config(default = "50 GiB")]
-    pub(crate) storage_low_free:     StorageFreeSpaceThreshold,
-}
-
-impl Default for ScanConfig {
-    fn default() -> Self { configuration_defaults() }
-}
-
-impl ScanConfig {
-    pub(crate) const fn metadata_timeout(&self) -> Duration {
-        Duration::from_secs(self.metadata_timeout_secs.get())
-    }
-}
-
-/// File watcher scheduling and worker limits. All values must be positive.
-#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub(super) struct WatcherConfig {
-    /// Quiet time before recalculating after filesystem changes, in milliseconds.
-    #[config(default = 500)]
-    pub(crate) debounce_ms:      NonZeroU64,
-    /// Maximum delay before recalculating during continuous changes, in milliseconds.
-    #[config(default = 1000)]
-    pub(crate) max_wait_ms:      NonZeroU64,
-    /// Settling time for new project directories, in milliseconds.
-    #[config(default = 2000)]
-    new_project_debounce_ms:     NonZeroU64,
-    /// Interval between watcher timer checks, in milliseconds.
-    #[config(default = 500)]
-    poll_interval_ms:            NonZeroU64,
-    /// Maximum simultaneous watcher disk walks.
-    #[config(default = 2)]
-    pub(crate) disk_concurrency: NonZeroUsize,
-    /// Maximum simultaneous watcher Git probes.
-    #[config(default = 2)]
-    pub(crate) git_concurrency:  NonZeroUsize,
-}
-
-impl Default for WatcherConfig {
-    fn default() -> Self { configuration_defaults() }
-}
-
-impl WatcherConfig {
-    pub(crate) const fn debounce(&self) -> Duration {
-        Duration::from_millis(self.debounce_ms.get())
-    }
-    pub(crate) const fn max_wait(&self) -> Duration {
-        Duration::from_millis(self.max_wait_ms.get())
-    }
-    pub(crate) const fn new_project_debounce(&self) -> Duration {
-        Duration::from_millis(self.new_project_debounce_ms.get())
-    }
-    pub(crate) const fn poll_interval(&self) -> Duration {
-        Duration::from_millis(self.poll_interval_ms.get())
-    }
-}
-
-/// HTTP request timing and recovery probes. All values must be positive.
-#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-#[expect(
-    clippy::struct_field_names,
-    reason = "raw numeric unit suffixes mirror stable file keys (avoid-repeated-field-affixes exceptions)"
-)]
-pub(super) struct HttpConfig {
-    /// Request timeout, in seconds.
-    #[config(default = 5)]
-    timeout_secs:           NonZeroU64,
-    /// Recovery probe timeout and interval between retries, in seconds.
-    #[config(default = 1)]
-    retry_secs:             NonZeroU64,
-    /// Delay before confirming an unreachable service, in seconds.
-    #[config(default = 3)]
-    unavailable_grace_secs: NonZeroU64,
-}
-
-impl Default for HttpConfig {
-    fn default() -> Self { configuration_defaults() }
-}
-
-impl HttpConfig {
-    pub(crate) const fn timeout(&self) -> Duration { Duration::from_secs(self.timeout_secs.get()) }
-    pub(crate) const fn retry(&self) -> Duration { Duration::from_secs(self.retry_secs.get()) }
-    pub(crate) const fn unavailable_grace(&self) -> Duration {
-        Duration::from_secs(self.unavailable_grace_secs.get())
-    }
-}
-
-/// Top-level application configuration.
-#[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
-pub struct CargoPortConfig {
-    #[config(nested)]
-    pub(crate) scan:    ScanConfig,
-    #[config(nested)]
-    pub(crate) watcher: WatcherConfig,
-    #[config(nested)]
-    pub(crate) http:    HttpConfig,
-    #[config(nested)]
-    pub cache:          CacheConfig,
-    #[config(nested)]
-    pub crates_io:      CratesIoConfig,
-    #[config(nested)]
-    pub cpu:            CpuConfig,
-    #[config(nested)]
-    pub mouse:          MouseConfig,
-    #[config(nested)]
-    pub tui:            TuiConfig,
-    #[config(nested)]
-    pub lint:           LintConfig,
-    #[config(nested)]
-    pub debug:          DebugConfig,
-    #[config(nested)]
-    pub appearance:     AppearanceConfig,
-}
-
-/// Theme selection and OS appearance tracking.
-///
-/// `mode` selects between three resolution strategies:
-/// - `"auto"`: follow the OS light/dark setting (Phase 5 plugs OS state in; until then `auto`
-///   behaves identically to `"dark"`).
-/// - `"light"`: always use `light_theme` regardless of OS state.
-/// - `"dark"`: always use `dark_theme` regardless of OS state.
-///
-/// `light_theme` and `dark_theme` are theme ids (display names) looked up
-/// in [`tui_pane::ThemeRegistry`]. Unknown names fall back to the
-/// compiled-in built-ins with a toast naming the missing id.
-#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub struct AppearanceConfig {
-    /// Theme appearance mode: `"auto"`, `"light"`, or `"dark"`.
-    #[config(default = "dark")]
-    pub mode:              String,
-    /// Theme name to use when the resolved appearance is light.
-    #[config(default = "Default Light")]
-    pub light_theme:       String,
-    /// Theme name to use when the resolved appearance is dark.
-    #[config(default = "Default Dark")]
-    pub dark_theme:        String,
-    /// Controls whether the focused pane gets a subtle background tint so it
-    /// lifts away from neighbouring panes. Disabling it keeps every pane drawn
-    /// against the terminal's native background (preserves iTerm2 /
-    /// window-level transparency).
-    #[config(default = true)]
-    pub focused_pane_tint: FocusedPaneTint,
-    /// Leaves the main screen transparent: nothing paints a background
-    /// under it, the focused-pane tint included, so a transparent
-    /// terminal window shows the desktop behind every cell. `false`
-    /// paints it solid in the theme's ground.
-    #[config(default = true)]
-    pub transparent:       Transparency,
-}
-
-impl Default for AppearanceConfig {
-    fn default() -> Self {
-        Self {
-            mode:              DEFAULT_APPEARANCE_MODE.to_string(),
-            light_theme:       DEFAULT_LIGHT_THEME.to_string(),
-            dark_theme:        DEFAULT_DARK_THEME.to_string(),
-            focused_pane_tint: FocusedPaneTint::Enabled,
-            transparent:       Transparency::Transparent,
-        }
-    }
-}
-
-/// Developer / testing affordances. Intentionally narrow — anything here
-/// exists only to exercise code paths that are hard to reproduce
-/// organically (e.g. GitHub rate-limit behaviour).
-#[derive(Clone, Debug, Default, PartialEq, Eq, confique::Config, Serialize)]
-pub struct DebugConfig {
-    /// When true, all GitHub HTTP requests short-circuit to a synthetic
-    /// rate-limited response without hitting the network. Lets the
-    /// rate-limit toast, `/rate_limit` display, and recovery probe be
-    /// verified deterministically. Default false.
-    #[config(default = false)]
-    pub force_github_rate_limit: GitHubRateLimitMode,
-}
-
-/// CPU meter settings for the TUI host metrics pane.
-#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub struct CpuConfig {
-    /// How often to refresh CPU utilization values in milliseconds.
-    #[config(default = 1000)]
-    pub poll_ms: u64,
-
-    /// Upper bound for the low CPU utilization band.
-    #[config(default = 60)]
-    pub low_utilization_max_percent: u8,
-
-    /// Upper bound for the medium CPU utilization band.
-    #[config(default = 85)]
-    pub medium_utilization_max_percent: u8,
-}
-
-impl Default for CpuConfig {
-    fn default() -> Self {
-        Self {
-            poll_ms:                        DEFAULT_CPU_POLL_MS,
-            low_utilization_max_percent:    DEFAULT_LOW_CPU_UTILIZATION_MAX_PERCENT,
-            medium_utilization_max_percent: DEFAULT_MEDIUM_CPU_UTILIZATION_MAX_PERCENT,
-        }
-    }
-}
-
-/// TUI display and behaviour settings.
-#[derive(Clone, Debug, PartialEq, confique::Config, Serialize)]
-pub struct TuiConfig {
-    /// Directory names whose members are shown inline (pulled up to the
-    /// workspace level). For example, `["crates"]` means projects under
-    /// `workspace/crates/` appear directly under the workspace rather than
-    /// in a "crates" folder.
-    #[config(default = ["crates"])]
-    pub inline_dirs: Vec<String>,
-
-    /// Number of recent CI runs to fetch per project.
-    #[config(default = 5)]
-    pub ci_run_count: u32,
-
-    /// Whether `hjkl` mirrors arrow navigation in non-text panes.
-    #[config(default = false)]
-    pub navigation_keys: NavigationKeys,
-
-    /// Whether scrolling past the top or bottom of a list moves focus to the
-    /// adjacent pane in tab order instead of stopping at the edge.
-    #[config(default = false)]
-    pub edge_scroll: EdgeScroll,
-
-    /// Directories to scan for projects (relative to the scan root, or
-    /// absolute paths). When empty, the entire scan root is walked.
-    #[config(default = [])]
-    pub include_dirs: Vec<String>,
-
-    /// Directory-name glob patterns to skip while scanning. A matching
-    /// directory is not descended into and never becomes a project row.
-    /// Patterns match the directory name alone, not the full path; `*` matches
-    /// any run of characters and `?` matches exactly one. Example:
-    /// `[".tmp*"]` hides the temporary directories test runs leave behind.
-    #[config(default = [])]
-    pub exclude_dirs: Vec<String>,
-
-    /// Whether to include non-Rust projects (git repos without Cargo.toml).
-    #[config(default = false)]
-    pub include_non_rust: NonRustInclusion,
-
-    /// Editor application name, opened via `open -a <editor> <path>`.
-    #[config(default = "zed")]
-    pub editor: String,
-
-    /// OS/terminal-specific shell command used by the global terminal shortcut.
-    /// Leave blank to disable terminal opening. The command runs with the
-    /// selected project-list path as cwd; use `{path}` if your terminal needs
-    /// that path explicitly. Do not add shell quotes around `{path}`.
-    /// Examples:
-    /// - `open -a Terminal .`
-    /// - `osascript -e "tell application \"iTerm2\" to create window with default profile command
-    ///   \"cd {path} && exec zsh\""`
-    #[config(default = "")]
-    pub terminal_command: String,
-
-    /// Preferred local branch used for Git-panel `M` comparisons.
-    /// Example: `main`
-    #[config(default = "main")]
-    pub main_branch: String,
-
-    /// Optional fallback local branch names checked after `main_branch`.
-    /// Example: `["primary"]`
-    #[config(default = [])]
-    pub other_primary_branches: Vec<String>,
-
-    /// Default remote host URL prefix. Remote URLs beginning with this prefix
-    /// are shortened in the Git panel's Remotes table to `owner/repo` form;
-    /// remotes on other hosts are shown with the full URL.
-    #[config(default = "https://github.com/")]
-    pub default_remote_host_url: String,
-
-    /// How long (in seconds) newly discovered project names shimmer in the
-    /// project list. `0.0` disables the effect.
-    #[config(default = 10.0)]
-    pub discovery_shimmer_secs: f64,
-}
-
-impl Default for TuiConfig {
-    fn default() -> Self {
-        Self {
-            inline_dirs:             vec![DEFAULT_INLINE_DIR.to_string()],
-            ci_run_count:            DEFAULT_CI_RUN_COUNT,
-            navigation_keys:         NavigationKeys::ArrowsOnly,
-            edge_scroll:             EdgeScroll::Stops,
-            include_dirs:            Vec::new(),
-            exclude_dirs:            Vec::new(),
-            include_non_rust:        NonRustInclusion::Exclude,
-            editor:                  DEFAULT_EDITOR.to_string(),
-            terminal_command:        String::new(),
-            main_branch:             DEFAULT_MAIN_BRANCH.to_string(),
-            other_primary_branches:  Vec::new(),
-            default_remote_host_url: DEFAULT_REMOTE_HOST_URL.to_string(),
-            discovery_shimmer_secs:  DEFAULT_DISCOVERY_SHIMMER_SECS,
-        }
-    }
-}
-
-/// Mouse input settings.
-#[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
-pub struct MouseConfig {
-    /// Whether to invert mouse scroll direction.
-    #[config(default = true)]
-    pub invert_scroll: ScrollDirection,
-}
-
-impl Default for MouseConfig {
-    fn default() -> Self {
-        Self {
-            invert_scroll: ScrollDirection::Inverted,
-        }
-    }
-}
-
 /// Resolve Cargo Port's `config.toml` without treating an invalid override as
 /// the normal per-user configuration directory.
 pub(crate) fn config_path() -> CargoPortConfigurationPathResolution {
@@ -1314,33 +1341,6 @@ pub(crate) fn config_path() -> CargoPortConfigurationPathResolution {
     #[cfg(not(test))]
     {
         cargo_port_configuration_root().child(CONFIG_FILE)
-    }
-}
-
-#[cfg(test)]
-#[derive(Clone)]
-enum ConfigPathOverrideState {
-    Ambient,
-    Installed(PathBuf),
-}
-
-#[cfg(test)]
-thread_local! {
-    static CONFIG_PATH_OVERRIDE: RefCell<ConfigPathOverrideState> = const {
-        RefCell::new(ConfigPathOverrideState::Ambient)
-    };
-}
-
-#[cfg(test)]
-pub(crate) struct ConfigPathOverrideGuard {
-    previous: ConfigPathOverrideState,
-}
-
-#[cfg(test)]
-impl Drop for ConfigPathOverrideGuard {
-    fn drop(&mut self) {
-        let previous = std::mem::replace(&mut self.previous, ConfigPathOverrideState::Ambient);
-        CONFIG_PATH_OVERRIDE.with(|slot| *slot.borrow_mut() = previous);
     }
 }
 
