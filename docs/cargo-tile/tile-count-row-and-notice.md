@@ -59,48 +59,20 @@
 
 ### Phase 2 — A notice settles once with the grid, and the count-row tests regain their strength  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** A notice that first shows while the grid moves keeps that place only until the grid settles, then takes its settled place once. The count-row tests prove their rules at every grid height again.
-
-**Source:** showrunner ruling 2026-11-23 01:28 PST (Phase 73 lands after its 3 repair rounds; these items move here), and the round 3 review of Phase 1.
-
-**Spec:**
-
-Item 1 — the notice place after a moving first draw.
-1. Fault: `a_toast_outside_the_summary_columns_keeps_its_original_rect` (render.rs). The first draw comes while the grid moves. `GridToastStack` keeps that place, one row above the settled place, for the notice's whole life. Phase 1 changed the assert to the held place, with a comment.
-2. Fix: `tui_pane::render_toasts_over_grid` takes the grid, `grid: &TileGrid<Id>`. cargo-tile passes `&app.tiles` at its one call site (render.rs `draw`). A crate-private `TileGrid` query reports whether the grid moves: a step in flight or queued, the rule of `has_pending_motion_for_test`. Share that rule. The public function changes it into a crate-private enum argument of `Toasts::render_over_grid`, so tests pass the enum directly. No new public enum or `TileGrid` method (the name `GridMotion` is already used in cargo-tile terminal.rs and tui_pane motion.rs). A place found while the grid moves is held only until the first settled frame. That frame searches once and holds the result. A place found on a settled frame stays held through later grid motion, as in Phase 1. `GridToastStack::Placed` records which kind of frame found its place, as an enum field and not a bool. A search during motion after a protected foot reaches the cards also gives a held-until-settled place.
-3. Restore the original assert `assert_eq!(actual, expected)` and remove the Phase 74 comment.
-4. Keep every Phase 1 notice test green; `GridNotice::draw` (placement_tests.rs) passes a settled grid. Add one test in `placement_tests.rs`: a place found on a moving frame moves once on the first settled frame, then stays while cells change height. The live fault (hide and slide in again while cells change height) must not return.
-5. The first settled frame is drawn at once. `TileGrid::tick` can report `Repaint::NotNeeded` on the settling frame (tile_grid.rs). While `GridToastStack` holds a place found during motion, `Toasts::next_visual_change_deadline` returns `At(now)`, so the event loop draws on the next poll after the grid settles.
-
-Item 2 — count-row test strength (round 3 review findings).
-1. `a_command_cell_leaves_no_spare_row_while_a_column_mate_is_short`: test the heights 53..=56 and the even heights 58..=66, not one height. For each height, assert that `repaired` holds no command cell. Build the former grid at one height only (each `row_report_comparison_with_view` builds two settled grids; keep the test under 1 s). Item 3 adds the odd heights 57..=67 with its fix.
-2. `a_separator_loan_paints_the_recipients_new_process_rows`: assert that each recipient paints a pid that the former grid (`KeepTogether`) does not paint. Run it at an odd and an even height.
-3. `nested_unrowed_descendants_add_to_their_nearest_drawn_row`: add a second descendant under the child and draw at height 5, so the parent and the child draw and the last row reads `+2 more`. Assert the parent's own share (10%) and the child's sum, as main did at height 4.
-4. `a_near_full_summary_yields_separators_for_hidden_process_rows`: also assert no blank rows in the command cells at height 64. Height 63 is in item 3's odd range; add it with item 3's fix.
-5. In `assert_single_line_cell_counts_hidden_processes`, derive 45 and 4115 from the cell height, `TABLE_HEADER_HEIGHT`, the heading row, the foot row and the count row.
-
-Item 3 — the lone blank row above "+N more" (known defect).
-1. At width 200, roster [4,5,4,5,4,5], odd heights 57-67, one command cell keeps a blank row above "+N more" while its column mates are short. Cells grow in steps of 2 (heading and row), so one row has no use. Main has the same lone row at the other parity, without a count row.
-2. A fix changes the look: `TableSeparators::for_visible_groups` keeps the last `remaining` gaps, and `measured_table_row_use` models the same rule, so the spare empty row becomes the gap between the last two directory groups. The gap is an empty row, not a drawn line. The user approved this look change on the annotated before/after mockup (2026-11-23).
-
-Item 4 — count-row code cleanups (round 3 review findings).
-1. Build `CommandRowBudget` once: `reserve_command_rows` takes the table kind, builds the budget before its single-line early return, and returns the `HiddenProcessCountRow` that `hidden_count_row` returns now. Delete `hidden_count_row`. In `prepare_table_viewport`, a command table takes its count row from `reserve_command_rows`; the `visible_group_count > 0 && body_rows_drawn < available_height` rule stays only for `TableKind::Summary`.
-2. Make `(AllFit, Reserved)` unrepresentable: one enum in `CommandRowBudget`, for example `AllFit | SomeHidden { count_row }`. Fold `PreparedTableViewport`'s `hidden` and `count_row` into one enum, for example `NoCountRow | CountRow { hidden: NonZeroUsize }`, and remove the `hidden > 0 && count_row == Reserved` filter in `draw_process_table`.
-3. Share one label function between `draw_hidden_process_count` and the test helper `has_blank_row_above_foot`, so a truncated label is also checked.
-4. In `measured_table_row_use`, the `CommandRowBudget` path that a single-line command table takes when it reserves its count row does not model the separator that `TableSeparators::for_visible_groups` paints in the spare row (`process_table_plan`). Model it there, so measurement and painting agree on `kept`. If this changes a cell height or a painted row, stop and add it to item 3's question.
+- `tui_pane::render_toasts_over_grid` takes the `&TileGrid`. The grid reports a crate-private `GridStability::{Moving, Settled}` (`toasts/render/drawing.rs`), stored in `GridToastStack::Placed`. While the grid moves, `GridToastStack::next_visual_change_deadline` returns `At(now)`, the stack holds its first visible place, and the notice draws over a moving footer. On the first settled frame the notice moves once to its settled place. If the settled place cannot hold the full notice (`full_stack_fits`), the notice keeps its old place.
+- `reserve_command_rows` builds one `CommandRowBudget`; `hidden_count_row` no longer exists. The count row is `HiddenProcessCount` (all fit, or some hidden with a `NonZeroUsize` count), and `hidden_process_count_label` is the one label formatter. `measured_table_row_use` counts the separator row.
+- `TableSeparators::for_visible_groups` puts a cell's spare empty row between its last two directory groups, never directly above "+N more". A one-group cell lends its spare row to a column mate through the column allocator (`tui_pane/src/tiles/grid/allocation.rs`).
+- Tests: `a_toast_outside_the_summary_columns_keeps_its_original_rect` asserts the settled place again; `a_toast_placed_while_the_grid_moves_moves_once_on_the_first_settled_frame`, `a_startup_notice_stays_visible_as_the_protected_foot_rises`, `a_startup_notice_keeps_its_place_when_the_settled_corner_is_too_short` and `a_startup_notice_first_drawn_short_keeps_its_place_during_motion` (`placement_tests.rs`); `near_full_summary_and_command_cells_leave_no_blank_rows_above_the_foot` and `a_command_cell_uses_its_spare_row_between_the_last_two_directory_groups` (render.rs) cover heights 53-67 with exact process and CPU-cell asserts.
 
 **Files:**
-- `crates/cargo-tile/src/render.rs`, `crates/cargo-tile/src/render/` — the notice call, the count-row code and the tests.
-- `crates/tui_pane/src/overlays/frame_tail.rs`, `crates/tui_pane/src/toasts/`, `crates/tui_pane/src/tiles/grid/tile_grid.rs` — the grid argument, the motion query, the hold rule and the settle repaint.
-- `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — one line for each user-visible fix.
+- `crates/tui_pane/src/toasts/render/drawing.rs`, `toasts/render/mod.rs` — `GridStability`, the motion hold and the settled move.
+- `crates/tui_pane/src/toasts/manager.rs`, `toasts/mod.rs` — the settled-frame deadline.
+- `crates/tui_pane/src/tiles/grid/tile_grid.rs`, `overlays/frame_tail.rs` — grid motion state and the grid-aware call.
+- `crates/cargo-tile/src/render.rs`, `render/frame_preparation.rs` — the row budget, `HiddenProcessCount`, `TableSeparators`.
+- `crates/cargo-tile/src/shim_registration/app_scenarios.rs` — startup scenarios draw a settled frame before they step deadlines.
 
-**Workers:** Codex workers: one for item 1 and its review; one implementer for items 4, 3 and 2 in that order (all touch render.rs).
+**Gotchas:** `Toasts::next_visual_change_deadline` clamps each deadline to at least now + `FRAME_POLL_MILLIS` (8 ms). A test that steps notice deadlines must draw a settled frame first.
 
-**State:** none
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh test tui_pane` pass, with the original toast assert restored.
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` and `bash ~/.claude/scripts/direct/verify.sh lint tui_pane` are clean.
-- Live on natedev: the startup notice moves at most once, when the grid settles; it does not hide or slide while cells change.
+**Ruled out:** an empty row directly above "+N more" — the row split between the last two directory groups stays (user approved the look; showrunner ruling).
