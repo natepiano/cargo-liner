@@ -1332,3 +1332,31 @@ The copies are deleted. No source changes.
 - A fixture test: a name in an `assert_eq!` body that resolves to the same item does not block the import.
 - No changed test takes one second or more.
 - Phase 54 must be on main first, because part 2 changes Phase 54 code.
+
+### Phase 59 — mend finds rustc after its toolchain folder moves  · status: todo
+
+#### Work Order
+
+**Goal:** a new mend build never keeps a sysroot path from kept build data that no longer matches the current toolchain. Source: bob and the showrunner, 2026-11-24, from hana main CI 45353376655. Mend bugs are always fixed: this phase runs before 56b, 55, 51, 52, 50, 57 and 58.
+
+**Spec:**
+1. The fault: the hana Mend Check on hana-linux-1 fails with "mend cannot find rustc in its build sysroot: /build/hana-ci/hana-linux-1/rustup/toolchains/1.99.1-x86_64-unknown-linux-gnu". The runner root moved to `/build/hana/ci/1` on 2026-11-22, and `/build/hana-ci` does not exist. The cargo-mend binary built 2026-11-24 04:24 PST holds 3 strings with the old root and 20 with the new root.
+2. The cause to confirm: `crates/cargo-mend/build.rs` writes `MEND_BUILD_SYSROOT` from `rustc --print sysroot` and the rpath from the same sysroot. Its `rerun-if-changed` list watches only Git refs and package files. Cargo then reuses the old build-script output after the toolchain folder moves. `DriverCompiler::for_build` (`crates/cargo-mend/src/compiler/build/driver_compiler.rs`) reads the stale path.
+3. Fix it at the cause: the build script reruns when the sysroot it recorded changes or no longer exists. Name the mechanism you choose (for example `rerun-if-changed` on the recorded rustc, `rerun-if-env-changed` on the toolchain variables). Check the rpath strings too.
+4. Add a test that moves the toolchain folder: build with sysroot A, move or replace the toolchain so the sysroot becomes B, build again with the same target folder, and assert the binary uses B. Use a copy or a fake toolchain; never move a real toolchain on natedev or the Mac. The test must run under 1 s, so a full mend rebuild is not a choice: drive the build-script step with a small fake crate or test the rerun decision directly.
+5. Do not delete or edit runner files. natedev finds the old strings on the runner.
+
+**Files:**
+- `crates/cargo-mend/build.rs` — the sysroot record and the rerun list
+- `crates/cargo-mend/src/compiler/build/driver_compiler.rs` — the sysroot reader
+- `crates/cargo-mend/tests/` — the moved-toolchain test
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The moved-toolchain test fails before the fix and passes after it.
+- No changed test takes one second or more.
