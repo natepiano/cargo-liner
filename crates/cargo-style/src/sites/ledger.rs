@@ -9,8 +9,7 @@ use rusqlite::Connection;
 
 use super::catalog::Catalog;
 use super::catalog::Rule;
-use super::constants::SITES_LEDGER_SCHEMA_VERSION;
-use crate::constants::LEDGER_SCHEMA_VERSION;
+use crate::constants::LEDGER_SCHEMA_VERSIONS;
 use crate::finding_source::CommitResolution;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
@@ -103,7 +102,7 @@ impl SitesLedger {
         let mut connection = sqlite_read::open_read_only(path, mode)?;
         let snapshot = connection.transaction()?;
         let version = read_version(&snapshot)?;
-        if !matches!(version, LEDGER_SCHEMA_VERSION | SITES_LEDGER_SCHEMA_VERSION) {
+        if !LEDGER_SCHEMA_VERSIONS.contains(&version) {
             return Err(SitesLedgerFailure::Schema(version));
         }
         let revision: String = snapshot

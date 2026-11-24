@@ -152,7 +152,14 @@ fn assert_outside_reply<'a>(root: &Path, oracle: &'a OracleReplies) -> TestResul
     for (actual, expected) in findings.iter_mut().zip(&oracle.cases) {
         if expected.answer["status"] != "unknown_finding" {
             let fields = actual.as_object_mut().ok_or("expected a finding object")?;
-            for field in ["rename_admission", "rename_applied", "footprint"] {
+            for field in [
+                "rename_admission",
+                "rename_applied",
+                "footprint",
+                "declaration",
+                "site_evidence",
+                "approvals",
+            ] {
                 let _ = fields
                     .remove(field)
                     .ok_or_else(|| format!("{}: missing {field}", expected.name))?;
@@ -166,7 +173,7 @@ fn assert_outside_reply<'a>(root: &Path, oracle: &'a OracleReplies) -> TestResul
         }
     }
     assert!(mismatches.is_empty(), "{}", mismatches.join("\n"));
-    assert_eq!(reply["schema"], 6);
+    assert_eq!(reply["schema"], 7);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip": oracle.synced_tip, "ledger_revision": "absent"})

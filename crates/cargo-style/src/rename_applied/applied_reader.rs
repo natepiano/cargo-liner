@@ -17,13 +17,11 @@ use crate::binding::ComparisonSource;
 use crate::binding::Pair;
 use crate::finding_source::FindingSource;
 use crate::finding_source::TreeFile;
+use crate::ledger_read::FindingEdit;
 use crate::ledger_read::HeldRename;
 use crate::rename_admission::OwnedRename;
 use crate::rename_admission::PolicyInput;
-use crate::rename_classifiers::FileMoveApproval;
-use crate::rename_classifiers::FileRename;
-use crate::rename_classifiers::QualifiedRename;
-use crate::rename_classifiers::QualifiedRenameApproval;
+use crate::rename_classifiers::RenameIntent;
 
 /// One cache per reply. The target is fixed by the ledger snapshot.
 #[derive(Default)]
@@ -49,16 +47,7 @@ impl AppliedReader {
             },
             BuildComparison::NotBinding | BuildComparison::NoBase => {},
         }
-        if let FileMoveApproval::Approved(rename) = FileRename::read(&anchor.path, &finding.edit) {
-            return file::check(&rename, source, target);
-        }
-        let QualifiedRenameApproval::Approved(rename) = QualifiedRename::read(&finding.edit) else {
-            return Ok(RenameApplied::NoAppliedCheck {
-                kind: finding.edit.kind.as_str().to_owned(),
-            });
-        };
-        let file = read_source(source, target, &anchor.path)?;
-        Ok(qualified::check(&rename, &anchor.path, &file))
+        applied_at(&finding.edit, &anchor.path, target, source)
     }
 
     fn binding_check(
@@ -116,5 +105,27 @@ impl From<TreeFile<'_>> for ComparisonSource {
             TreeFile::Bytes(bytes) => Self::Text(String::from_utf8_lossy(bytes).into_owned()),
             TreeFile::Folder | TreeFile::Missing => Self::Absent,
         }
+    }
+}
+
+/// Whether the file move or qualified rename that the edit names is present at `path`.
+pub(crate) fn applied_at(
+    edit: &FindingEdit,
+    path: &str,
+    target: &str,
+    source: &mut FindingSource<'_>,
+) -> Result<RenameApplied, AppliedError> {
+    match RenameIntent::read(path, edit) {
+        RenameIntent::FileMoves(plan) => file::check(&plan, source, target),
+        RenameIntent::Qualified(rename) => {
+            let file = read_source(source, target, path)?;
+            Ok(qualified::check(&rename, path, &file))
+        },
+        RenameIntent::Unparsed => Ok(RenameApplied::NotApplied {
+            path: path.to_owned(),
+        }),
+        RenameIntent::Binding | RenameIntent::OtherKind => Ok(RenameApplied::NoAppliedCheck {
+            kind: edit.kind.as_str().to_owned(),
+        }),
     }
 }

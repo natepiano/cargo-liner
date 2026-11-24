@@ -12,7 +12,10 @@ pub(crate) struct RelocationEvidence {
 }
 
 pub(crate) enum RelocationFindingState {
-    Filed,
+    /// A filed finding and the decision file that holds it.
+    Filed {
+        proposal: String,
+    },
     Unfiled,
     Closed,
 }
@@ -32,7 +35,9 @@ impl RelocationEvidence {
     pub(crate) fn read(row: &Row<'_>, id: &str) -> Result<Self, LedgerReadFailure> {
         let finding: String = ledger_read::read_column(row, "held_findings", id, "state")?;
         let finding = match finding.as_str() {
-            "filed" => RelocationFindingState::Filed,
+            "filed" => RelocationFindingState::Filed {
+                proposal: ledger_read::read_column(row, "held_findings", id, "proposal")?,
+            },
             "unfiled" => RelocationFindingState::Unfiled,
             _ => RelocationFindingState::Closed,
         };
