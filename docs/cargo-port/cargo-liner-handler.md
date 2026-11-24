@@ -1072,6 +1072,7 @@ The copies are deleted. No source changes.
 
 **Constraints from prior phases:**
 - `RetainedReservationSet::apply_evidence` skips `target_proof_commits` for `ProtectedTipAncestor` revalidations after release. Keep the released tip and earlier proof commits available to `cross_target_predecessor_evidence`.
+- Phase 56b passes the edit check's `Ledger` into `reconcile_for_check`. Keep automatic releases in that reconciliation transaction so the edit retry sees them in the retained replay.
 
 **Files:**
 - `crates/cargo-berth/src/verb/release.rs` — the release and checkpoint tip choice
@@ -1178,6 +1179,7 @@ The copies are deleted. No source changes.
 
 **Constraints from prior phases:**
 - `AnswerRecord` authorizes edits through `OverlapCoverage`. The reservation holds the scopes. `JournalReplay::coordination_events` keeps the full `ConflictAuthorization` for each answer.
+- In Phase 56b, `check::decide` reads the current reservation view through `Ledger::with_validated_reservations`. Keep holder selection on that view and pass the same ledger to `refusal::record`.
 
 **Files:**
 - `crates/cargo-berth/src/` — the hold check and its answer, found in step 3
@@ -1215,43 +1217,30 @@ The copies are deleted. No source changes.
 
 **Gotchas** — Released tip proof retention assumes stable ancestry. Git replace refs can change ancestry. The measured edit runs reconciliation and decodes the checkpoint five times.
 
-### Phase 56b — a cargo-berth hook call decodes the replay checkpoint once  · status: todo
+### Phase 56b — a cargo-berth hook call decodes the replay checkpoint once  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** a cargo-berth hook call decodes the replay checkpoint at most once, and only the parts it reads, so the gate and the edit check cost under about 100 ms release at Hana ledger size. Source: the Phase 56 release measure; the showrunner approved the split 2026-11-23. CPU cost ranks first, so it runs next.
-
-**Spec:**
-1. The fault (Mac sample, release, median of 3, after Phase 56): the gate (`__reference-transaction prepared`) costs 168 ms CPU. An edit of an unreserved file costs 5,092 ms CPU: that path runs reconcile and decodes the 27.3 MB checkpoint five times in one call. Report: `${SESSION_DIR}/phases/56/measure_reply.md`.
-2. Reuse one `JournalReplay` for each edit hook call. Pass it through `check::decide`, `reconcile_for_check`, the decision retry, and first-touch acquisition. Include the default answer and the refusal audit when these paths run. Advance the journal tail and validate its generation and the session mapping under the lock before a write. Reload after journal replacement. Preserve each hook answer.
-3. Report the CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
-4. The lazy decode is not part of this phase. The measure showed that most of the edit cost is not the decode, so Phase 56c owns the profile and the lazy decode.
-
-**Constraints from prior phases:**
-- Version 4 still has one header line and one `JournalReplay` line. Bump `FOLD_FORMAT_VERSION` from 4 if the layout changes. Reject old headers before decoding the replay and rebuild from byte 0.
-- `AnswerRecord` keeps `worktree` and `Vec<OverlapCoverage>`. Keep the coverage rules and bindings in the reservation fold. Keep full `ConflictAuthorization` values in the answer events in `JournalReplay::coordination_events`.
-- Keep one checkpoint writer per journal file, the `write_temporary` test seam, and the checkpoint for a compacted journal. Apply the ratio of 8 to the total checkpoint bytes.
-- `edit_hook_authorization` selects by the declared path. `locked_first_touch_selection` validates that selection again under the lock. Preserve path-owner selection, ambiguity recovery, and named `check --reservation` behavior.
-- Probes: `${SESSION_DIR}/tmp/p56-measure/measure-decode.py` and `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py`; Mac sample `/tmp/claude/scratch/p53-probe-4406cc` (scratch end 2026-11-25).
+- `Ledger::for_edit_check` retains one `JournalReplay` across the decision, reconciliation, retry, first-touch acquisition, default answer, and refusal audit.
+- The ledger advances the replay over complete tail records. Before a write, it validates the generation and session mapping under the mutation lock.
+- `JournalReplaySource` keeps the source file open while the replay can be reused. The ledger reloads after replacement or shortening.
+- Tests check one decode through `pre_tool_use::execute`, the reload after compaction, and the first-touch, already-held, and refusal answers.
+- Mac release median CPU for the unreserved edit fell from 5,381.7 to 4,703.1 ms. Decodes fell from five to one. Reads fell from 378.9 to 267.4 MB.
+- Mac release median gate CPU fell from 185.4 to 173.7 ms. The gate decodes the checkpoint once.
 
 **Files:**
-- `crates/cargo-berth/src/ledger/` — replay, checkpoint and handle
-- `crates/cargo-berth/src/hook/` — entry to the edit check
-- `crates/cargo-berth/src/reconcile.rs` — reconciliation and replay updates
-- `crates/cargo-berth/src/verb/check.rs` — share the replay across the first decision and its retry
-- `crates/cargo-berth/src/verb/claim/acquisition.rs` — reuse the replay for identity, acquisition, and the default answer
-- `crates/cargo-berth/src/verb/refusal.rs` — reuse the replay in the check's refusal audit
+- `crates/cargo-berth/src/ledger/handle.rs` — retains, refreshes, and validates the replay.
+- `crates/cargo-berth/src/ledger/journal.rs` — compares journal file identities and advances the tail.
+- `crates/cargo-berth/src/ledger/mod.rs` — exposes the decode counter to tests.
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — returns the replay with its source file.
+- `crates/cargo-berth/src/reconcile.rs` — uses the edit check's ledger.
+- `crates/cargo-berth/src/verb/check.rs` — shares the ledger and tests hook answers.
+- `crates/cargo-berth/src/verb/claim/acquisition.rs` — reuses the ledger for first-touch and default answers.
+- `crates/cargo-berth/src/verb/refusal.rs` — uses the supplied ledger for the refusal audit.
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Binds later work:** The unreserved-edit performance work owns the profile and lazy decode. Version 4 still has one header line and one replay line.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- A test counts the checkpoint decodes in one unreserved-edit hook call: one.
-- If the format changes, check that a version-4 checkpoint rebuilds and that a partial replay gives the same answers as a whole-journal replay.
-- No changed test takes one second or more.
+**Gotchas:** Journal replacement can require a second decode. The checkpoint reader releases its lock before it returns the source file. The answer fixture calls `execute_at` directly. Its child clears the launcher's session and run identity.
 
 ### Phase 56c — a cargo-berth edit check of an unreserved file costs under about 100 ms  · status: todo
 
@@ -1260,10 +1249,20 @@ The copies are deleted. No source changes.
 **Goal:** the `pre-tool-use` edit check of a file no reservation holds, and the gate, each cost under about 100 ms CPU in release. Source: the Phase 56b release measure.
 
 **Spec:**
-1. The fault (Mac sample, release, median of 3, after Phase 56b): the unreserved edit costs 4,703 ms CPU with one checkpoint decode and 267.4 MB read. The decode is about 150 ms, so about 4.5 s is elsewhere. The gate costs 173.7 ms, most of it the one decode. Report: `${SESSION_DIR}/phases/56b/measure_reply.md`.
-2. First profile the unreserved edit on the Mac release sample. Name the top costs by function, with CPU ms and read bytes. Cut the top cost at its cause. Each hook answer stays the same.
-3. Then, if the gate or the edit check still costs more than about 100 ms, apply the lazy decode in `${SESSION_DIR}/phases/56/design.md`, section 3, with the format constraints of Phase 56b. Give `incursion_incidents` its own part. The reservation readers in `crates/cargo-berth/src/gate/reference_transaction.rs` and `crates/cargo-berth/src/session/reservation_command.rs` take part in that design.
-4. Report CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
+1. On the Mac release sample after Phase 56b, the unreserved edit costs 4,703.1 ms CPU and reads 267.4 MB. The read-only gate costs 173.7 ms CPU. Each hook decodes the checkpoint once. Use the median of three runs in `${SESSION_DIR}/phases/56b/measure_reply.md` as the baseline.
+2. First profile the unreserved edit on the Mac release sample. Name the top costs by function, with CPU ms and read bytes. Cut the top cost at its cause. Preserve each hook answer.
+3. If either hook still costs more than about 100 ms CPU, apply the lazy decode in section 3 of `${SESSION_DIR}/phases/56/design.md`. Give `incursion_incidents` its own part and include it in the header's part lengths. Start from `Ledger::for_edit_check` and `Ledger::with_validated_reservations`. Apply the reservation reader changes in `crates/cargo-berth/src/gate/reference_transaction.rs` and `crates/cargo-berth/src/session/reservation_command.rs`.
+4. Report median CPU and read bytes for the gate and the unreserved edit. Use three Mac release runs on the same sample before and after the change.
+
+**Constraints from prior phases:**
+- Phase 56b shares one `JournalReplay` across the edit decision, reconciliation, retry, first-touch acquisition, default answer, and refusal audit. Keep that reuse when a transaction needs the full replay.
+- Keep the journal source file open while its replay can be reused. Reload after replacement or shortening. Advance the tail and validate the generation and session mapping under the mutation lock.
+- Version 4 has one header line and one `JournalReplay` line. Increase `FOLD_FORMAT_VERSION` from 4 when the layout changes. Reject old headers before decoding the replay and rebuild from byte 0.
+- Keep `AnswerRecord`'s `worktree` and `Vec<OverlapCoverage>`. Keep coverage rules and bindings in the reservation fold. Keep the full `ConflictAuthorization` values in the answer events in `JournalReplay::coordination_events`.
+- Keep one checkpoint writer per journal file, the `write_temporary` test seam, and the checkpoint for a compacted journal. Apply the ratio of 8 to the total checkpoint bytes.
+- Keep path-owner selection, ambiguity recovery, and named `check --reservation` behavior. `edit_hook_authorization` selects by the declared path. `locked_first_touch_selection` validates that selection under the lock.
+- Use the Mac sample at `/tmp/claude/scratch/p53-probe-4406cc`. The probes are `${SESSION_DIR}/tmp/p56-measure/measure-decode.py` and `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py`.
+- If the format changes, test that a version-4 checkpoint rebuilds. Compare the partial reservation replay with a whole-journal replay. Keep `edit_hook_first_touch_decodes_checkpoint_once` and `retained_edit_replay_reloads_a_longer_compacted_replacement` passing.
 
 **Files:**
 - `crates/cargo-berth/src/` — files the profile identifies.
