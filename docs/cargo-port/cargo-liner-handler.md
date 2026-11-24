@@ -1273,6 +1273,30 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - No changed test takes 1 s or more.
 
+### Phase 56d — a cargo-berth edit check of an unreserved file costs under about 100 ms  · status: todo
+
+#### Work Order
+
+**Goal:** the `pre-tool-use` edit check of a file no reservation holds costs under about 100 ms CPU in release. Phase 56c cut it from about 4.5 s to about 0.5 s and moved the rest here.
+
+**Spec:**
+1. Use the Phase 56c final Mac release measure as the baseline. Its report is `${SESSION_DIR}/phases/56c/impl_report.md`.
+2. In Phase 56c pass 2, `reconcile_for_check` used about 320 ms CPU of the edit: checkpoint part decodes about 156 ms, `observe_repository_facts` about 99 ms, and `PreparedReconciliationAppend::prepare` about 37 ms.
+3. Profile the edit on the Mac release sample. Cut the top costs at their cause. Preserve each hook answer.
+4. Report median CPU and read bytes for the gate and the unreserved edit. Use three Mac release runs on the same sample before and after the change.
+
+**Constraints from prior phases:**
+- Keep the Phase 56b and Phase 56c constraints of the replay checkpoint and compaction. The Phase 56c As-built names them.
+
+**Files:**
+- `crates/cargo-berth/src/` — files the profile identifies.
+
+**Workers:** 1 writer.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- No changed test takes 1 s or more.
+
 ### Phase 57 — mend --fix names each fix it applies  · status: todo
 
 #### Work Order
