@@ -2327,6 +2327,191 @@ edition = "2024"
     );
 }
 
+/// Write a crate where `use super::*;` in `src/scene/flight.rs` brings in the
+/// parent's own `fold` module, which holds `fold_faces` and the type `Kind`. The
+/// different module `crate::fold` holds `net_root_face` and `net_root_face_of`.
+/// Run the module-import fix and `cargo check`, and assert that `flight` stays
+/// as written.
+fn assert_glob_fold_flight_stays_as_written(package: &str, flight: &str) {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::create_dir_all(temp.path().join("src/scene")).expect("create src/scene");
+    let manifest =
+        format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n");
+    for (name, text) in [
+        ("Cargo.toml", manifest.as_str()),
+        (
+            "src/lib.rs",
+            "mod fold;\nmod scene;\n\npub fn touch() -> u32 { scene::stage() }\n",
+        ),
+        (
+            "src/fold.rs",
+            "pub(crate) fn net_root_face() -> u32 { 1 }\n\npub(crate) fn net_root_face_of<T>() \
+             -> u32 { 3 }\n",
+        ),
+        (
+            "src/scene.rs",
+            "mod flight;\nmod fold;\n\npub(crate) fn stage() -> u32 { flight::fly() }\n",
+        ),
+        (
+            "src/scene/fold.rs",
+            "pub(super) struct Kind;\n\npub(super) fn fold_faces() -> u32 { 2 }\n",
+        ),
+        ("src/scene/flight.rs", flight),
+    ] {
+        fs::write(temp.path().join(name), text).expect("write fixture file");
+    }
+
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
+    assert!(
+        output.status.success(),
+        "scan, fix and cargo check failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixed =
+        fs::read_to_string(temp.path().join("src/scene/flight.rs")).expect("read fixed flight");
+    assert_eq!(fixed, flight, "the glob-shadowed path must stay as written");
+}
+
+/// The call `crate::fold::net_root_face()` names a different `fold` from the
+/// glob's. The fix added `use crate::fold;`, which hid the glob's `fold`, so
+/// `fold::fold_faces()` stopped resolving (E0425) and mend rolled back the whole
+/// run. The call stays fully qualified.
+#[test]
+fn inline_call_to_a_module_a_glob_may_bring_in_stays_qualified() {
+    assert_glob_fold_flight_stays_as_written(
+        "glob_module_fixture",
+        "use super::*;\n\npub(super) fn fly() -> u32 { fold::fold_faces() + \
+         crate::fold::net_root_face() }\n",
+    );
+}
+
+/// The fix rewrites only the `crate::fold::` prefix of the call, not its
+/// turbofish. `use crate::fold;` would hide the glob's `fold` in `fold::Kind`
+/// (E0412), so the call stays fully qualified.
+#[test]
+fn inline_call_with_a_glob_name_in_its_turbofish_stays_qualified() {
+    assert_glob_fold_flight_stays_as_written(
+        "glob_turbofish_fixture",
+        "use super::*;\n\npub(super) fn fly() -> u32 { \
+         crate::fold::net_root_face_of::<fold::Kind>() }\n",
+    );
+}
+
+/// The same `fold` fixture as a function import: the rewrite to `use crate::fold;`
+/// would hide the glob's `fold`, and `fold::fold_faces()` would stop resolving
+/// (E0425). The import stays as written.
+#[test]
+fn function_import_from_a_module_a_glob_may_bring_in_stays_as_written() {
+    assert_glob_fold_flight_stays_as_written(
+        "glob_function_fixture",
+        "use super::*;\nuse crate::fold::net_root_face;\n\npub(super) fn fly() -> u32 { \
+         fold::fold_faces() + net_root_face() }\n",
+    );
+}
+
+/// A glob blocks a module import only when the file uses the module name
+/// elsewhere. `flight.rs` has `use super::*;` but names `camera` only in the
+/// call that the fix rewrites, so the call still gets `use crate::camera;`.
+#[test]
+fn inline_call_beside_a_glob_that_cannot_reach_its_name_imports_the_module() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::create_dir_all(temp.path().join("src/scene")).expect("create src/scene");
+    for (name, text) in [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"glob_unused_name_fixture\"\nversion = \"0.1.0\"\nedition = \
+             \"2024\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "mod camera;\nmod scene;\n\npub fn touch() -> u32 { scene::stage() }\n",
+        ),
+        ("src/camera.rs", "pub(crate) fn fit_to() -> u32 { 1 }\n"),
+        (
+            "src/scene.rs",
+            "mod flight;\n\npub(crate) fn depth() -> u32 { 2 }\n\npub(crate) fn stage() -> u32 { \
+             flight::fly() }\n",
+        ),
+        (
+            "src/scene/flight.rs",
+            "use super::*;\n\npub(super) fn fly() -> u32 { depth() + crate::camera::fit_to() }\n",
+        ),
+    ] {
+        fs::write(temp.path().join(name), text).expect("write fixture file");
+    }
+
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
+    assert!(
+        output.status.success(),
+        "scan, fix and cargo check failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixed =
+        fs::read_to_string(temp.path().join("src/scene/flight.rs")).expect("read fixed flight");
+    assert!(
+        fixed.contains("use crate::camera;"),
+        "module import missing:\n{fixed}"
+    );
+    assert!(
+        fixed.contains("depth() + camera::fit_to()"),
+        "call must use the module import:\n{fixed}"
+    );
+}
+
+/// A parent-module function import adds no `use`: the fix deletes it and calls
+/// `super::stage()`. A glob in the scope cannot collide with it, so the fix
+/// still applies.
+#[test]
+fn parent_function_import_beside_a_glob_becomes_a_super_call() {
+    let temp = tempdir().expect("create temp fixture dir");
+    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::create_dir_all(temp.path().join("src/scene")).expect("create src/scene");
+    for (name, text) in [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"glob_parent_fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "mod scene;\n\npub fn touch() -> u32 { scene::run() }\n",
+        ),
+        (
+            "src/scene.rs",
+            "mod flight;\n\npub(crate) fn depth() -> u32 { 2 }\n\npub(crate) fn stage() -> u32 \
+             { 1 }\n\npub(crate) fn run() -> u32 { flight::fly() }\n",
+        ),
+        (
+            "src/scene/flight.rs",
+            "use super::*;\nuse crate::scene::stage;\n\npub(super) fn fly() -> u32 { depth() + \
+             stage() }\n",
+        ),
+    ] {
+        fs::write(temp.path().join(name), text).expect("write fixture file");
+    }
+
+    let output = super::rewrite_module_import_fixture(&temp.path().join("Cargo.toml"));
+    assert!(
+        output.status.success(),
+        "scan, fix and cargo check failed: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixed =
+        fs::read_to_string(temp.path().join("src/scene/flight.rs")).expect("read fixed flight");
+    assert!(
+        !fixed.contains("use crate::scene::stage"),
+        "parent function import must be deleted:\n{fixed}"
+    );
+    assert!(
+        fixed.contains("depth() + super::stage()"),
+        "call must become `super::stage()`:\n{fixed}"
+    );
+}
+
 /// Two separate parent-module function imports in the same file. Both `use`
 /// lines must be deleted and every reference rewritten to `super::fn(...)`.
 #[test]

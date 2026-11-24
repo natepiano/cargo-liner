@@ -1573,6 +1573,7 @@ pub(crate) fn reconcile_for_release(
 /// Retain immutable object evidence throughout check's decision and acquisition passes.
 pub(crate) fn reconcile_for_check(
     repository: &git::RepositorySnapshot,
+    ledger: &Ledger,
 ) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
     let context = repository.context();
     let config = match BerthConfig::read(&context.configuration_lookup())? {
@@ -1585,10 +1586,9 @@ pub(crate) fn reconcile_for_check(
             });
         },
     };
-    let ledger = Ledger::open_from_discovered_worktree(context)?;
     reconcile_with_open_ledger(
         &repository.fresh_observation(),
-        &ledger,
+        ledger,
         &config,
         ReconciliationRequest {
             repository_observation_scope: RepositoryObservationScope::CurrentOrderingGraph,
@@ -1805,14 +1805,21 @@ fn reconcile_with_open_ledger_once(
                     journal_mutation_actor.coordination_run_id,
                     |state| {
                         let observation = observation_pass.bind(state, initial_repository);
-                        let preflight = match prepare_rewrite_reconciliation(
-                            observation.repository(),
-                            ledger,
-                            berth_config,
-                        ) {
-                            Ok(preflight) => preflight,
-                            Err(error) => return ReconciliationValidation::Reject(error),
-                        };
+                        let rewrite_repository = observation.repository();
+                        let preflight =
+                            match read_rewrite_preflight(rewrite_repository, berth_config, || {
+                                observation
+                                    .state()
+                                    .reservations()
+                                    .cloned()
+                                    .map_err(ReconcileError::Replay)
+                            }) {
+                                Ok(preflight) => PreparedRewriteReconciliation {
+                                    repository: rewrite_repository,
+                                    preflight,
+                                },
+                                Err(error) => return ReconciliationValidation::Reject(error),
+                            };
                         match prepare_reconciliation_transaction(
                             observation.state(),
                             berth_config,
@@ -2163,14 +2170,19 @@ pub(crate) fn prepare_rewrite_reconciliation<'operation>(
 ) -> Result<PreparedRewriteReconciliation<'operation>, ReconcileError> {
     Ok(PreparedRewriteReconciliation {
         repository,
-        preflight: read_rewrite_preflight(repository, ledger, berth_config)?,
+        preflight: read_rewrite_preflight(repository, berth_config, || {
+            ledger
+                .read_validated_journal()?
+                .into_reservations()
+                .map_err(ReconcileError::Replay)
+        })?,
     })
 }
 
 fn read_rewrite_preflight(
     repository: &git::RepositorySnapshot,
-    ledger: &Ledger,
     berth_config: &BerthConfig,
+    read_reservations: impl FnOnce() -> Result<RetainedReservationSet, ReconcileError>,
 ) -> Result<RewriteReconciliationPreflight, ReconcileError> {
     let worktree_context = repository.context();
     let markers = permit::pending_branch_rewrite_markers(worktree_context.common_git_directory())
@@ -2185,10 +2197,7 @@ fn read_rewrite_preflight(
     if markers.is_empty() {
         return Ok(preflight);
     }
-    let mut reservations = ledger
-        .read_validated_journal()?
-        .into_reservations()
-        .map_err(ReconcileError::Replay)?;
+    let mut reservations = read_reservations()?;
     let repository_trunk = berth_config.repository_trunk().map_err(|reason| {
         ReconcileError::Config(ConfigError::InvalidValue {
             key:   "trunk".to_owned(),
@@ -6269,6 +6278,8 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
     use std::collections::HashMap;
+    use std::collections::HashSet;
+    use std::path::Path;
 
     use cargo_berth_test_support::CommandDeadlineExt as _;
     use serde_json::Value;
@@ -6286,7 +6297,10 @@ mod tests {
     use super::rewrite_target_tip;
     use crate::config::Enrollment;
     use crate::drift::WorkingTreeFingerprint;
+    use crate::edge::CrossTargetPredecessorEvidence;
+    use crate::edge::CrossTargetPredecessorReachability;
     use crate::edge::JudgedTargetTip;
+    use crate::edge::OrderingGraph;
     use crate::edge::RepositoryReservationEvidence;
     use crate::edge::RepositoryReservationSnapshot;
     use crate::edge::RepositorySnapshot;
@@ -6325,6 +6339,8 @@ mod tests {
     const RESERVATION_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a1f";
     const TRUNK: &str = "1111111111111111111111111111111111111111";
     const TIP: &str = "2222222222222222222222222222222222222222";
+    /// The requester of the sequence edge whose predecessor is `RESERVATION_ID`.
+    const SUCCESSOR_ID: &str = "01900a1b-2c3d-7e4f-8a5b-6c7d8e9f0a2f";
 
     #[test]
     fn a_checkpoint_release_keeps_shared_phase_reservations_active()
@@ -6338,20 +6354,22 @@ mod tests {
         assert_shared_checkpoint_preserves_siblings(4)
     }
 
+    fn fixture_git(root: &Path, arguments: &[&str]) -> Result<String, Box<dyn std::error::Error>> {
+        let output = cargo_berth_test_support::fixture_git_command()
+            .args(arguments)
+            .current_dir(root)
+            .bounded_output()?;
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
+        }
+        Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    }
+
     fn shared_checkpoint_repository()
     -> Result<(TempDir, String, GitObjectId), Box<dyn std::error::Error>> {
         let directory = cargo_berth_test_support::fixture_tempdir("shared-phase-");
         let root = directory.path().canonicalize()?;
-        let git = |arguments: &[&str]| -> Result<String, Box<dyn std::error::Error>> {
-            let output = cargo_berth_test_support::fixture_git_command()
-                .args(arguments)
-                .current_dir(&root)
-                .bounded_output()?;
-            if !output.status.success() {
-                return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
-            }
-            Ok(String::from_utf8(output.stdout)?.trim().to_owned())
-        };
+        let git = |arguments: &[&str]| fixture_git(&root, arguments);
         git(&["init", "--quiet", "--initial-branch=main"])?;
         let configuration = root.join(".git/config");
         let contents = std::fs::read_to_string(&configuration)?
@@ -7486,6 +7504,234 @@ mod tests {
             matches!(preflight.project(&released), Err(super::RewriteProjectionError::RewriteSubjectChanged(changed)) if changed == id)
         );
         Ok(())
+    }
+
+    /// Rule R keeps each cross-target answer: `cross_target_predecessor_evidence` gives the same
+    /// answer for a released predecessor with the kept proof list as with every proof commit.
+    /// The trunks are one without the tip, one that merged a later lane tip, and two force
+    /// pushes: onto the first lane tip and onto an unrelated root.
+    #[test]
+    fn released_tip_anchored_proofs_keep_every_cross_target_answer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let history = ReleasedLaneHistory::new()?;
+        let predecessor_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let kept = RetainedReservationSet::replay(&history.events()?)?;
+        assert_eq!(
+            kept.reservation(predecessor_id)?.target_proof_commits(),
+            &history.lane_tips[..1]
+        );
+        let mut serialized = serde_json::to_value(&kept)?;
+        let every_lane_tip = serde_json::to_value(&history.lane_tips)?;
+        for reservation in serialized["reservations"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+        {
+            reservation["target_proof_commits"] = every_lane_tip.clone();
+        }
+        let every_proof = serde_json::from_value::<RetainedReservationSet>(serialized)?;
+        assert_eq!(
+            every_proof
+                .reservation(predecessor_id)?
+                .target_proof_commits(),
+            &history.lane_tips
+        );
+
+        let repository =
+            crate::git::RepositorySnapshot::discover(&history.directory.path().canonicalize()?)?;
+        for (trunk_oid, expected_answer) in &history.trunks {
+            let kept_answer = cross_target_answer(&repository, &kept, predecessor_id, trunk_oid)?;
+            let every_proof_answer =
+                cross_target_answer(&repository, &every_proof, predecessor_id, trunk_oid)?;
+            assert_eq!(kept_answer, every_proof_answer, "trunk {trunk_oid}");
+            assert_eq!(
+                kept_answer,
+                CrossTargetPredecessorEvidence::new(HashMap::from([(
+                    predecessor_id,
+                    expected_answer.clone()
+                )])),
+                "trunk {trunk_oid}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Answer `cross_target_predecessor_evidence` for one released predecessor at `trunk_oid`.
+    /// The predecessor comes from a sequence request, and `TargetIntegrationReachability::observe`
+    /// gathers the candidate commits that the request needs.
+    fn cross_target_answer(
+        repository: &crate::git::RepositorySnapshot,
+        reservations: &RetainedReservationSet,
+        predecessor_id: ReservationId,
+        trunk_oid: &GitObjectId,
+    ) -> Result<CrossTargetPredecessorEvidence, Box<dyn std::error::Error>> {
+        let ReservationEvidenceState::Released {
+            protected_tip,
+            disposition,
+            integration_status,
+            ..
+        } = reservations.reservation(predecessor_id)?.evidence_state()?
+        else {
+            return Err("the predecessor is not released after a checkpoint".into());
+        };
+        let snapshot = RepositoryReservationSnapshot {
+            reservation_id:    predecessor_id,
+            worktree_liveness: WorktreeLiveness::Live,
+            worktree_head:     WorktreeHead::Resolved(protected_tip.as_ref().clone()),
+            evidence:          RepositoryReservationEvidence::Released {
+                protected_tip,
+                disposition,
+                integration_status,
+            },
+        };
+        let scope = super::RepositoryObservationScope::RequestedOrderingEdge {
+            before: predecessor_id,
+            after:  SUCCESSOR_ID.parse()?,
+        };
+        let ordering_graph = OrderingGraph::default();
+        let trunk = JudgedTargetTip::Resolved(trunk_oid.clone());
+        let reachability = super::TargetIntegrationReachability::observe(
+            repository,
+            reservations,
+            &ordering_graph,
+            &trunk,
+            &HashSet::new(),
+            super::TrunkEdgeCandidates::Included {
+                scope,
+                target_tips: &[],
+            },
+        )?;
+        Ok(super::cross_target_predecessor_evidence(
+            &ordering_graph,
+            scope,
+            reservations,
+            &[snapshot],
+            &trunk,
+            &reachability,
+        ))
+    }
+
+    /// A git history where a protected tip lands on a lane that advances three times, and four
+    /// trunks: one without the tip, one that merged the second lane tip, one force pushed onto
+    /// the first lane tip, and one force pushed onto an unrelated root.
+    struct ReleasedLaneHistory {
+        directory:     TempDir,
+        phase_start:   GitObjectId,
+        protected_tip: GitObjectId,
+        lane_tips:     [GitObjectId; 3],
+        /// Each trunk with the answer that `cross_target_predecessor_evidence` must give for it.
+        trunks:        [(GitObjectId, CrossTargetPredecessorReachability); 4],
+    }
+
+    impl ReleasedLaneHistory {
+        fn new() -> Result<Self, Box<dyn std::error::Error>> {
+            let directory = cargo_berth_test_support::fixture_tempdir("released-proof-");
+            let root = directory.path().canonicalize()?;
+            let git = |arguments: &[&str]| fixture_git(&root, arguments);
+            let head = || -> Result<GitObjectId, Box<dyn std::error::Error>> {
+                Ok(git(&["rev-parse", "HEAD"])?.parse()?)
+            };
+            let commit = |message: &str| -> Result<GitObjectId, Box<dyn std::error::Error>> {
+                git(&["commit", "--quiet", "--allow-empty", "-m", message])?;
+                head()
+            };
+            git(&["init", "--quiet", "--initial-branch=main"])?;
+            git(&["config", "--local", "user.name", "Test"])?;
+            git(&["config", "--local", "user.email", "test@example.invalid"])?;
+            let phase_start = commit("phase start")?;
+            git(&["checkout", "--quiet", "-b", "lane"])?;
+            let protected_tip = commit("protected work")?;
+            let lane_tips = [
+                commit("first lane advance")?,
+                commit("second lane advance")?,
+                commit("third lane advance")?,
+            ];
+            git(&["checkout", "--quiet", "main"])?;
+            let unrelated_main = commit("unrelated main work")?;
+            git(&[
+                "merge",
+                "--quiet",
+                "--no-ff",
+                "-m",
+                "merge",
+                &lane_tips[1].to_string(),
+            ])?;
+            let merged_main = head()?;
+            git(&["reset", "--quiet", "--hard", &phase_start.to_string()])?;
+            git(&[
+                "merge",
+                "--quiet",
+                "--no-ff",
+                "-m",
+                "merge",
+                &lane_tips[0].to_string(),
+            ])?;
+            let forced_onto_first_lane_tip = head()?;
+            git(&["checkout", "--quiet", "--orphan", "rewritten"])?;
+            let forced_onto_unrelated_root = commit("unrelated root")?;
+            let trunks = [
+                (
+                    unrelated_main,
+                    CrossTargetPredecessorReachability::NotOnTrunk,
+                ),
+                (
+                    merged_main.clone(),
+                    CrossTargetPredecessorReachability::OnTrunk(merged_main),
+                ),
+                (
+                    forced_onto_first_lane_tip.clone(),
+                    CrossTargetPredecessorReachability::OnTrunk(forced_onto_first_lane_tip),
+                ),
+                (
+                    forced_onto_unrelated_root,
+                    CrossTargetPredecessorReachability::NotOnTrunk,
+                ),
+            ];
+            Ok(Self {
+                directory,
+                phase_start,
+                protected_tip,
+                lane_tips,
+                trunks,
+            })
+        }
+
+        /// The predecessor's journal: claim, checkpoint, integration at the first lane tip,
+        /// release, then two tip-anchored revalidations at the later lane tips.
+        fn events(&self) -> Result<[JournalEvent; 6], serde_json::Error> {
+            let [claim, _] = checkpoint_events()?;
+            let integrated = |generation: u64, trunk_oid: &GitObjectId| {
+                journal_event(
+                    generation,
+                    &json!({
+                        "op": "evidence_revalidated", "reservation_id": RESERVATION_ID,
+                        "status": {"status": "integrated", "trunk_oid": trunk_oid,
+                            "proof": "protected_tip_ancestor"},
+                        "edit_blocking_status": "clear",
+                    }),
+                )
+            };
+            Ok([
+                claim,
+                journal_event(
+                    2,
+                    &json!({
+                        "op": "checkpoint", "reservation_id": RESERVATION_ID,
+                        "protected_tip": self.protected_tip, "trunk_snapshot": self.phase_start,
+                    }),
+                )?,
+                integrated(3, &self.lane_tips[0])?,
+                journal_event(
+                    4,
+                    &json!({
+                        "op": "release", "reservation_id": RESERVATION_ID,
+                        "disposition": {"kind": "integrated"},
+                    }),
+                )?,
+                integrated(5, &self.lane_tips[1])?,
+                integrated(6, &self.lane_tips[2])?,
+            ])
+        }
     }
 
     /// Select settlement using the reservation's current share of merge work.

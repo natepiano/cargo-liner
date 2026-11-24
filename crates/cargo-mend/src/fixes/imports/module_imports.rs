@@ -32,6 +32,8 @@ use super::collect_use_bindings;
 use super::import_condition::ImportCondition;
 use super::import_scan;
 use crate::compiler::SOURCE_DIR_SRC;
+use crate::fixes::facade_redirect::IdentifierUse;
+use crate::fixes::facade_redirect::NamingTokens;
 use crate::reporting::FixKind;
 use crate::rust_syntax::FileModulePath;
 use crate::rust_syntax::ParsedSources;
@@ -163,6 +165,38 @@ pub(in crate::fixes) enum ImportProposal {
     RewriteAt(LineColumn),
 }
 
+/// The file's naming tokens and the byte ranges of the paths that one module-import fix rewrites
+/// to its new binding. A glob in the scope collides with that binding only when the file uses
+/// the bound name outside these ranges.
+pub(in crate::fixes) struct RewrittenPaths<'a> {
+    naming_tokens: &'a NamingTokens<'a>,
+    ranges:        &'a [Range<usize>],
+}
+
+impl<'a> RewrittenPaths<'a> {
+    pub(in crate::fixes) const fn new(
+        naming_tokens: &'a NamingTokens<'a>,
+        ranges: &'a [Range<usize>],
+    ) -> Self {
+        Self {
+            naming_tokens,
+            ranges,
+        }
+    }
+
+    /// Whether the file uses `name` outside the rewritten paths, macro bodies included.
+    fn name_use(&self, name: &str) -> IdentifierUse {
+        self.naming_tokens.word_use(self.ranges, name)
+    }
+}
+
+/// The glob imports of one scope. Mend does not list the names a glob brings in, so an
+/// `Unlisted` glob can bring in every name.
+enum ScopeGlobs {
+    Absent,
+    Unlisted,
+}
+
 /// Hoisting retains the scanner's conservative collision behavior: a gated
 /// binding already at module scope can prevent a move from its nested scope.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,16 +299,23 @@ impl ModuleImports {
             .unwrap_or(0)
     }
 
+    /// A new binding of `name` collides with a binding of another target in its scope. In a
+    /// scope with a glob, it also collides when the file uses `name` outside
+    /// `rewritten_paths`: the new binding would hide a `name` the glob may bring in. An
+    /// ungated binding of the same target already hides the glob's `name`, so the new binding
+    /// changes nothing.
     pub(in crate::fixes) fn collides(
         &self,
         offset: usize,
         name: &str,
         absolute_module: &[String],
         proposal: &ImportProposal,
+        rewritten_paths: &RewrittenPaths<'_>,
     ) -> bool {
-        let scope = &self.scopes[self.scope_at(offset)];
+        let scope_index = self.scope_at(offset);
+        let scope = &self.scopes[scope_index];
         let target = format!("crate::{}", absolute_module.join("::"));
-        scope.names.iter().any(|(binding, claims)| {
+        let other_target = scope.names.iter().any(|(binding, claims)| {
             binding.name == name
                 && binding.target != target
                 && claims.iter().any(|claim| match proposal {
@@ -285,7 +326,45 @@ impl ModuleImports {
                             || candidate.item.span().start() != *start
                     },
                 })
-        })
+        });
+        if other_target {
+            return true;
+        }
+        match self.scope_globs(scope_index, &ImportCondition::Always) {
+            ScopeGlobs::Absent => return false,
+            ScopeGlobs::Unlisted => {},
+        }
+        let same_target_coverage = scope
+            .names
+            .iter()
+            .filter(|(binding, _)| binding.name == name && binding.target == target)
+            .flat_map(|(_, claims)| claims)
+            .fold(ImportCondition::Never, |coverage, claim| {
+                coverage.union(&claim.condition)
+            });
+        if same_target_coverage.is_always() {
+            return false;
+        }
+        match rewritten_paths.name_use(name) {
+            IdentifierUse::Absent => false,
+            IdentifierUse::Present | IdentifierUse::Unparseable => true,
+        }
+    }
+
+    /// The globs of `scope` that exist under `condition`.
+    fn scope_globs(&self, scope: usize, condition: &ImportCondition) -> ScopeGlobs {
+        let unlisted = self.candidates.iter().any(|candidate| {
+            candidate.scope == scope
+                && candidate.gates.overlaps(condition)
+                && collect_use_bindings(&candidate.item.tree)
+                    .iter()
+                    .any(|binding| matches!(binding, UseBinding::Glob { .. }))
+        });
+        if unlisted {
+            ScopeGlobs::Unlisted
+        } else {
+            ScopeGlobs::Absent
+        }
     }
 
     pub(in crate::fixes) fn reserve_module(
@@ -381,14 +460,9 @@ impl ModuleImports {
         };
         let condition = ImportCondition::from_attributes(&parsed.attrs);
         // A glob can supply named bindings and unnamed traits that we cannot resolve here.
-        if self.candidates.iter().any(|candidate| {
-            candidate.scope == scope_index
-                && candidate.gates.overlaps(&condition)
-                && collect_use_bindings(&candidate.item.tree)
-                    .iter()
-                    .any(|binding| matches!(binding, UseBinding::Glob { .. }))
-        }) {
-            return ImportMove::Blocked;
+        match self.scope_globs(scope_index, &condition) {
+            ScopeGlobs::Unlisted => return ImportMove::Blocked,
+            ScopeGlobs::Absent => {},
         }
         let scope = &self.scopes[scope_index];
         let conditional = !gates.is_empty();
@@ -1024,19 +1098,87 @@ mod tests {
         };
         let start = syn::spanned::Spanned::span(original).start();
         let module = ["reconcile".to_string()];
+        let naming_tokens = super::NamingTokens::from(text);
+        let rewritten_paths = super::RewrittenPaths::new(&naming_tokens, &[]);
         assert!(!owner.collides(
             0,
             "reconcile",
             &module,
             &super::ImportProposal::RewriteAt(start),
+            &rewritten_paths,
         ));
-        assert!(owner.collides(0, "reconcile", &module, &super::ImportProposal::Addition));
+        assert!(owner.collides(
+            0,
+            "reconcile",
+            &module,
+            &super::ImportProposal::Addition,
+            &rewritten_paths,
+        ));
         assert!(owner.collides(
             0,
             "worker",
             &["worker".to_string()],
             &super::ImportProposal::RewriteAt(start),
+            &rewritten_paths,
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn module_imports_glob_rewrite_collides_only_with_another_use_of_the_name() -> Result<()> {
+        let rewritten = "use crate::fold::net_root_face;";
+        let module = ["fold".to_string()];
+        for (body, collision) in [("fold::fold_faces()", true), ("net_root_face()", false)] {
+            let text = format!("use super::*;\n{rewritten}\nfn f() {{ {body}; }}\n");
+            let syntax = syn::parse_file(&text)?;
+            let source = super::ImportSource::new(&text);
+            let owner = super::ModuleImports::from_syntax(&syntax, &source, &[])?;
+            let Item::Use(original) = &syntax.items[1] else {
+                return Err(anyhow::anyhow!("fixture function import"));
+            };
+            let start = syn::spanned::Spanned::span(original).start();
+            let offset = text
+                .find(rewritten)
+                .ok_or_else(|| anyhow::anyhow!("fixture function import text"))?;
+            let rewritten_range = offset..offset + rewritten.len();
+            let ranges = std::slice::from_ref(&rewritten_range);
+            assert_eq!(
+                owner.collides(
+                    0,
+                    "fold",
+                    &module,
+                    &super::ImportProposal::RewriteAt(start),
+                    &super::RewrittenPaths::new(&super::NamingTokens::from(text.as_str()), ranges),
+                ),
+                collision,
+                "{body}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_imports_glob_yields_only_to_an_ungated_binding_of_the_same_target() -> Result<()> {
+        let module = ["fold".to_string()];
+        for (gate, collision) in [("", false), ("#[cfg(test)]\n", true)] {
+            let text = format!(
+                "use super::*;\n{gate}use crate::fold;\nfn f() {{ fold::fold_faces(); }}\n"
+            );
+            let syntax = syn::parse_file(&text)?;
+            let source = super::ImportSource::new(&text);
+            let owner = super::ModuleImports::from_syntax(&syntax, &source, &[])?;
+            assert_eq!(
+                owner.collides(
+                    0,
+                    "fold",
+                    &module,
+                    &super::ImportProposal::Addition,
+                    &super::RewrittenPaths::new(&super::NamingTokens::from(text.as_str()), &[]),
+                ),
+                collision,
+                "{gate}"
+            );
+        }
         Ok(())
     }
 

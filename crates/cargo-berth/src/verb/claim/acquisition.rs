@@ -27,6 +27,8 @@ use super::request::ClaimReservationSelection;
 use super::request::ClaimRunValidation;
 use super::request::ClaimRunValidationError;
 use super::request::ClaimValidationContext;
+use crate::answer::AuthorizedOverlap;
+use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ClaimSequenceBinding;
 use crate::answer::ConflictAuthorization;
 use crate::answer::ContradictedOrdering;
@@ -224,6 +226,9 @@ fn claim_acquisition_output(
             scopes,
             answer_policy,
         })) => OutputEnvelope::answered(reservation_id, blockers, scopes, answer_policy),
+        Ok(Enrollment::Enrolled(ClaimExecution::NoScopeAdded(id))) => {
+            OutputEnvelope::claim_scopes_already_held(id)
+        },
         Ok(Enrollment::Enrolled(ClaimExecution::Blocked {
             conflicts,
             approver,
@@ -328,6 +333,7 @@ enum ClaimExecution {
         approver:  Option<OverlapApprover>,
     },
     AnsweredWithoutOverlap(Vec<ReservationId>),
+    NoScopeAdded(ReservationId),
     ContradictsLiveOrdering(Vec<ContradictedOrdering>),
     OrderingCycle(OrderingCycle),
     NothingToReplace(Vec<ReservationId>),
@@ -484,11 +490,20 @@ pub(in crate::verb) fn selected_reservation_check_acquisition(
     else {
         return CheckAcquisitionDecision::NeedsLockedDecision;
     };
-    let FirstTouchProtectedScopeOwnership::AlreadyHeld(reservation) =
-        partition_first_touch_protected_scopes(reservations, &scopes, reservation, path_case)
-    else {
-        return CheckAcquisitionDecision::NeedsLockedDecision;
+    let held = match selection {
+        CheckReservationSelection::Explicit(_) | CheckReservationSelection::EditHook => scopes
+            .as_slice()
+            .iter()
+            .all(|scope| declares_scope(reservation, scope, path_case)),
+        CheckReservationSelection::SessionMappingOrNew
+        | CheckReservationSelection::SessionMappingOrSingleActive => matches!(
+            partition_first_touch_protected_scopes(reservations, &scopes, reservation, path_case),
+            FirstTouchProtectedScopeOwnership::AlreadyHeld(_)
+        ),
     };
+    if !held {
+        return CheckAcquisitionDecision::NeedsLockedDecision;
+    }
     let committed = already_held_acquisition(
         reservation,
         repository_trunk,
@@ -692,10 +707,10 @@ struct CommittedReservationAcquisition {
     additional_acquisitions: Vec<ExactPathAcquisition>,
 }
 
-#[derive(Clone)]
 struct FirstTouchValidationContext {
     repository:            Arc<RepositorySnapshot>,
     run_validation:        ClaimRunValidation,
+    edit_identity:         FirstTouchEditIdentity,
     worktree_context:      WorktreeContext,
     recovery_command_line: RecoveryCommandLine,
     coordination_run_id:   CoordinationRunId,
@@ -938,6 +953,7 @@ fn record_refusal(
         ClaimExecution::Selected { .. }
         | ClaimExecution::Claimed { .. }
         | ClaimExecution::Answered { .. }
+        | ClaimExecution::NoScopeAdded(_)
         | ClaimExecution::AnsweredWithoutOverlap(_)
         | ClaimExecution::OrderingCycle(_)
         | ClaimExecution::ContradictsLiveOrdering(_)
@@ -945,13 +961,9 @@ fn record_refusal(
         | ClaimExecution::ReservationLimitReached(_)
         | ClaimExecution::OrderingEdgeLimitReached(_) => return,
     };
-    refusal::record(
-        worktree_context,
-        requester,
-        RefusedVerb::Claim,
-        scopes,
-        conflicts,
-    );
+    if let Ok(ledger) = Ledger::open_from_discovered_worktree(worktree_context) {
+        refusal::record(&ledger, requester, RefusedVerb::Claim, scopes, conflicts);
+    }
 }
 
 fn normalized_claim_scopes(
@@ -973,7 +985,10 @@ fn normalized_claim_scopes(
 /// Whether first touch starts an operation or continues check's immutable object evidence.
 enum FirstTouchRepositoryObservation<'check> {
     NewOperation,
-    WithinCheck(&'check RepositorySnapshot),
+    WithinCheck {
+        repository: &'check RepositorySnapshot,
+        ledger:     &'check Ledger,
+    },
 }
 
 impl FirstTouchRepositoryObservation<'_> {
@@ -984,7 +999,7 @@ impl FirstTouchRepositoryObservation<'_> {
     ) -> Result<ClaimRepositoryFacts, ClaimError> {
         match self {
             Self::NewOperation => ClaimRepositoryFacts::read(worktree_context, run_validation),
-            Self::WithinCheck(repository) => ClaimRepositoryFacts::read_from_repository(
+            Self::WithinCheck { repository, .. } => ClaimRepositoryFacts::read_from_repository(
                 repository.fresh_observation(),
                 run_validation,
             ),
@@ -1012,13 +1027,14 @@ pub(in crate::verb) fn acquire_first_touch_for_check(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
     repository: &RepositorySnapshot,
+    ledger: &Ledger,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     acquire_first_touch_with_reservation_selection(
         request,
         reservation_selection,
-        &FirstTouchRepositoryObservation::WithinCheck(repository),
+        &FirstTouchRepositoryObservation::WithinCheck { repository, ledger },
         recovery_command_line,
         capacity_recovery,
     )
@@ -1035,8 +1051,15 @@ fn acquire_first_touch_with_reservation_selection(
         declared_scopes,
         conflict_handling,
     } = request;
-    let invocation_directory = session::command_directory()?;
-    let worktree_context = WorktreeContext::discover(&invocation_directory)?;
+    let (worktree_context, check_ledger) = match repository_observation {
+        FirstTouchRepositoryObservation::NewOperation => (
+            WorktreeContext::discover(&session::command_directory()?)?,
+            None,
+        ),
+        FirstTouchRepositoryObservation::WithinCheck { repository, ledger } => {
+            (repository.context().clone(), Some(*ledger))
+        },
+    };
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -1047,18 +1070,25 @@ fn acquire_first_touch_with_reservation_selection(
             });
         },
     };
-    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+    let opened_ledger;
+    let ledger = if let Some(ledger) = check_ledger {
+        ledger
+    } else {
+        opened_ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+        &opened_ledger
+    };
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let edit_scopes = declared_scopes.clone().into_minimal_antichain(path_case);
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
-    let resolved_edit_authorization =
-        first_touch_edit_authorization(&ledger, &worktree_context, reservation_selection)?;
+    let edit_identity = first_touch_edit_identity(
+        ledger,
+        &worktree_context,
+        reservation_selection,
+        &scopes,
+        path_case,
+    )?;
     let run_validation =
-        ClaimCoordinationRunSelection::ContinueOrStart.resolve(resolved_edit_authorization);
-    let coordination_run_id = run_validation.actor_run_id();
-    let journal_mutation_actor =
-        resolved_edit_authorization.journal_mutation_actor_for(coordination_run_id);
-    let source = ClaimSource::FirstTouch;
+        ClaimCoordinationRunSelection::ContinueOrStart.resolve(edit_identity.selected);
     let repository_facts = repository_observation.read_facts(&worktree_context, run_validation)?;
     let phase_start_head = ProtectedPhaseStartHead::from(repository_facts.current_head.clone());
     let (target, trunk_at_claim) = repository_facts::selected_target_and_tip(
@@ -1070,7 +1100,7 @@ fn acquire_first_touch_with_reservation_selection(
     let prepared_claim = PreparedClaim {
         reservation_id: ReservationId::new(),
         scopes,
-        source,
+        source: ClaimSource::FirstTouch,
         purpose: ReservationPurpose::NotProvidedByCaller,
         trunk_at_claim,
         target,
@@ -1086,10 +1116,11 @@ fn acquire_first_touch_with_reservation_selection(
     let mut validation_context = FirstTouchValidationContext {
         repository: repository_facts.repository,
         run_validation,
+        edit_identity,
         worktree_context,
         recovery_command_line: recovery_command_line.clone(),
-        coordination_run_id,
-        worktree_id: journal_mutation_actor.worktree_id,
+        coordination_run_id: run_validation.actor_run_id(),
+        worktree_id: edit_identity.caller.worktree_id,
         path_case,
         edit_scopes,
         conflict_handling,
@@ -1097,60 +1128,92 @@ fn acquire_first_touch_with_reservation_selection(
         maximum_reservations: berth_config.maximum_reservations,
         repository_trunk,
     };
-    let execution = transact_first_touch_with_capacity_recovery(
-        &ledger,
+    execute_prepared_first_touch(
+        ledger,
         &prepared_claim,
         &mut validation_context,
         &berth_config,
         capacity_recovery,
+    )
+    .map(Enrollment::Enrolled)
+}
+
+fn execute_prepared_first_touch(
+    ledger: &Ledger,
+    prepared_claim: &PreparedClaim,
+    validation_context: &mut FirstTouchValidationContext,
+    berth_config: &BerthConfig,
+    capacity_recovery: &mut ClaimCapacityRecovery,
+) -> Result<FirstTouchClaimExecution, ClaimError> {
+    let execution = transact_first_touch_with_capacity_recovery(
+        ledger,
+        prepared_claim,
+        validation_context,
+        berth_config,
+        capacity_recovery,
     )?;
-    // Only a refusal of the whole request stops the caller, so only it records the default.
+    // Record the default answer only when the conflict blocks the whole request.
     let (
         FirstTouchClaimExecution::Blocked { .. },
         FirstTouchConflictHandling::RefuseRequest,
         Some(default_answer),
-    ) = (&execution, conflict_handling, berth_config.default_answer)
+    ) = (
+        &execution,
+        validation_context.conflict_handling,
+        berth_config.default_answer,
+    )
     else {
-        return Ok(Enrollment::Enrolled(execution));
+        return Ok(execution);
     };
     let answered = record_first_touch_default_answer(
-        &ledger,
+        ledger,
         default_answer,
         &prepared_claim.target.target,
-        &validation_context,
+        validation_context,
     )?;
     let execution = transact_first_touch_with_capacity_recovery(
-        &ledger,
-        &prepared_claim,
-        &mut validation_context,
-        &berth_config,
+        ledger,
+        prepared_claim,
+        validation_context,
+        berth_config,
         capacity_recovery,
     )?;
-    Ok(Enrollment::Enrolled(
-        execution.answered_by_default(answered),
-    ))
+    Ok(execution.answered_by_default(answered))
 }
 
-/// Read phase ownership only when the edit hook has no current identity.
-fn first_touch_edit_authorization(
+/// Keep the caller's identity and the selected owner's identity for lock-time validation.
+#[derive(Clone, Copy)]
+struct FirstTouchEditIdentity {
+    caller:   ResolvedEditAuthorization,
+    selected: ResolvedEditAuthorization,
+}
+
+fn first_touch_edit_identity(
     ledger: &Ledger,
-    worktree_context: &WorktreeContext,
-    reservation_selection: CheckReservationSelection,
-) -> Result<ResolvedEditAuthorization, ClaimError> {
-    let identity = ledger::resolve_identity(worktree_context)?;
-    if !matches!(reservation_selection, CheckReservationSelection::EditHook)
-        || !matches!(
-            identity.edit_authorization(),
-            EditAuthorization::Unidentified
-        )
-    {
-        return Ok(identity);
-    }
-    let reservations = ledger
-        .read_validated_journal()?
-        .into_reservations()
-        .map_err(ClaimError::ReservationReplay)?;
-    Ok(sole_phase_edit_authorization(&reservations, identity))
+    worktree: &WorktreeContext,
+    selection: CheckReservationSelection,
+    scopes: &ReservationScopeSet,
+    path_case: PathCase,
+) -> Result<FirstTouchEditIdentity, ClaimError> {
+    let caller = ledger::resolve_identity(worktree)?;
+    let selected = if matches!(selection, CheckReservationSelection::EditHook) {
+        ledger.with_validated_reservations(|reservations| {
+            let reservations = reservations
+                .as_ref()
+                .map_err(|error| ClaimError::ReservationReplay(error.clone()))?;
+            edit_hook_authorization(
+                reservations,
+                caller,
+                scopes,
+                path_case,
+                &worktree.ledger_directory(),
+            )
+            .map_err(|candidates| ClaimError::AmbiguousActiveRunReservations { candidates })
+        })??
+    } else {
+        caller
+    };
+    Ok(FirstTouchEditIdentity { caller, selected })
 }
 
 /// Retry a full-ledger decision once after committing stale-scope maintenance.
@@ -1191,7 +1254,7 @@ fn transact_first_touch(
             let validation = validate_first_touch_transaction(
                 &state,
                 prepared_claim.clone(),
-                validation_context.clone(),
+                validation_context,
             );
             *selection.borrow_mut() = match &validation {
                 CommittedActionValidation::Reject(FirstTouchClaimRejection::AlreadyHeld {
@@ -1689,22 +1752,22 @@ fn locked_claim_reservations(
 fn validate_first_touch_transaction(
     state: &ReplayedLedgerState<'_>,
     prepared_claim: PreparedClaim,
-    context: FirstTouchValidationContext,
+    context: &FirstTouchValidationContext,
 ) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
     let FirstTouchValidationContext {
-        repository,
+        ref repository,
         run_validation,
-        worktree_context,
-        recovery_command_line,
+        ref worktree_context,
+        ref recovery_command_line,
         coordination_run_id,
         worktree_id,
         path_case,
-        edit_scopes,
+        ref edit_scopes,
         conflict_handling,
-        reservation_selection,
         maximum_reservations,
-        repository_trunk,
-    } = context;
+        ref repository_trunk,
+        ..
+    } = *context;
     let reservations = match state.reservations() {
         Ok(reservations) => reservations.clone(),
         Err(error) => {
@@ -1713,37 +1776,33 @@ fn validate_first_touch_transaction(
     };
     let acting_head_containment = ActingHeadContainment::observe_for_claim(
         &reservations,
-        &repository,
+        repository,
         worktree_id,
         &prepared_claim.target.target,
-        &repository_trunk,
-        &edit_scopes,
+        repository_trunk,
+        edit_scopes,
         path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     if let Err(rejection) = validate_first_touch_run(
         run_validation,
         &reservations,
-        &worktree_context,
+        worktree_context,
         worktree_id,
-        &recovery_command_line,
+        recovery_command_line,
     ) {
         return CommittedActionValidation::Reject(rejection);
     }
-    let reservation_selection = if let ClaimRunValidation::ResolvedIdentityRequired(identity) =
-        run_validation
-        && let EditAuthorization::SoleActivePhase { reservation_id, .. } =
-            identity.edit_authorization()
-    {
-        CheckReservationSelection::Explicit(reservation_id)
-    } else {
-        reservation_selection
-    };
+    let requested_scopes = prepared_claim.scopes.clone();
+    let reservation_selection =
+        match locked_first_touch_selection(&reservations, context, &requested_scopes) {
+            Ok(selection) => selection,
+            Err(rejection) => return CommittedActionValidation::Reject(rejection),
+        };
     let first_touch_session_mapping =
         session::resolve_first_touch_mapping(&worktree_context.ledger_directory());
-    let requested_scopes = prepared_claim.scopes.clone();
     let conflicts = reservations.conflicts_for_first_touch(
-        &edit_scopes,
+        edit_scopes,
         coordination_run_id,
         worktree_id,
         path_case,
@@ -1764,7 +1823,7 @@ fn validate_first_touch_transaction(
     };
     append_or_reuse_first_touch(
         &reservations,
-        &repository_trunk,
+        repository_trunk,
         prepared_claim,
         protected_scopes,
         conflict_outcome,
@@ -1898,8 +1957,66 @@ fn acquire_first_touch_phase(
     }
 }
 
-/// Recover the sole active phase when an edit hook has no caller identity.
-pub(in crate::verb) fn sole_phase_edit_authorization(
+/// Resolve a hook's declared path before an overlap check can use the wrong run.
+pub(in crate::verb) fn edit_hook_authorization(
+    reservations: &RetainedReservationSet,
+    caller: ResolvedEditAuthorization,
+    scopes: &ReservationScopeSet,
+    path_case: PathCase,
+    ledger_directory: &Path,
+) -> Result<ResolvedEditAuthorization, Vec<PhaseReservationCandidate>> {
+    let mut owners = reservations
+        .active_phases(caller.worktree_id)
+        .filter(|reservation| {
+            !matches!(
+                caller.edit_authorization(),
+                EditAuthorization::Environment { .. }
+            ) || reservation.actor().run == caller.coordination_run_id
+        })
+        .filter(|reservation| {
+            scopes
+                .as_slice()
+                .iter()
+                .all(|scope| declares_scope(reservation, scope, path_case))
+        })
+        .collect::<Vec<_>>();
+    if let EditAuthorization::Session { reservation_id, .. } = caller.edit_authorization()
+        && owners.iter().any(|owner| owner.id() == reservation_id)
+    {
+        return Ok(caller);
+    }
+    match owners.as_slice() {
+        [] => Ok(unclaimed_edit_hook_authorization(reservations, caller)),
+        [owner] => Ok(ResolvedEditAuthorization::for_edit_authorization(
+            caller.worktree_id,
+            EditAuthorization::Session {
+                coordination_run_id: owner.actor().run,
+                reservation_id:      owner.id(),
+                worktree_id:         caller.worktree_id,
+            },
+        )),
+        [_, _, ..] => {
+            owners.sort_by_key(|owner| owner.id());
+            Err(owners
+                .into_iter()
+                .map(|owner| {
+                    session::phase_reservation_sessions(ledger_directory, owner.actor().run)
+                        .map_or_else(
+                            |_| PhaseReservationCandidate::without_session_label(owner.id()),
+                            |mut mappings| {
+                                PhaseReservationCandidate::from_sessions(
+                                    owner.id(),
+                                    mappings.remove(&owner.id()).unwrap_or_default(),
+                                )
+                            },
+                        )
+                })
+                .collect())
+        },
+    }
+}
+
+fn unclaimed_edit_hook_authorization(
     reservations: &RetainedReservationSet,
     identity: ResolvedEditAuthorization,
 ) -> ResolvedEditAuthorization {
@@ -1920,6 +2037,60 @@ pub(in crate::verb) fn sole_phase_edit_authorization(
             worktree_id:         identity.worktree_id,
         },
     )
+}
+
+fn locked_first_touch_selection(
+    reservations: &RetainedReservationSet,
+    context: &FirstTouchValidationContext,
+    scopes: &ReservationScopeSet,
+) -> Result<CheckReservationSelection, FirstTouchClaimRejection> {
+    let selection = context.reservation_selection;
+    let FirstTouchEditIdentity { caller, selected } = context.edit_identity;
+    let worktree_context = &context.worktree_context;
+    if !matches!(selection, CheckReservationSelection::EditHook) {
+        return Ok(selection);
+    }
+    if caller != selected {
+        validate_first_touch_run(
+            ClaimCoordinationRunSelection::ContinueOrStart.resolve(caller),
+            reservations,
+            worktree_context,
+            caller.worktree_id,
+            &context.recovery_command_line,
+        )?;
+    }
+    let current = edit_hook_authorization(
+        reservations,
+        caller,
+        scopes,
+        context.path_case,
+        &worktree_context.ledger_directory(),
+    )
+    .map_err(
+        |candidates| FirstTouchClaimRejection::AmbiguousActiveRunReservations { candidates },
+    )?;
+    match (current.edit_authorization(), selected.edit_authorization()) {
+        (
+            EditAuthorization::Session { reservation_id, .. }
+            | EditAuthorization::SoleActivePhase { reservation_id, .. },
+            _,
+        ) if current.coordination_run_id == selected.coordination_run_id => {
+            Ok(CheckReservationSelection::Explicit(reservation_id))
+        },
+        (
+            EditAuthorization::Session { reservation_id, .. }
+            | EditAuthorization::SoleActivePhase { reservation_id, .. },
+            _,
+        )
+        | (
+            _,
+            EditAuthorization::Session { reservation_id, .. }
+            | EditAuthorization::SoleActivePhase { reservation_id, .. },
+        ) => Err(FirstTouchClaimRejection::IneligibleExplicitReservation(
+            reservation_id,
+        )),
+        _ => Ok(selection),
+    }
 }
 
 fn is_checkpoint_gap(reservations: &RetainedReservationSet, worktree_id: WorktreeId) -> bool {
@@ -2335,8 +2506,18 @@ fn reuse_first_touch_reservation(
     path_case: PathCase,
 ) -> FirstTouchReservationReuse {
     let reservation = match first_touch_reservation_selection {
-        FirstTouchReservationSelection::ExplicitReservation(reservation)
-        | FirstTouchReservationSelection::SessionMappedReservation(reservation)
+        FirstTouchReservationSelection::ExplicitReservation(reservation) => {
+            return widen_first_touch_reservation(
+                reservations,
+                repository_trunk,
+                requested_scopes,
+                protected_scopes,
+                conflicts,
+                reservation,
+                path_case,
+            );
+        },
+        FirstTouchReservationSelection::SessionMappedReservation(reservation)
         | FirstTouchReservationSelection::SingleActiveRunReservation(reservation) => reservation,
         FirstTouchReservationSelection::IneligibleExplicitReservation(reservation_id) => {
             return FirstTouchReservationReuse::Complete(CommittedActionValidation::Reject(
@@ -2396,13 +2577,7 @@ fn widen_first_touch_reservation(
     let added = protected_scopes
         .as_slice()
         .iter()
-        .filter(|candidate| {
-            !reservation
-                .declared_race_scopes()
-                .as_slice()
-                .iter()
-                .any(|held| held.contains(candidate, path_case))
-        })
+        .filter(|candidate| !declares_scope(reservation, candidate, path_case))
         .cloned()
         .collect::<Vec<_>>();
     let Ok(added_scopes) = ReservationScopeAdditionSet::try_from(added) else {
@@ -2446,6 +2621,18 @@ fn widen_first_touch_reservation(
         },
     };
     FirstTouchReservationReuse::Complete(validation)
+}
+
+fn declares_scope(
+    reservation: &Reservation,
+    scope: &ReservationScope,
+    path_case: PathCase,
+) -> bool {
+    reservation
+        .declared_race_scopes()
+        .as_slice()
+        .iter()
+        .any(|held| held.contains(scope, path_case))
 }
 
 /// Split the protected scopes into those the acting run already declares and the rest.
@@ -2804,6 +2991,7 @@ fn acquire_named(
         maximum_ordering_edges: config.maximum_ordering_edges,
         repository_trunk,
     };
+    let intent = NamedClaimIntent::from_policy(&context.answer_policy);
     let selection = std::cell::RefCell::new(PreparedSessionMappingPublication::Unchanged);
     let result = ledger.transact_with_committed_action_and_consume_locked_outcome(
         actor.worktree_id,
@@ -2814,7 +3002,7 @@ fn acquire_named(
                 context.run_validation.actor_run_id(),
                 reservation_id,
             );
-            match validate_named(&state, reservation_id, scopes.clone(), &context) {
+            match validate_named(&state, reservation_id, scopes.clone(), &context, intent) {
                 Ok(validation) => validation,
                 Err(rejection) => CommittedActionValidation::Reject(rejection),
             }
@@ -2830,8 +3018,12 @@ fn acquire_named(
                     output,
                     session_mapping_publication,
                 } if matches!(
-                    output.kind,
-                    ReservationAcquisitionKind::AlreadyHeld | ReservationAcquisitionKind::Answered
+                    (intent, output.kind),
+                    (_, ReservationAcquisitionKind::Answered)
+                        | (
+                            NamedClaimIntent::ExplicitAnswer,
+                            ReservationAcquisitionKind::AlreadyHeld
+                        )
                 ) =>
                 {
                     *session_mapping_publication = selection
@@ -2840,7 +3032,7 @@ fn acquire_named(
                 },
                 _ => {},
             }
-            consume_named(outcome, &context, &config)
+            consume_named(outcome, &context, &config, intent)
         },
     );
     match result {
@@ -2859,16 +3051,24 @@ fn consume_named(
     outcome: LedgerCommittedActionOutcome<ClaimRejection, CommittedReservationAcquisition>,
     context: &ClaimValidationContext,
     config: &BerthConfig,
+    intent: NamedClaimIntent,
 ) -> Result<ClaimExecution, ClaimError> {
-    match outcome {
-        LedgerCommittedActionOutcome::Appended {
-            output: committed,
-            session_mapping_publication,
-        }
-        | LedgerCommittedActionOutcome::AlreadySatisfied {
-            output: committed,
-            session_mapping_publication,
-        } => {
+    match (intent, outcome) {
+        (
+            NamedClaimIntent::AcquireScopes,
+            LedgerCommittedActionOutcome::AlreadySatisfied { output, .. },
+        ) => Ok(ClaimExecution::NoScopeAdded(output.reservation_id)),
+        (
+            _,
+            LedgerCommittedActionOutcome::Appended {
+                output: committed,
+                session_mapping_publication,
+            }
+            | LedgerCommittedActionOutcome::AlreadySatisfied {
+                output: committed,
+                session_mapping_publication,
+            },
+        ) => {
             let publication = session_mapping_publication.for_explicit_reservation_selection();
             let CommittedReservationAcquisition {
                 kind,
@@ -2897,7 +3097,7 @@ fn consume_named(
                 scopes,
             })
         },
-        LedgerCommittedActionOutcome::Rejected(rejection) => claim_rejection_execution(
+        (_, LedgerCommittedActionOutcome::Rejected(rejection)) => claim_rejection_execution(
             rejection,
             config.overlap_approver(context.worktree_context.repository_root()),
         ),
@@ -2910,6 +3110,7 @@ fn validate_named(
     id: ReservationId,
     scopes: ReservationScopeSet,
     context: &ClaimValidationContext,
+    intent: NamedClaimIntent,
 ) -> Result<
     CommittedActionValidation<ClaimRejection, CommittedReservationAcquisition>,
     ClaimRejection,
@@ -2927,30 +3128,26 @@ fn validate_named(
     };
     let conflicts =
         reservations.conflicts_for_claim(&scopes, context.worktree_id, context.path_case);
+    let default_overlaps = if matches!(
+        context.answer_policy,
+        ClaimAnswerPolicy::RepositoryDefault(_)
+    ) {
+        AuthorizedOverlapSet::try_from(
+            conflicts
+                .iter()
+                .map(AuthorizedOverlap::from)
+                .collect::<Vec<_>>(),
+        )
+        .ok()
+    } else {
+        None
+    };
     let authorization = authorization(state, &reservations, conflicts, context, id)?;
     let NamedClaimCoverage {
         additions,
         already_held,
-    } = coverage(&reservations, selected, &scopes, context);
-    let mutation = if additions.is_empty()
-        && ordering_is_already_satisfied(&authorization, state, id, context.path_case)
-    {
-        NamedClaimMutation::AlreadySatisfied(scopes)
-    } else {
-        let (operation, kind, scopes) = mutation(selected, scopes, additions, authorization);
-        NamedClaimMutation::Append {
-            operation: Box::new(checked_claim_operation(state, operation)?),
-            kind,
-            scopes,
-        }
-    };
-    let (kind, acquired_scopes) = match &mutation {
-        NamedClaimMutation::Append { kind, scopes, .. } => (*kind, scopes.clone()),
-        NamedClaimMutation::AlreadySatisfied(scopes) => {
-            (ReservationAcquisitionKind::AlreadyHeld, scopes.clone())
-        },
-    };
-    let acquisition = CommittedReservationAcquisition {
+    } = coverage(&reservations, selected, &scopes, context, intent);
+    let acquisition = |kind, scopes| CommittedReservationAcquisition {
         kind,
         reservation_id: id,
         target: Box::new(TargetView::from_recorded(
@@ -2959,32 +3156,47 @@ fn validate_named(
             selected.comparison_snapshot(),
         )),
         phase_start_head: selected.phase_start_head().clone(),
-        scopes: acquired_scopes,
+        scopes,
         conflicts: FirstTouchConflictOutcome::None,
         additional_acquisitions: Vec::new(),
         already_held,
     };
-    Ok(match mutation {
-        NamedClaimMutation::Append { operation, .. } => CommittedActionValidation::AppendChecked {
-            operation,
-            action: acquisition,
-        },
-        NamedClaimMutation::AlreadySatisfied(_) => {
-            CommittedActionValidation::AlreadySatisfied(acquisition)
-        },
+    if let (Some(overlaps), NamedAuthorization::Answer(authorizations), Ok(added_scopes)) = (
+        default_overlaps,
+        &authorization,
+        ReservationScopeAdditionSet::try_from(additions.clone()),
+    ) {
+        let (operation, acquired) = named_widen(
+            selected,
+            added_scopes,
+            ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps },
+        );
+        return Ok(CommittedActionValidation::AppendWithPrerequisites {
+            prerequisites: vec![JournalOperation::Answer {
+                reservation_id: Some(id),
+                scopes,
+                authorizations: authorizations.clone(),
+            }],
+            operation:     Box::new(operation),
+            action:        acquisition(ReservationAcquisitionKind::Widened, acquired),
+        });
+    }
+    if additions.is_empty()
+        && (matches!(
+            authorization,
+            NamedAuthorization::Acquire(ConflictAuthorization::NoConflict)
+        ) || ordering_is_already_satisfied(&authorization, state, id, context.path_case))
+    {
+        return Ok(CommittedActionValidation::AlreadySatisfied(acquisition(
+            ReservationAcquisitionKind::AlreadyHeld,
+            scopes,
+        )));
+    }
+    let (operation, kind, acquired_scopes) = mutation(selected, scopes, additions, authorization);
+    Ok(CommittedActionValidation::AppendChecked {
+        operation: Box::new(checked_claim_operation(state, operation)?),
+        action:    acquisition(kind, acquired_scopes),
     })
-}
-
-/// A named claim either changes durable facts or selects work already authorized.
-enum NamedClaimMutation {
-    /// A new scope or overlap answer requires one journal record.
-    Append {
-        operation: Box<CycleFreeOrderingOperation>,
-        kind:      ReservationAcquisitionKind,
-        scopes:    ReservationScopeSet,
-    },
-    /// Existing scope declarations and edge-bound answers satisfy the request.
-    AlreadySatisfied(ReservationScopeSet),
 }
 
 /// Match each scope against answers recorded for this exact reservation and edge.
@@ -3062,33 +3274,33 @@ struct NamedClaimCoverage {
     already_held: Vec<super::SiblingHeldScopes>,
 }
 
-/// Partition requested scopes using the same active-sibling rule as check.
+/// Continue a named claim while preserving the sibling coverage of an explicit answer.
 fn coverage(
     reservations: &RetainedReservationSet,
     selected: &Reservation,
     scopes: &ReservationScopeSet,
     context: &ClaimValidationContext,
+    intent: NamedClaimIntent,
 ) -> NamedClaimCoverage {
     let id = selected.id();
-    let already_held = sibling_held_scopes(
-        reservations,
-        scopes,
-        context.run_validation.actor_run_id(),
-        context.worktree_id,
-        context.path_case,
-    )
-    .into_iter()
-    .filter(|held| held.reservation_id != id)
-    .collect::<Vec<_>>();
+    let already_held = match intent {
+        NamedClaimIntent::AcquireScopes => Vec::new(),
+        NamedClaimIntent::ExplicitAnswer => sibling_held_scopes(
+            reservations,
+            scopes,
+            context.run_validation.actor_run_id(),
+            context.worktree_id,
+            context.path_case,
+        )
+        .into_iter()
+        .filter(|held| held.reservation_id != id)
+        .collect::<Vec<_>>(),
+    };
     let additions = scopes
         .as_slice()
         .iter()
         .filter(|candidate| {
-            !selected
-                .declared_race_scopes()
-                .as_slice()
-                .iter()
-                .any(|held| held.contains(candidate, context.path_case))
+            !declares_scope(selected, candidate, context.path_case)
                 && !already_held
                     .iter()
                     .any(|held| held.scopes.as_slice().contains(candidate))
@@ -3098,6 +3310,24 @@ fn coverage(
     NamedClaimCoverage {
         additions,
         already_held,
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NamedClaimIntent {
+    AcquireScopes,
+    ExplicitAnswer,
+}
+
+impl NamedClaimIntent {
+    const fn from_policy(policy: &ClaimAnswerPolicy<OverlapAuthorizationRequest>) -> Self {
+        match policy {
+            ClaimAnswerPolicy::CallerRequest(OverlapAuthorizationRequest::Absent)
+            | ClaimAnswerPolicy::RepositoryDefault(_) => Self::AcquireScopes,
+            ClaimAnswerPolicy::CallerRequest(
+                OverlapAuthorizationRequest::Permissive(_) | OverlapAuthorizationRequest::Defer(_),
+            ) => Self::ExplicitAnswer,
+        }
     }
 }
 
@@ -3164,19 +3394,8 @@ fn mutation(
         ReservationScopeAdditionSet::try_from(additions),
     ) {
         (NamedAuthorization::Acquire(authorization), Ok(added_scopes)) => {
-            let acquired = ReservationScopeSet::from(&added_scopes);
-            let reason = crate::ledger::ExplicitWidenReason::named_claim();
-            (
-                JournalOperation::Widen {
-                    reservation_id: selected.id(),
-                    added_scopes,
-                    cause: WidenCause::Explicit { reason },
-                    authorization,
-                    edit_blocking_status: selected.edit_blocking_status(),
-                },
-                ReservationAcquisitionKind::Widened,
-                acquired,
-            )
+            let (operation, acquired) = named_widen(selected, added_scopes, authorization);
+            (operation, ReservationAcquisitionKind::Widened, acquired)
         },
         (authorization, _) => {
             let (authorizations, kind) = match authorization {
@@ -3198,6 +3417,26 @@ fn mutation(
             )
         },
     }
+}
+
+fn named_widen(
+    selected: &Reservation,
+    added_scopes: ReservationScopeAdditionSet,
+    authorization: ConflictAuthorization,
+) -> (JournalOperation, ReservationScopeSet) {
+    let acquired = ReservationScopeSet::from(&added_scopes);
+    (
+        JournalOperation::Widen {
+            reservation_id: selected.id(),
+            added_scopes,
+            cause: WidenCause::Explicit {
+                reason: crate::ledger::ExplicitWidenReason::named_claim(),
+            },
+            authorization,
+            edit_blocking_status: selected.edit_blocking_status(),
+        },
+        acquired,
+    )
 }
 
 enum NamedAuthorization {

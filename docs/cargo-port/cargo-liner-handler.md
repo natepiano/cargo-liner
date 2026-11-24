@@ -990,40 +990,29 @@ The copies are deleted. No source changes.
 - `crates/tui_pane/src/app_config/mod.rs`, `crates/tui_pane/src/lib.rs` — re-exports of the install function and types
 - `crates/cargo-handler/src/theme/files.rs` — the handler install call and its theme notes
 
-### Phase 49 — a tree-scope claim on a folder that does not exist yet holds that folder  · status: todo
+### Phase 49 — a tree-scope claim on a folder that does not exist yet holds that folder  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `cargo-berth claim tree:<folder>` on a folder that does not exist yet puts that folder in the reservation's board scopes. A claim that adds no scope does not report success. The recovery command that a refused edit names binds the reservation it selects. Source: the showrunner, 2026-11-20, from a hana errors-unit fault.
-
-**Spec:**
-1. The fault: at phase start, the hana errors unit claimed `tree:crates/hana_saved` and `tree:crates/hana_saved_macros`. Neither folder existed yet. The claim exited 0, but the board scopes did not include the folders. The lint fix pass writes only paths in the board scopes, so it could not write three import fixes. The unit then widened the reservation with `cargo-berth check` on each new file.
-2. First write a cargo-berth test that reproduces the exact command from the errors unit (command, cwd and reservation id in `${SESSION_DIR}/phases/49/errors_unit_reply.md`). The test fails before the fix.
-3. Name the function and the value that drop the scope. A lead: `ReservationAcquisitionKind::AlreadyHeld` in `crates/cargo-berth/src/verb/claim/acquisition.rs` documents "already covered every claimable path".
-4. Fix the cause: a tree scope on an absent folder is a valid scope and is held as requested. The board then shows it.
-5. A claim whose requested scopes add nothing to the reservation, and that records no answer, returns a non-zero exit with a named reason. Use the existing exit and output contract types. A retry of an ordering claim (`--before`, `--after`) whose ordering is already recorded is not this case: it stays an idempotent success.
-6. Second fault, same phase: in the home worktree an Edit of `docs/cargo-port/cargo-liner-handler.md` was refused with "cargo-berth could not select one active reservation for this edit" (candidates `01a1f0ce-2c2b-7bf2-a480-6911c82d7780`, no session, and `01a1f522-b03c-71b1-a3fb-2f7704e219dc`, session `<harness session>.phase-47`). The refusal names `cargo-berth check --reservation <reservation-id> <path>...` as the recovery (`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND`, `crates/cargo-berth/src/output.rs:127`). `cargo-berth check --reservation 01a1f0ce… docs/cargo-port/cargo-liner-handler.md` answered "No foreign reservation overlaps the requested paths; the acting run already holds them." The next Edit was refused the same way. The selection must bind: after the recovery command, the next edit by the same session selects that reservation. Reproduce it in a test beside the claim test, and fix the cause.
-7. Second claim case, from hana (reservation `01a1f050`, the hana repo, the fastest unit): at 02:40 a `claim --reservation` with no overlap answer on `crates/hana_diegetic/src/render/panel_text` and `crates/hana_diegetic/src/render/analytic_paths` added nothing. Later, `cargo-berth check` on `panel_text/batching.rs` and `analytic_paths/batching.rs` printed "first-touch reservation was widened". A second check printed "the acting run already holds them". Add this shape as a second row of the claim test.
-8. Third case, from hana, the same fault as the `check --reservation` case above: the worktree `/home/natepiano/rust/hana_catalyst-lfo` holds reservation `01a1f14a`. Five uncommitted paths are outside its scopes (`crates/hana/src/annunciator/mod.rs`, `src/tool/fault_feed.rs`, `tests/annunciator_turned_panel/mod.rs`, `tests/control_tool_creation/first_frame_geometry.rs`, `tests/rear_jack_pixels/assembly_button_pixels.rs`). Reservation `01a1eee1`, of the same acting run, holds them. After `cargo-berth identity clear-session`, `check --reservation 01a1f14a` on the 5 paths (one argument each) still says "the acting run already holds them". The `01a1f14a` board lists none of them, and `01a1eee1` keeps them. The showrunner's finding: `check --reservation` counts a path that any reservation of the acting run holds as held. It does not move the path to the named reservation. The session mapping is not the cause. Reproduce this case and the home-worktree `01a1f0ce` case together in one test, then fix the cause: `check --reservation <id>` puts each path in reservation `<id>`. Read the hana worktree only; never write to it.
-9. First-touch attribution case, from hana: the errors unit's Codex P4 workers edit under the P4 reservation `01a1f925`. cargo-berth records each first touch under `01a1f4c5-cbc5-7700-819a-150881541608`, a stale style reservation keyed to the same worktree. The result is 12 false incursions (`fault.rs`, `records.rs`, `cables.rs`, `Cargo.lock` and more). The berth hint names `CARGO_BERTH_RUN`; the worker processes probably have no coordination run. Required result: first-touch attribution picks the reservation that claims the path, never another reservation of the same worktree. This is the same family as the lfo case: a reservation of the same worktree takes paths that the named or claiming reservation must hold. Reproduce it in the same test as the lfo case, with a worker process that has no `CARGO_BERTH_RUN`.
-10. Fourth claim case, from hana: the demo reservation `01a1cb9c` lacked 21 of its claimed paths. `cargo-berth check` on each file restored them. This is the same claim defect. Add it as a row of the claim test.
-11. Separate gap, showrunner ruling: one scope in `01a1cb9c` is a single string of 17 space-separated paths (`camera/editor_camera.rs` ... `glyph_cache.rs`). A claim got several paths in one quoted argument, because zsh does not word-split `$var`. It recorded one wrong path with no error. Fix: `claim` and `check` refuse a path that contains whitespace when no file or folder of that exact name exists and either its parent folder does not exist or one of its whitespace-separated parts names an existing path. The error has a named reason and a non-zero exit. When the second condition applies, the reason names the existing part. Reason (showrunner, rulings 2026-11-20): berth must never print a recovery command that it then refuses, and a hook recovery command can name a real file with a space or a new file such as `notes draft.rs`. Test rows: `notes draft.rs` (new file, parent exists) is accepted; the 17-path string is refused; `Cargo.toml Cargo.lock` is refused and its reason names `Cargo.toml`. Every recovery command that berth or the hook prints passes each path with the literal-path flag (`--path '<p>'`); the parser takes that value as one path and skips the joined-list check. A typed bare argument keeps the rule above. Rows: `--path 'Cargo.toml draft.rs'` is accepted as one path; the bare `Cargo.toml draft.rs` is refused; the printed recovery command for that refusal runs and berth accepts it. Make the invalid path unrepresentable: parse each argument into the path type, and refuse at that parse. Do not refuse a path without whitespace because it does not exist yet: a claim on a new file before it exists is valid. The two hook tests keep seeding `source file.rs` with `claim`. Add a test that a claim of several paths in one argument is refused, and a row that a claim of a space-named path that does not exist is refused.
+- `cargo-berth claim` records tree scopes for absent folders. The board shows the scopes even when the claim records a default answer.
+- A claim with no new scope or answer exits nonzero with `scope_acquisition_refused`. A retry succeeds when the requested ordering is already recorded.
+- `check --reservation <id>` adds every requested path to the named reservation, including paths a sibling reservation holds. A session without a run identity can select an active reservation in its worktree and save that selection.
+- `claim` and `check` parse each argument as a `ReservationScopePath`. A bare path with spaces is valid if it exists. A new bare path with spaces requires an existing parent and no whitespace-separated part that names an existing path.
+- `--path` accepts one literal path. Printed recovery commands use this flag for each path and preserve `argv[0]`.
 
 **Files:**
-- `crates/cargo-berth/src/verb/claim/` — the claim path and outcome that drop the scope
-- `crates/cargo-berth/src/scope/` — when the scope filter is the cause
-- `crates/cargo-berth/src/session/`, `crates/cargo-berth/src/hook/` — the session mapping and the edit-hook reservation selection
-- the cargo-berth claim test of the same behavior
 
-**Workers:** 1 writer.
-- `impl`: all files.
+- `crates/cargo-berth/src/verb/check.rs` and `crates/cargo-berth/src/verb/claim/acquisition.rs` decide and acquire scopes. `NamedClaimIntent` distinguishes scope acquisition from explicit answers.
+- `crates/cargo-berth/src/session/reservation_command.rs` and `crates/cargo-berth/src/session/mod.rs` select and publish the session mapping.
+- `crates/cargo-berth/src/scope/path_parser.rs`, `crates/cargo-berth/src/scope/mod.rs`, and `crates/cargo-berth/src/cli.rs` parse scope arguments.
+- `crates/cargo-berth/src/coordination_identity.rs`, `crates/cargo-berth/src/output.rs`, and `crates/cargo-berth/src/verb/claim/recovery_command.rs` render recovery commands.
+- `crates/cargo-berth/tests/answers.rs` and `crates/cargo-berth/tests/hooks.rs` cover acquisition, attribution, and recovery.
 
-**State:** none.
+**Binds later work:** `edit_hook_authorization` selects the owner by declared scope. It reports the candidates when several reservations own the path and the session selects none of them. `locked_first_touch_selection` validates the selection under the lock.
 
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- The new test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Gotchas:** A bare joined argument reports the existing part that caused refusal. The literal recovery flag accepts paths with such parts.
+
+**Ruled out:** Using a sibling's scope to satisfy a named acquisition.
 
 ### Phase 50 — mend shortens a path beside a built-in attribute it does not list  · status: todo
 
@@ -1034,10 +1023,19 @@ The copies are deleted. No source changes.
 **Spec:**
 1. The fault: `BlockBindings::collect` (`crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`) treats an attribute that is not in `BUILT_IN_ATTRIBUTES` as a possible macro. It then returns `BlockBindings::Unknown`, so mend leaves every site in the block. `#[link(name = "c")]` on an `extern` block is one case: `std::time::Duration` beside it does not shorten. This is a missed fix only. Mend never writes a wrong import here.
 2. Make `BUILT_IN_ATTRIBUTES.names` the complete list from the Rust Reference built-in attributes index (https://doc.rust-lang.org/reference/attributes.html#built-in-attributes-index). Keep it one named constant. An attribute that is not on the list still counts as a possible macro.
-3. Add `#[link(name = "c")]` on the `extern` block in the positive control of the `BlockBindings` unit table. That row fails before the fix.
+3. Add `#[link(name = "c")]` on the `unsafe extern "C"` block of `unbound_first_segment` in `BLOCK_BINDINGS_SOURCE`. That fixture is the positive control: `inline_type_fix_leaves_paths_with_block_bindings` asserts that `std::time::Duration` shortens. The assert fails before the fix.
+4. Add a unit table in the `block_bindings.rs` tests: blocks with built-in attributes give `BlockBinding::Absent` for an unbound first segment. Include the `#[link(name = "c")]` `extern` block row; it fails before the fix.
+
+**Constraints from prior phases:**
+- `meta_binding` matches an attribute by `meta.path().get_ident()`, and a path with more than one segment gives `MayBind`. The Reference index lists two-segment entries in the `diagnostic` namespace (`diagnostic::on_unimplemented`, `diagnostic::do_not_recommend`). Match those on the full path.
+- `derive` and `cfg_attr` keep their own checks in `meta_binding`: `derive` accepts only `BUILT_IN_ATTRIBUTES.derives`, and `cfg_attr` checks each attribute after its predicate. A new name goes to the `_ => true` arm.
+- The existing unit test `item_macros_can_bind_the_first_path_segment` holds only `MayBind` rows. Keep it.
+- A fixture that builds a proc-macro crate takes over 1 s on the Mac. Do not add one.
+- The import-hiding checks of other mend fixes (`NamingTokens` in `facade_redirect/source_text.rs`, `ModuleImports::collides` with `RewrittenPaths`, the macro-body footprint in `inline_path_qualified_type/visitor.rs`) are not part of this change.
 
 **Files:**
 - `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — `BLOCK_BINDINGS_SOURCE`, the positive control
 
 **Workers:** 1 writer.
 - `impl`: all files.
@@ -1072,6 +1070,10 @@ The copies are deleted. No source changes.
 6. Add the second case as a row of the same test.
 7. Background: `~/.claude/projects/-home-natepiano-rust-hana/memory/cargo-berth-coordination.md` records the same behavior. Read it only.
 
+**Constraints from prior phases:**
+- `RetainedReservationSet::apply_evidence` skips `target_proof_commits` for `ProtectedTipAncestor` revalidations after release. Keep the released tip and earlier proof commits available to `cross_target_predecessor_evidence`.
+- Phase 56b passes the edit check's `Ledger` into `reconcile_for_check`. Keep automatic releases in that reconciliation transaction so the edit retry sees them in the retained replay.
+
 **Files:**
 - `crates/cargo-berth/src/verb/release.rs` — the release and checkpoint tip choice
 - `crates/cargo-berth/src/git/` — `reservation_checkpoint_commits` and reachability
@@ -1088,3 +1090,262 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - The new test fails before the fix and passes after it.
 - No changed test takes one second or more.
+
+### Phase 52 — a Mac handler sees each config change at once, also under load  · status: todo
+
+#### Work Order
+
+**Goal:** on the Mac, cargo-handler applies a change to a watched config file within 500 ms at any load, and never misses one. Source: the showrunner, 2026-11-21: "A config change that arrives 2 s late or never is a wrong result."
+
+**Spec:**
+1. The fault, from phase ci1 (commit 47f4b125b): a raw FSEvents probe at Mac load 34.49 on 12 CPUs did 16 atomic renames. 6 reached the callback within 500 ms, 2 after about 2 s, and 8 not within 2.5 s. A notify trace in `config_watch.rs` showed the same gap before the reader channel. The fault is in OS delivery through FSEvents, not in the handler.
+2. First write a Mac reproduction that fails on main: a repeated atomic replacement of a watched config file under load, with the 500 ms limit. The ci1 opt-in native Mac watcher test is the start point.
+3. Fix it at the cause. A lead: notify's `macos_kqueue` feature, which watches the file descriptor and does not use FSEvents. The workspace `notify` entry is shared, so a feature change also reaches cargo-port: measure the cargo-port watchers too, or limit the change to cargo-handler. Name the choice and the reason.
+4. CPU cost ranks first. Measure the CPU of an idle Mac handler (and an idle Mac cargo-port, if it changes) before and after the change: 3 or more pairs, median change and spread.
+5. After the fix, make the native Mac watcher test a default test again, and keep it under 1 s.
+
+**Files:**
+- `Cargo.toml` and `crates/cargo-handler/Cargo.toml` — the notify features
+- `crates/cargo-handler/src/config_watch.rs` — the config watcher
+- `crates/cargo-handler/src/render/word_click_tests.rs` — the native watcher test
+- `crates/cargo-port/src/watcher/` and `crates/cargo-port/Cargo.toml` — only if the feature reaches cargo-port
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check`, `verify.sh test` and `verify.sh lint` for cargo-handler, and for cargo-port when it changes, on the Mac and on natedev.
+- The reproduction fails on main and passes after the fix.
+- The idle CPU pairs show no increase, or the reply names the cost.
+- No changed test takes one second or more.
+
+### Phase 53 — cargo-berth hooks stop rewriting the whole replay checkpoint  · status: done
+
+#### As-built
+
+- A replay refreshes the checkpoint after the 256 KiB or 256 record interval only when `WriteBudget` admits it: at most `REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO` (8) checkpoint bytes per journal byte appended since the checkpoint. A replay from byte 0 has no limit.
+- One writer publishes: it takes `try_lock` on the journal, and `publication_decision` writes only over the header the replay read, or over none. A failed write never fails the replay. Tests count writes through the `write_temporary` field.
+- `Ledger::maintain_compaction` runs at most one check per 60 s under the `history-compaction-checked` lock. It removes abandoned temporary files, then compacts. A history plan that removes nothing waits 15 min or a threshold of journal growth. Automatic compaction gives up when the mutation lock or the original journal lock is held.
+- Cleanup removes `journal.ndjson.compact.tmp.<uuid>` with its `.checkpoint` and `.checkpoint.<uuid>.tmp` sidecars, and `replay-checkpoint.json.<uuid>.tmp`, after 24 h when no writer holds the owner lock.
+- Mac hook cycle at Hana size (79 calls): mean CPU 2144 ms against 2548 ms; checkpoint bytes written 43 MB against 842 MB.
+
+**Files:**
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — checkpoint format, write budget, publication
+- `crates/cargo-berth/src/ledger/constants.rs` — intervals, write ratio, maintenance times
+- `crates/cargo-berth/src/ledger/compaction/` — `journal_compaction.rs`, `superseded_extents.rs`, `maintenance.rs` (check, history retry, cleanup), `fixtures.rs`
+
+**Binds later work:** a format change bumps `FOLD_FORMAT_VERSION`; compaction writes its checkpoint through `ReplayCheckpoint::store_for_journal_file`.
+
+**Gotchas:** the ratio 8 is calibrated against a full rewrite of about 2 s CPU; a cheaper checkpoint needs a new measure. The Hana journal stays about 240 MB: it has no superseded bytes, and dependencies keep every reservation.
+
+**Ruled out:** an append-only checkpoint; a ratio of 128.
+
+### Phase 54 — mend adds no import that hides a name a glob import brings in  · status: done
+
+#### As-built
+
+- `prefer_module_import` adds no module import that hides a name a glob in the same scope brings in. In a scope with a glob, a new binding of `name` collides only when the file uses `name` outside the paths the fix rewrites, macro bodies included. Mend then leaves the path as written, and the hana `use super::*;` test files keep `fold::fold_faces()` compiling.
+- `ModuleImports::collides(offset, name, absolute_module, proposal, rewritten_paths: &RewrittenPaths<'_>)` checks in order: a binding of another target collides; `ScopeGlobs::Absent` does not; an ungated binding of the same target does not; else `RewrittenPaths::name_use(name)` collides on `Present` or `Unparseable`. `ModuleImports::scope_globs` gives `ScopeGlobs { Absent, Unlisted }` to `collides` and `move_import`.
+- `drop_colliding_candidates` excludes, for each `absolute_module`, every `use` item span of that module and each inline call's `prefix_start..leaf_start`. The leaf and its turbofish stay in the check. An `ImportTarget::ParentModule` candidate adds no `use`, so it skips `collides`.
+- `NamingTokens<'a>` (`From<&str>`) lexes a file once on the first `word_use(&self, excluded: &[Range<usize>], word) -> IdentifierUse`. A token that overlaps an excluded range does not count. A bracket group is a doc body only after `#` or `#!`. `owner_edit::edit_region` and `parent_boundary::locally_used_exports` keep one `NamingTokens` for each loop.
+- `inline_path_qualified_type` counts a `PascalCase` path start in a macro body (`GatedInlinePaths::visit_macro`, `record_macro_footprint`) and the second segment of a `self::` path in `bare_type_names`. An identifier after `::` or `.` in a macro body does not count.
+- Mac suite: 1059 of 1059.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/imports/module_imports.rs` — `collides`, `RewrittenPaths`, `ScopeGlobs`, `scope_globs` and their unit tests; `imports/mod.rs` re-exports `RewrittenPaths`
+- `crates/cargo-mend/src/fixes/prefer_module_import/scan.rs` — `drop_colliding_candidates` and the rewritten ranges
+- `crates/cargo-mend/src/fixes/facade_redirect/source_text.rs`, `mod.rs` — `NamingTokens`, `NamingToken`, `NamingText`, `WordNeedles`, `GroupOpener`
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/visitor.rs`, `scan.rs` — the macro-body and `self::` footprint and its tests
+- `crates/cargo-mend/src/fixes/subtree_reexport/owner_edit.rs`, `crates/cargo-mend/src/fixes/pub_use_fixes/parent_boundary.rs` — one `NamingTokens` for each loop
+- `crates/cargo-mend/tests/diagnostics/prefer_module_import.rs` — the glob `fold`, turbofish, `RewriteAt`, parent and bevy-style fixture tests
+
+**Gotchas:** a file-local token scan cannot see a `macro_rules!` from another file that expands to the hidden name; the `cargo check` rollback catches that case. The glob check uses `ImportCondition::Always`, so a gated glob and a gated import that do not overlap still collide.
+
+**Ruled out:** "any glob blocks the import" — it dropped the finding in 1032 of 2344 hana files; a whole-file word scan for the `inline_path_qualified_type` footprint — it blocks `crate::a::Foo::new()` beside an inline `crate::a::Foo`.
+
+### Phase 55 — a cargo-berth hold answer names only paths in the holder's scope  · status: todo
+
+#### Work Order
+
+**Goal:** when cargo-berth refuses a write because another reservation holds a path, it names a holder only for paths in that holder's scope. Source: the style unit via the showrunner, 2026-11-23.
+
+**Spec:**
+1. The fault: a mac_test write-back step in worktree `style/s4-sites-regex` or `s4-coverage` said: "not written: crates/cargo-style/src/coverage/{comparison,ledger,lint,mod}.rs is held by reservation 01a1f42e-39a1-7450-a4f3-3f4f92384784 (refs/heads/style-s3-footprint)".
+2. That reservation was outstanding and merge-protected at tip c2000830d. None of its 25 merge scopes holds a coverage path (`cargo-berth board --reservation 01a1f42e-39a1-7450-a4f3-3f4f92384784 --json`).
+3. Find the cause in cargo-berth: which hold rule matched these paths, and why. Fix it so the hold answer, and the hold itself, follow the holder's scope. If the hold is correct by design, make the answer name the rule that holds the path.
+4. Add a test with a merge-protected reservation and a path outside its scopes. The write is not refused for that holder.
+
+**Constraints from prior phases:**
+- `AnswerRecord` authorizes edits through `OverlapCoverage`. The reservation holds the scopes. `JournalReplay::coordination_events` keeps the full `ConflictAuthorization` for each answer.
+- In Phase 56b, `check::decide` reads the current reservation view through `Ledger::with_validated_reservations`. Keep holder selection on that view and pass the same ledger to `refusal::record`.
+
+**Files:**
+- `crates/cargo-berth/src/` — the hold check and its answer, found in step 3
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- The new test fails before the fix and passes after it.
+- No changed test takes one second or more.
+
+### Phase 56 — a cargo-berth hook call no longer decodes the whole replay checkpoint  · status: done
+
+#### As-built
+
+- `RetainedReservationSet::apply_evidence` omits new `target_proof_commits` when it revalidates a released reservation with `ProtectedTipAncestor` evidence. It retains earlier proofs, rewritten witness proofs, and proofs for outstanding reservations.
+- `Reservation::record_widen_authorization` stores identical `ExistingAnswersCoverEveryOverlap` bindings once. It keeps bindings for each distinct scope revision.
+- `AnswerRecord` stores `worktree` and `Vec<OverlapCoverage>` for edit checks. The coverage rule matches shared scope or an exact scope revision. The coordination event keeps each full `ConflictAuthorization`.
+- `FOLD_FORMAT_VERSION` is 4. The reader checks the header before decoding the full `JournalReplay`. A version-3 header causes replay from byte 0.
+- On the same Mac release sample, the checkpoint shrank from 40.3 MB to 27.3 MB. Median gate CPU fell from 286 ms to 168 ms. Median CPU for an unreserved edit fell from 5,933 ms to 5,092 ms.
+- At ratio 8, the 79-call release cycle used 199 ms mean CPU per call and wrote 28.7 MB of checkpoints. The baseline used 276 ms and wrote 43.4 MB.
+
+**Files:**
+- `crates/cargo-berth/src/answer/conflict_authorization.rs` and `crates/cargo-berth/src/answer/mod.rs` — overlap coverage rules and types
+- `crates/cargo-berth/src/ledger/constants.rs` — format version and write ratio
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — version-3 migration test
+- `crates/cargo-berth/src/reconcile.rs` — cross-target proof tests
+- `crates/cargo-berth/src/reservation/record.rs` — widen bindings
+- `crates/cargo-berth/src/reservation/retention.rs` — proof retention and answer records
+
+**Binds later work** — A format change bumps `FOLD_FORMAT_VERSION` and preserves edit authorization and full coordination events. Cross-target readiness uses the released tip and earlier proof commits.
+
+**Gotchas** — Released tip proof retention assumes stable ancestry. Git replace refs can change ancestry. The measured edit runs reconciliation and decodes the checkpoint five times.
+
+### Phase 56b — a cargo-berth hook call decodes the replay checkpoint once  · status: done
+
+#### As-built
+
+- `Ledger::for_edit_check` retains one `JournalReplay` across the decision, reconciliation, retry, first-touch acquisition, default answer, and refusal audit.
+- The ledger advances the replay over complete tail records. Before a write, it validates the generation and session mapping under the mutation lock.
+- `JournalReplaySource` keeps the source file open while the replay can be reused. The ledger reloads after replacement or shortening.
+- Tests check one decode through `pre_tool_use::execute`, the reload after compaction, and the first-touch, already-held, and refusal answers.
+- Mac release median CPU for the unreserved edit fell from 5,381.7 to 4,703.1 ms. Decodes fell from five to one. Reads fell from 378.9 to 267.4 MB.
+- Mac release median gate CPU fell from 185.4 to 173.7 ms. The gate decodes the checkpoint once.
+
+**Files:**
+- `crates/cargo-berth/src/ledger/handle.rs` — retains, refreshes, and validates the replay.
+- `crates/cargo-berth/src/ledger/journal.rs` — compares journal file identities and advances the tail.
+- `crates/cargo-berth/src/ledger/mod.rs` — exposes the decode counter to tests.
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — returns the replay with its source file.
+- `crates/cargo-berth/src/reconcile.rs` — uses the edit check's ledger.
+- `crates/cargo-berth/src/verb/check.rs` — shares the ledger and tests hook answers.
+- `crates/cargo-berth/src/verb/claim/acquisition.rs` — reuses the ledger for first-touch and default answers.
+- `crates/cargo-berth/src/verb/refusal.rs` — uses the supplied ledger for the refusal audit.
+
+**Binds later work:** The unreserved-edit performance work owns the profile and lazy decode. Version 4 still has one header line and one replay line.
+
+**Gotchas:** Journal replacement can require a second decode. The checkpoint reader releases its lock before it returns the source file. The answer fixture calls `execute_at` directly. Its child clears the launcher's session and run identity.
+
+### Phase 56c — a cargo-berth edit check of an unreserved file costs under about 100 ms  · status: todo
+
+#### Work Order
+
+**Goal:** the `pre-tool-use` edit check of a file no reservation holds, and the gate, each cost under about 100 ms CPU in release. Source: the Phase 56b release measure.
+
+**Spec:**
+1. On the Mac release sample after Phase 56b, the unreserved edit costs 4,703.1 ms CPU and reads 267.4 MB. The read-only gate costs 173.7 ms CPU. Each hook decodes the checkpoint once. Use the median of three runs in `${SESSION_DIR}/phases/56b/measure_reply.md` as the baseline.
+2. First profile the unreserved edit on the Mac release sample. Name the top costs by function, with CPU ms and read bytes. Cut the top cost at its cause. Preserve each hook answer.
+3. If either hook still costs more than about 100 ms CPU, apply the lazy decode in section 3 of `${SESSION_DIR}/phases/56/design.md`. Give `incursion_incidents` its own part and include it in the header's part lengths. Start from `Ledger::for_edit_check` and `Ledger::with_validated_reservations`. Apply the reservation reader changes in `crates/cargo-berth/src/gate/reference_transaction.rs` and `crates/cargo-berth/src/session/reservation_command.rs`.
+4. Report median CPU and read bytes for the gate and the unreserved edit. Use three Mac release runs on the same sample before and after the change.
+
+**Constraints from prior phases:**
+- Phase 56b shares one `JournalReplay` across the edit decision, reconciliation, retry, first-touch acquisition, default answer, and refusal audit. Keep that reuse when a transaction needs the full replay.
+- Keep the journal source file open while its replay can be reused. Reload after replacement or shortening. Advance the tail and validate the generation and session mapping under the mutation lock.
+- Version 4 has one header line and one `JournalReplay` line. Increase `FOLD_FORMAT_VERSION` from 4 when the layout changes. Reject old headers before decoding the replay and rebuild from byte 0.
+- Keep `AnswerRecord`'s `worktree` and `Vec<OverlapCoverage>`. Keep coverage rules and bindings in the reservation fold. Keep the full `ConflictAuthorization` values in the answer events in `JournalReplay::coordination_events`.
+- Keep one checkpoint writer per journal file, the `write_temporary` test seam, and the checkpoint for a compacted journal. Apply the ratio of 8 to the total checkpoint bytes.
+- Keep path-owner selection, ambiguity recovery, and named `check --reservation` behavior. `edit_hook_authorization` selects by the declared path. `locked_first_touch_selection` validates that selection under the lock.
+- Use the Mac sample at `/tmp/claude/scratch/p53-probe-4406cc`. The probes are `${SESSION_DIR}/tmp/p56-measure/measure-decode.py` and `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py`.
+- If the format changes, test that a version-4 checkpoint rebuilds. Compare the partial reservation replay with a whole-journal replay. Keep `edit_hook_first_touch_decodes_checkpoint_once` and `retained_edit_replay_reloads_a_longer_compacted_replacement` passing.
+
+**Files:**
+- `crates/cargo-berth/src/` — files the profile identifies.
+
+**Workers:** 1 writer.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- No changed test takes 1 s or more.
+
+### Phase 57 — mend --fix names each fix it applies  · status: todo
+
+#### Work Order
+
+**Goal:** after `mend --fix`, the output names the file and line of each fix it applied, so a reader can check each fix without a second run. Source: the showrunner, 2026-11-23.
+
+**Spec:**
+1. The fault (hana lint copy, 2026-11-23): mend printed only `mend: applied 11 import fix(es)` and `No findings.` No line named a file or a line, so a second run without `--fix` was needed to find the 11 fixes.
+2. After the count notice, print one line per applied fix: the path, the line, the finding kind, and the text before and after where it is short. Use the location the finding had before the fix.
+3. Apply this to every fix kind the count notice names (import fixes, annotation rewrites, `pub use` fixes).
+4. Keep the count notice as it is. A run that applies no fix prints no new line.
+
+**Files:**
+- `crates/cargo-mend/src/reporting/outcome.rs` — the count notice (`"import fix(es)"`)
+- `crates/cargo-mend/src/fixes/runner/apply.rs` and `crates/cargo-mend/src/fixes/runner/chain.rs` — apply and validate the fix passes
+- `crates/cargo-mend/src/fixes/imports/import_scan.rs` — the validated fix set and the edit writer
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — the output test for applied fixes
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- A test applies two fixes in two files and checks one output line for each, with its path and line.
+- No changed test takes one second or more.
+
+### Phase 58 — mend keeps its findings in blocks with assert and other macros that bind no name  · status: todo
+
+#### Work Order
+
+**Goal:** mend reports a qualified path in a block that holds a standard macro which binds no name, such as `assert!`. It skips the block only for a macro that can bind a name. Source: the hana mend check, 2026-11-23 (research at `${SESSION_DIR}/tmp/mend-hana-research.md`).
+
+**Spec:**
+1. The fault, part 1 (Phase 47, 105aec11c): `BlockBindings::collect` returns `Unknown` for any block with a statement macro (`Stmt::Macro` or `Expr::Macro`). `lookup` then returns `MayBind` for every name in that block, and `check_path` drops the path. So nearly every qualified path in a test fn body gets no finding. On hana init/catalyst 6147f7fcd9 this also changed which sites mend saw, so the count of fixes changed from 0 to 11.
+2. The fault, part 2 (Phase 54, f19a0c2a9): `record_macro_footprint` adds a PascalCase path start in a macro body to `bare_type_names`. `find_collision_names` then blocks the import, also when the name in the macro resolves to the same item through an existing import. Example: `TooltipPhase` in an `assert_eq!` body in `crates/hana_diegetic/src/widgets/tooltip/placement/screen.rs` (lines 1270-1271) blocks a correct fix at line 124.
+3. Fix part 1: name the standard macros that bind no name in the block (`assert`, `assert_eq`, `assert_ne`, `debug_assert*`, `panic`, `unreachable`, `todo`, `print*`, `eprint*`, `format`, `write*`, `vec`, `matches`, and the `log` and `tracing` macros). A block with only these macros keeps its bindings `Known`. Any other macro keeps `Unknown`.
+4. Fix part 2: a macro-body name does not block the import when the new import names the same item that the name resolves to in that scope.
+5. Keep the Phase 47 positive control (`unbound_first_segment` in `BLOCK_BINDINGS_SOURCE`, `tests/diagnostics/import_fixes.rs`) and the Phase 54 glob tests passing.
+
+**Constraints from prior phases:**
+- In a scope with a glob, a new module binding collides only if the file uses the name outside the rewritten paths. Include macro bodies in this check. Blocking all glob scopes dropped the finding in 1,032 of 2,344 Hana files.
+
+**Files:**
+- `crates/cargo-mend/src/` — `BlockBindings` (Phase 47) and the macro footprint and collision check (Phase 54); the writer names the exact files
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- A fixture test: a qualified path in a test fn with `assert!` gets its finding and fix.
+- A fixture test: a block with an unknown macro (a `macro_rules!` that binds a name) still skips the path.
+- A fixture test: a name in an `assert_eq!` body that resolves to the same item does not block the import.
+- No changed test takes one second or more.
+- Phase 54 must be on main first, because part 2 changes Phase 54 code.
+
+### Phase 59 — mend finds rustc after its toolchain folder moves  · status: done
+
+#### As-built
+
+- `build.rs` queries Cargo's `RUSTC` once. The result sets `MEND_BUILD_SYSROOT`, the native link search path, and both rpaths.
+- Cargo reruns the script if the recorded `bin/rustc` disappears or has a newer timestamp. It also watches `RUSTC`, `RUSTUP_HOME`, and `RUSTUP_TOOLCHAIN`.
+- The build fails if the sysroot query fails. Cargo's `HOST` supplies the host triple for the rustlib rpath.
+- `DriverCompiler::for_build` runs `bin/rustc` from the recorded sysroot.
+
+**Files:**
+- `crates/cargo-mend/build.rs` — watches toolchain inputs and records the build sysroot.
+- `crates/cargo-mend/tests/moved_toolchain.rs` — moves a fake toolchain and checks the watch, sysroot, link search path, and both rpaths.
+
+**Gotchas:** A same-version switch can keep the old build output while the old compiler remains. Mend uses the compiler that matches its linked libraries.
+
+**Ruled out:** Two Cargo builds in the regression test exceed the one-second test limit.

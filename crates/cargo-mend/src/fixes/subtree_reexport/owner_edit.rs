@@ -22,6 +22,7 @@ use crate::fixes::constants::CFG_TEST_ATTRIBUTE;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::IdentifierUse;
 use crate::fixes::facade_redirect::LeafRetention;
+use crate::fixes::facade_redirect::NamingTokens;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::fixes::imports::UseFix;
 use crate::fixes::visibility_annotation_site;
@@ -235,8 +236,8 @@ fn edit_region(
     }
 
     // `excluded` identifies the region's edited items, its nested inline modules,
-    // and everything outside the region for `facade_redirect::word_occurs_outside`
-    // to blank before looking for local uses.
+    // and everything outside the region. `NamingTokens::word_use` does not count a
+    // name in these ranges as a local use.
     let mut excluded = vec![0..region_range.start, region_range.end..source.len()];
     for group in items.values() {
         let (start, end) = facade_redirect::item_use_byte_range(lines, group.item_use)?;
@@ -253,15 +254,12 @@ fn edit_region(
 
     let owner = &region.first.fact.fact.owner_module;
     let mut rewrites = Vec::new();
+    let naming_tokens = NamingTokens::from(source);
     for group in items.values() {
         let mut used_leaves = Vec::new();
         for found in group.facts() {
             let name = &found.fact.exported_name;
-            let local_use = match facade_redirect::word_occurs_outside(
-                source,
-                excluded.iter().cloned(),
-                name,
-            ) {
+            let local_use = match naming_tokens.word_use(&excluded, name) {
                 IdentifierUse::Present | IdentifierUse::Unparseable => LocalUse::Always,
                 IdentifierUse::Absent => {
                     let reach = GlobReach { owner, name };

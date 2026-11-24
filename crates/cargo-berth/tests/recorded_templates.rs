@@ -22,6 +22,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
+use std::time::Instant;
 
 use absent_holder_templates::CLEAN_MERGED_HOLDER;
 use absent_holder_templates::LATER_UNMERGED_HOLDER;
@@ -207,8 +208,9 @@ mod recorded_history;
 
 // MAX_PARALLEL_TEMPLATE_BUILDS limits descriptors for fixture locks and child pipes.
 const MAX_PARALLEL_TEMPLATE_BUILDS: usize = 4;
-// The cold probe builds every template through the setup wrapper.
+// The cold probe builds one template of each ledger kind through the setup wrapper.
 const TEMPLATE_SETUP_PROBE_DEADLINE: Duration = Duration::from_secs(120);
+const SINGLE_TARGET_SETUP_PROBE: &str = "CARGO_BERTH_SINGLE_TARGET_SETUP_PROBE";
 
 const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
 const GIT: cargo_berth_test_support::GitDriver = cargo_berth_test_support::GitDriver {
@@ -224,7 +226,6 @@ fn main() {
         require_template_progress(&receiver, &["stalled-fixture"], Duration::from_millis(25));
         return;
     }
-    let templates = templates_for_setup();
     let directory = template_cache_directory();
     if env::args().any(|argument| argument == "--list") {
         fs::create_dir_all(&directory).expect("builder directory should exist");
@@ -246,23 +247,25 @@ fn main() {
         }
         return;
     }
-    if matches!(
-        run_selected_setup_test(&templates),
-        SetupTestSelection::Completed
-    ) {
+    if matches!(run_selected_setup_test(), SetupTestSelection::Completed) {
         return;
     }
-    let builds = directory.join("before-run").join(
-        templates[0]
-            .repository
-            .before_run_directory()
-            .file_name()
-            .expect("template build should have a key"),
-    );
-    prepare_template_builds(&templates, &builds);
-    if env::var_os("CARGO_BERTH_SINGLE_TARGET_SETUP_PROBE").is_none() {
-        prepare_single_target_setup_probe(&directory);
-    }
+    let builds = if env::var_os(SINGLE_TARGET_SETUP_PROBE).is_some() {
+        let templates = single_target_probe_templates();
+        let builds = directory.join("before-run").join(
+            templates[0]
+                .repository
+                .before_run_directory()
+                .file_name()
+                .expect("template build should have a key"),
+        );
+        prepare_template_builds(&templates, &builds);
+        builds
+    } else {
+        let builds = prepare_single_target_setup_probe(&directory);
+        prepare_template_builds(&templates_for_setup(), &builds);
+        builds
+    };
     if let Some(environment) = env::var_os("NEXTEST_ENV") {
         writeln!(
             OpenOptions::new()
@@ -274,6 +277,13 @@ fn main() {
         )
         .expect("template directory should publish");
     }
+}
+
+const fn single_target_probe_templates() -> [LedgerTemplate; 2] {
+    [
+        hook_repository::GIT_REPOSITORY,
+        edges_templates::RECORDED_PROJECTION,
+    ]
 }
 
 fn templates_for_setup() -> Vec<LedgerTemplate> {
@@ -334,14 +344,14 @@ enum SetupTestSelection {
     NoSelection,
 }
 
-fn run_selected_setup_test(templates: &[LedgerTemplate]) -> SetupTestSelection {
+fn run_selected_setup_test() -> SetupTestSelection {
     for argument in env::args() {
         match argument.as_str() {
             "stalled_template_build_fails_with_a_clear_deadline" => {
                 assert_stalled_template_deadline();
             },
             "cold_single_target_setup_builds_every_recorded_template" => {
-                assert_single_target_setup(templates);
+                assert_single_target_setup(&templates_for_setup());
             },
             _ => continue,
         }
@@ -461,9 +471,9 @@ fn template_cache_directory() -> PathBuf {
     )
 }
 
-/// Exercise the actual wrapper with no listing or cache, under nextest's setup
-/// clock, reusing this executable. The test checks the real template artifacts.
-fn prepare_single_target_setup_probe(directory: &Path) {
+/// Start the suite's template cache through the wrapper with an explicit builder.
+/// Normal setup uses this cache for the remaining templates.
+fn prepare_single_target_setup_probe(directory: &Path) -> PathBuf {
     let probe = directory.join("single-target-setup");
     if probe.exists() {
         fs::remove_dir_all(&probe).expect("previous setup probe should remove");
@@ -486,10 +496,12 @@ fn prepare_single_target_setup_probe(directory: &Path) {
             "CARGO_BERTH_TEMPLATE_BUILDER",
             env::current_exe().expect("running builder should resolve"),
         )
-        .env("CARGO_BERTH_SINGLE_TARGET_SETUP_PROBE", "1")
+        .env(SINGLE_TARGET_SETUP_PROBE, "1")
         .env("NEXTEST_ENV", &environment);
+    let started = Instant::now();
     let output = fixture_output_with_deadline(&mut command, TEMPLATE_SETUP_PROBE_DEADLINE)
         .expect("cold single-target setup should run");
+    let elapsed = started.elapsed();
     assert!(
         output.status.success(),
         "cold single-target setup failed: {}",
@@ -502,13 +514,18 @@ fn prepare_single_target_setup_probe(directory: &Path) {
         "cold setup should reuse the running builder: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    eprintln!("cargo-berth cold template probe completed in {elapsed:.3?}");
     let publication = fs::read_to_string(environment).expect("probe publication should read");
     let builds = publication
         .trim()
         .strip_prefix("CARGO_BERTH_PREBUILT_TEMPLATES=")
         .expect("cold single-target setup should publish its builds");
+    let builds_path = Path::new(builds);
+    assert!(builds_path.starts_with(&probe));
+    assert_template_artifacts(builds_path, &single_target_probe_templates());
     fs::write(directory.join("single-target-builds"), builds)
         .expect("actual cold setup artifacts should be recorded");
+    builds_path.to_owned()
 }
 
 fn assert_single_target_setup(templates: &[LedgerTemplate]) {
@@ -522,6 +539,10 @@ fn assert_single_target_setup(templates: &[LedgerTemplate]) {
         .expect("cold setup should have published its actual builds");
     let builds = Path::new(publication.trim());
     assert!(builds.starts_with(&probe));
+    assert_template_artifacts(builds, templates);
+}
+
+fn assert_template_artifacts(builds: &Path, templates: &[LedgerTemplate]) {
     for template in templates {
         let root = builds.join(template.repository.name);
         assert!(

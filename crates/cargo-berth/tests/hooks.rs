@@ -170,7 +170,7 @@ const WIDENING_SESSION: &str = "widening-session";
 const AMBIGUITY_SESSION: &str = "fixture-session";
 /// The recovery command an ambiguity prints when no `CARGO_BERTH_SESSION_ID` named its session.
 const PLAIN_AMBIGUITY_RECOVERY_COMMAND: &str =
-    "cargo-berth check --reservation <reservation-id> <path>...";
+    "cargo-berth check --reservation <reservation-id> --path <path>";
 const COORDINATION_IDENTITY_EDIT_SUMMARY: &str =
     "cargo-berth rejected this edit under the current coordination identity.";
 /// The rejection kind a reservation whose session mapping outlived it is refused under.
@@ -397,7 +397,7 @@ fn blocked_edit_emits_the_engine_refusal() -> TestResult {
     assert!(refusal_detail.contains(
         "Answers 1, 2 and 3 name every holder by repeating their flag once per holder, and one claim may mix answers 1 and 2, one flag per holder; answer 4 settles one named holder."
     ));
-    assert!(refusal_detail.contains("cargo-berth claim <paths...> --before"));
+    assert!(refusal_detail.contains("cargo-berth claim --path '<path>' --before"));
     assert!(
         refusal_detail.contains("No approver is configured, so this session chooses the answer.")
     );
@@ -1251,11 +1251,12 @@ fn replay_failure_emits_a_fail_open_object() -> TestResult {
 #[test]
 fn coordination_identity_rejection_emits_its_recovery() -> TestResult {
     let repository = INITIALIZED_REPOSITORY.instantiate();
-    stale_marker_recovery_preserves_the_frozen_corpus_text(&repository)?;
-    session_identity_recoveries_preserve_the_frozen_corpus_text(&repository)
+    pre_tool_use_foreign_session_recovery(&repository)
 }
 
-fn stale_marker_recovery_preserves_the_frozen_corpus_text(repository: &TempDir) -> TestResult {
+#[test]
+fn stale_marker_recovery_preserves_the_frozen_corpus_text() -> TestResult {
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let marker_seed = run_berth(
         repository.path(),
         &["claim", "file:marker-seed.rs", "--run", FIRST_RUN, "--json"],
@@ -1289,9 +1290,11 @@ fn stale_marker_recovery_preserves_the_frozen_corpus_text(repository: &TempDir) 
     Ok(())
 }
 
-fn session_identity_recoveries_preserve_the_frozen_corpus_text(repository: &TempDir) -> TestResult {
+#[test]
+fn stale_session_recovery_preserves_the_frozen_corpus_text() -> TestResult {
+    let repository = INITIALIZED_REPOSITORY.instantiate();
     let session_id = "stale-hook-session";
-    create_stale_session_mapping(repository, session_id)?;
+    create_stale_session_mapping(&repository, session_id)?;
     let output = run_pre_tool_use(
         repository.path(),
         &edit_payload(repository.path(), "new.rs", Some(session_id)),
@@ -1322,8 +1325,12 @@ fn session_identity_recoveries_preserve_the_frozen_corpus_text(repository: &Temp
         &["identity", "clear-session", "--json"],
         session_id,
     )?;
-    require_success(&cleared, "clear stale session before marker case")?;
+    require_success(&cleared, "clear the stale session")
+}
+
+fn pre_tool_use_foreign_session_recovery(repository: &TempDir) -> TestResult {
     let session_id = "covered-mismatch-session";
+    fs::write(repository.path().join("source file.rs"), "")?;
     let holder = run_berth_with_session(
         repository.path(),
         &[
@@ -1575,10 +1582,10 @@ fn overlap_refusal_from_raw_payload_lists_every_answer_command() -> TestResult {
     // "for one named holder" and then prints `<holder-reservation-id>` four times has named
     // nobody, and none of the four lines it offers can be run as shown.
     for expected in [
-        format!("cargo-berth claim <paths...> --before {holder_id}"),
-        format!("cargo-berth claim <paths...> --after {holder_id}"),
-        format!("cargo-berth claim <paths...> --defer {holder_id}"),
-        format!("cargo-berth claim <paths...> --override {holder_id}"),
+        format!("cargo-berth claim --path '<path>' --before {holder_id}"),
+        format!("cargo-berth claim --path '<path>' --after {holder_id}"),
+        format!("cargo-berth claim --path '<path>' --defer {holder_id}"),
+        format!("cargo-berth claim --path '<path>' --override {holder_id}"),
         "5. Leave it alone:".to_owned(),
     ] {
         assert!(
@@ -1608,7 +1615,11 @@ fn ambiguity_and_replay_preserve_the_frozen_corpus_text() -> TestResult {
     }
     let ambiguity_expected = corpus_expected_stderr(
         "test_pre_edit_renders_an_ambiguous_first_touch_from_the_engine_message",
-    )?;
+    )?
+    .replace(
+        "cargo-berth check --reservation <reservation-id> <path>...",
+        PLAIN_AMBIGUITY_RECOVERY_COMMAND,
+    );
     assert!(
         ambiguity_stderr.contains(ambiguity_expected.trim_end()),
         "ambiguity output changed frozen engine text: {ambiguity_stderr}"
@@ -1960,7 +1971,12 @@ fn frozen_recovery_actions(frozen: &str, fixture_roots: &[(&str, &Path)]) -> Vec
         .split('`')
         .skip(1)
         .step_by(2)
-        .map(|action| requote_frozen_action(action, fixture_roots))
+        .map(|action| {
+            requote_frozen_action(action, fixture_roots).replace(
+                "cargo-berth check --json -- ",
+                "cargo-berth check --json --path ",
+            )
+        })
         .collect()
 }
 
@@ -3987,13 +4003,13 @@ fn post_tool_use_states_the_replay_failure_route() -> TestResult {
 #[test]
 fn post_tool_use_states_its_coordination_identity_recovery() -> TestResult {
     let repository = CONFIGURED_REPOSITORY.instantiate();
-    assert_post_tool_use_stale_session_recovery(&repository)?;
-    assert_post_tool_use_marker_revalidation(&repository)?;
     assert_post_tool_use_foreign_session_recovery(&repository)
 }
 
-fn assert_post_tool_use_stale_session_recovery(repository: &TempDir) -> TestResult {
-    create_stale_session_mapping(repository, STALE_DRIFT_SESSION)?;
+#[test]
+fn post_tool_use_states_its_stale_session_recovery() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
+    create_stale_session_mapping(&repository, STALE_DRIFT_SESSION)?;
 
     let output = run_post_tool_use(
         repository.path(),
@@ -4009,7 +4025,9 @@ fn assert_post_tool_use_stale_session_recovery(repository: &TempDir) -> TestResu
     Ok(())
 }
 
-fn assert_post_tool_use_marker_revalidation(repository: &TempDir) -> TestResult {
+#[test]
+fn post_tool_use_states_its_marker_revalidation() -> TestResult {
+    let repository = CONFIGURED_REPOSITORY.instantiate();
     let repository_root = fs::canonicalize(repository.path())?;
     let marker_seed = run_berth(
         repository.path(),
@@ -4052,6 +4070,7 @@ fn assert_post_tool_use_marker_revalidation(repository: &TempDir) -> TestResult 
 fn assert_post_tool_use_foreign_session_recovery(repository: &TempDir) -> TestResult {
     let repository_root = fs::canonicalize(repository.path())?;
     let session = "foreign-post-tool-use-session";
+    fs::write(repository.path().join("source file.rs"), "")?;
     let holder = run_berth_with_session(
         repository.path(),
         &["claim", "file:source file.rs", "--run", FIRST_RUN, "--json"],

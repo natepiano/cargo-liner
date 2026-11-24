@@ -1,4 +1,3 @@
-use std::iter;
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -13,6 +12,7 @@ use syn::spanned::Spanned;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::IdentifierUse;
 use crate::fixes::facade_redirect::LeafRetention;
+use crate::fixes::facade_redirect::NamingTokens;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::fixes::imports::UseFix;
 use crate::rust_syntax;
@@ -250,9 +250,12 @@ fn locally_used_exports(
     exports: &[(String, String)],
 ) -> Vec<(String, String)> {
     let (start, end) = item_use_range;
+    let item_use = start..end;
+    let excluded = std::slice::from_ref(&item_use);
+    let naming_tokens = NamingTokens::from(source);
     let mut locally_used = Vec::new();
     for (child_module, item_name) in exports {
-        match facade_redirect::word_occurs_outside(source, iter::once(start..end), item_name) {
+        match naming_tokens.word_use(excluded, item_name) {
             IdentifierUse::Present | IdentifierUse::Unparseable => {
                 locally_used.push((child_module.clone(), item_name.clone()));
             },

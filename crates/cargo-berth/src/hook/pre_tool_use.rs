@@ -235,7 +235,7 @@ pub(crate) fn execute() -> ExitCode {
         Err(reason) => return refuse(&reason),
     };
     let output_envelope = check::execute(check_request, &recovery_command_line);
-    render_pre_tool_use_answer(&output_envelope)
+    render_pre_tool_use_answer(&output_envelope, &repository_relative_path)
 }
 
 fn read_request() -> Result<PreToolUseEditAuthorizationRequest, PreToolUsePayloadParseError> {
@@ -472,7 +472,7 @@ fn check_recovery_command_line(
         OsString::from("cargo-berth"),
         OsString::from("check"),
         OsString::from("--json"),
-        OsString::from("--"),
+        OsString::from("--path"),
         OsString::from(format!("file:{repository_relative_path}")),
     ])
     .map_err(|error| error.to_string())
@@ -528,7 +528,7 @@ struct PreToolUseAllowNoticeDetail<'detail> {
 }
 
 /// Map one engine check answer onto the Claude `PreToolUse` hook protocol.
-fn render_pre_tool_use_answer(output_envelope: &OutputEnvelope) -> ExitCode {
+fn render_pre_tool_use_answer(output_envelope: &OutputEnvelope, path: &str) -> ExitCode {
     match output_envelope.exit_code() {
         BerthExit::Clear => render_authorized(&output_envelope.presentation()),
         BerthExit::LedgerUnreadable => render_fail_open(output_envelope),
@@ -536,7 +536,14 @@ fn render_pre_tool_use_answer(output_envelope: &OutputEnvelope) -> ExitCode {
         | BerthExit::BlockedByOrdering
         | BerthExit::UsageError
         | BerthExit::BlockedByContention
-        | BerthExit::TerminalViewFailed => render_refusal(&output_envelope.presentation()),
+        | BerthExit::TerminalViewFailed => {
+            let exit = render_refusal(&output_envelope.presentation());
+            let recovery = output_envelope.edit_hook_ambiguity_recovery(path);
+            if !recovery.is_empty() {
+                write_stderr_line(&recovery);
+            }
+            exit
+        },
     }
 }
 
