@@ -961,13 +961,9 @@ fn record_refusal(
         | ClaimExecution::ReservationLimitReached(_)
         | ClaimExecution::OrderingEdgeLimitReached(_) => return,
     };
-    refusal::record(
-        worktree_context,
-        requester,
-        RefusedVerb::Claim,
-        scopes,
-        conflicts,
-    );
+    if let Ok(ledger) = Ledger::open_from_discovered_worktree(worktree_context) {
+        refusal::record(&ledger, requester, RefusedVerb::Claim, scopes, conflicts);
+    }
 }
 
 fn normalized_claim_scopes(
@@ -989,7 +985,10 @@ fn normalized_claim_scopes(
 /// Whether first touch starts an operation or continues check's immutable object evidence.
 enum FirstTouchRepositoryObservation<'check> {
     NewOperation,
-    WithinCheck(&'check RepositorySnapshot),
+    WithinCheck {
+        repository: &'check RepositorySnapshot,
+        ledger:     &'check Ledger,
+    },
 }
 
 impl FirstTouchRepositoryObservation<'_> {
@@ -1000,7 +999,7 @@ impl FirstTouchRepositoryObservation<'_> {
     ) -> Result<ClaimRepositoryFacts, ClaimError> {
         match self {
             Self::NewOperation => ClaimRepositoryFacts::read(worktree_context, run_validation),
-            Self::WithinCheck(repository) => ClaimRepositoryFacts::read_from_repository(
+            Self::WithinCheck { repository, .. } => ClaimRepositoryFacts::read_from_repository(
                 repository.fresh_observation(),
                 run_validation,
             ),
@@ -1028,13 +1027,14 @@ pub(in crate::verb) fn acquire_first_touch_for_check(
     request: FirstTouchClaimRequest,
     reservation_selection: CheckReservationSelection,
     repository: &RepositorySnapshot,
+    ledger: &Ledger,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     acquire_first_touch_with_reservation_selection(
         request,
         reservation_selection,
-        &FirstTouchRepositoryObservation::WithinCheck(repository),
+        &FirstTouchRepositoryObservation::WithinCheck { repository, ledger },
         recovery_command_line,
         capacity_recovery,
     )
@@ -1051,8 +1051,15 @@ fn acquire_first_touch_with_reservation_selection(
         declared_scopes,
         conflict_handling,
     } = request;
-    let invocation_directory = session::command_directory()?;
-    let worktree_context = WorktreeContext::discover(&invocation_directory)?;
+    let (worktree_context, check_ledger) = match repository_observation {
+        FirstTouchRepositoryObservation::NewOperation => (
+            WorktreeContext::discover(&session::command_directory()?)?,
+            None,
+        ),
+        FirstTouchRepositoryObservation::WithinCheck { repository, ledger } => {
+            (repository.context().clone(), Some(*ledger))
+        },
+    };
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
         Enrollment::Unconfigured {
@@ -1063,12 +1070,18 @@ fn acquire_first_touch_with_reservation_selection(
             });
         },
     };
-    let ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+    let opened_ledger;
+    let ledger = if let Some(ledger) = check_ledger {
+        ledger
+    } else {
+        opened_ledger = Ledger::open_from_discovered_worktree(&worktree_context)?;
+        &opened_ledger
+    };
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let edit_scopes = declared_scopes.clone().into_minimal_antichain(path_case);
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
     let edit_identity = first_touch_edit_identity(
-        &ledger,
+        ledger,
         &worktree_context,
         reservation_selection,
         &scopes,
@@ -1115,38 +1128,57 @@ fn acquire_first_touch_with_reservation_selection(
         maximum_reservations: berth_config.maximum_reservations,
         repository_trunk,
     };
-    let execution = transact_first_touch_with_capacity_recovery(
-        &ledger,
+    execute_prepared_first_touch(
+        ledger,
         &prepared_claim,
         &mut validation_context,
         &berth_config,
         capacity_recovery,
+    )
+    .map(Enrollment::Enrolled)
+}
+
+fn execute_prepared_first_touch(
+    ledger: &Ledger,
+    prepared_claim: &PreparedClaim,
+    validation_context: &mut FirstTouchValidationContext,
+    berth_config: &BerthConfig,
+    capacity_recovery: &mut ClaimCapacityRecovery,
+) -> Result<FirstTouchClaimExecution, ClaimError> {
+    let execution = transact_first_touch_with_capacity_recovery(
+        ledger,
+        prepared_claim,
+        validation_context,
+        berth_config,
+        capacity_recovery,
     )?;
-    // Only a refusal of the whole request stops the caller, so only it records the default.
+    // Record the default answer only when the conflict blocks the whole request.
     let (
         FirstTouchClaimExecution::Blocked { .. },
         FirstTouchConflictHandling::RefuseRequest,
         Some(default_answer),
-    ) = (&execution, conflict_handling, berth_config.default_answer)
+    ) = (
+        &execution,
+        validation_context.conflict_handling,
+        berth_config.default_answer,
+    )
     else {
-        return Ok(Enrollment::Enrolled(execution));
+        return Ok(execution);
     };
     let answered = record_first_touch_default_answer(
-        &ledger,
+        ledger,
         default_answer,
         &prepared_claim.target.target,
-        &validation_context,
+        validation_context,
     )?;
     let execution = transact_first_touch_with_capacity_recovery(
-        &ledger,
-        &prepared_claim,
-        &mut validation_context,
-        &berth_config,
+        ledger,
+        prepared_claim,
+        validation_context,
+        berth_config,
         capacity_recovery,
     )?;
-    Ok(Enrollment::Enrolled(
-        execution.answered_by_default(answered),
-    ))
+    Ok(execution.answered_by_default(answered))
 }
 
 /// Keep the caller's identity and the selected owner's identity for lock-time validation.
@@ -1165,18 +1197,19 @@ fn first_touch_edit_identity(
 ) -> Result<FirstTouchEditIdentity, ClaimError> {
     let caller = ledger::resolve_identity(worktree)?;
     let selected = if matches!(selection, CheckReservationSelection::EditHook) {
-        let reservations = ledger
-            .read_validated_journal()?
-            .into_reservations()
-            .map_err(ClaimError::ReservationReplay)?;
-        edit_hook_authorization(
-            &reservations,
-            caller,
-            scopes,
-            path_case,
-            &worktree.ledger_directory(),
-        )
-        .map_err(|candidates| ClaimError::AmbiguousActiveRunReservations { candidates })?
+        ledger.with_validated_reservations(|reservations| {
+            let reservations = reservations
+                .as_ref()
+                .map_err(|error| ClaimError::ReservationReplay(error.clone()))?;
+            edit_hook_authorization(
+                reservations,
+                caller,
+                scopes,
+                path_case,
+                &worktree.ledger_directory(),
+            )
+            .map_err(|candidates| ClaimError::AmbiguousActiveRunReservations { candidates })
+        })??
     } else {
         caller
     };

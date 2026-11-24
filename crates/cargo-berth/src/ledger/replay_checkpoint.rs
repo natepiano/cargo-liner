@@ -32,7 +32,6 @@ use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
-use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -44,8 +43,10 @@ use super::constants::REPLAY_CHECKPOINT_INTERVAL_BYTES;
 use super::constants::REPLAY_CHECKPOINT_INTERVAL_RECORDS;
 use super::constants::REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO;
 use super::journal::JournalError;
+use super::journal::JournalFileIdentity;
 use super::journal::JournalFingerprint;
 use super::journal::JournalReplay;
+use super::journal::JournalReplaySource;
 use crate::ids::JournalByteOffset;
 use crate::ids::RepoInstanceId;
 
@@ -124,23 +125,6 @@ struct CheckpointHeader {
     last_record_digest:  JournalFingerprint,
 }
 
-/// The file behind the journal path, which a journal replaced by a copy of its bytes does not
-/// share.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct JournalFileIdentity {
-    device: u64,
-    inode:  u64,
-}
-
-impl From<&Metadata> for JournalFileIdentity {
-    fn from(metadata: &Metadata) -> Self {
-        Self {
-            device: metadata.dev(),
-            inode:  metadata.ino(),
-        }
-    }
-}
-
 impl<'a> ReplayCheckpoint<'a> {
     /// The checkpoint at `path` in the ledger of `repo_instance_id`.
     pub(super) const fn new(path: &'a Path, repo_instance_id: RepoInstanceId) -> Self {
@@ -159,12 +143,11 @@ impl<'a> ReplayCheckpoint<'a> {
     /// Replay the complete records of the journal at `journal_path`, resuming after this
     /// checkpoint when it still describes that journal.
     ///
-    /// Also returns the journal length read, which passes the replay's end offset by an incomplete
-    /// final record. A rewrite requires a complete interval and sufficient growth.
+    /// Keep the source file open for as long as the caller can reuse the replay.
     pub(super) fn replay_journal(
         &self,
         journal_path: &Path,
-    ) -> Result<(JournalReplay, JournalByteOffset), JournalError> {
+    ) -> Result<(JournalReplay, JournalReplaySource), JournalError> {
         let mut journal_file = File::open(journal_path)?;
         let metadata = journal_file.metadata()?;
         let journal = JournalFileIdentity::from(&metadata);
@@ -182,24 +165,26 @@ impl<'a> ReplayCheckpoint<'a> {
             && (growth >= self.interval.bytes
                 || replay.record_count - start_record_count >= self.interval.records)
             && journal_file.try_lock().is_ok()
-            && matches!(
+        {
+            if matches!(
                 self.publication_decision(
                     journal_path,
                     journal,
                     &replay_start.into_observed_header()
                 ),
                 PublicationDecision::Write
-            )
-        {
-            // A replay that cannot write the checkpoint is still complete.
-            std::mem::drop(self.store(&replay, journal, &appended[..complete_end], write_budget));
+            ) {
+                // A replay that cannot write the checkpoint is still complete.
+                std::mem::drop(self.store(
+                    &replay,
+                    journal,
+                    &appended[..complete_end],
+                    write_budget,
+                ));
+            }
+            journal_file.unlock()?;
         }
-        let appended_length =
-            u64::try_from(appended.len()).map_err(JournalError::JournalTooLarge)?;
-        Ok((
-            replay,
-            JournalByteOffset::from(start_offset + appended_length),
-        ))
+        Ok((replay, JournalReplaySource::new(journal_file, journal)))
     }
 
     /// The replay to start from and where it starts: the checkpointed replay when the checkpoint
@@ -270,6 +255,8 @@ impl<'a> ReplayCheckpoint<'a> {
         if JournalFingerprint::EMPTY.continued(&last_record) != header.last_record_digest {
             return None;
         }
+        #[cfg(test)]
+        CHECKPOINT_DECODES.update(|decodes| decodes + 1);
         let replay = serde_json::from_slice::<JournalReplay>(contents).ok()?;
         (replay.end_offset == header.end_offset).then_some(replay)
     }
@@ -377,6 +364,18 @@ impl<'a> ReplayCheckpoint<'a> {
         }
         publication
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static CHECKPOINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn count_checkpoint_decodes<Output>(action: impl FnOnce() -> Output) -> (Output, usize) {
+    let before = CHECKPOINT_DECODES.get();
+    let output = action();
+    (output, CHECKPOINT_DECODES.get() - before)
 }
 
 impl ReplayStart {
