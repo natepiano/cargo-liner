@@ -931,7 +931,7 @@ fn assert_startup(startup: Startup) {
         assert_eq!(view.body(), body);
     }
     let mut terminal = Terminal::new(TestBackend::new(240, 60)).expect("startup terminal");
-    let rendered = draw(&mut terminal, &mut app);
+    let rendered = draw_settled(&mut terminal, &mut app);
     for (title, body) in &expected {
         assert!(popup_text(&rendered, title).contains(body), "{rendered}");
     }

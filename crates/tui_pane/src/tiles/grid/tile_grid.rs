@@ -2196,12 +2196,16 @@ impl<Id: Clone + Eq + Debug> TileGrid<Id> {
             .map_or(Focus::Summary, |taken| Focus::Cell(taken.clone()));
     }
 
+    /// Whether a grid step is in flight or queued, so cell frames can still change place.
+    #[must_use]
+    pub(crate) fn has_pending_motion(&self) -> bool {
+        !matches!(self.motion, GridMotion::Settled) || !self.pending.is_empty()
+    }
+
     /// Report active or queued motion for application render tests.
     #[doc(hidden)]
     #[must_use]
-    pub fn has_pending_motion_for_test(&self) -> bool {
-        !matches!(self.motion, GridMotion::Settled) || !self.pending.is_empty()
-    }
+    pub fn has_pending_motion_for_test(&self) -> bool { self.has_pending_motion() }
 
     /// Hold active and later motion at half progress for render tests.
     /// Keep the area and layout rules unchanged while motion is held.

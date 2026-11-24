@@ -57,7 +57,7 @@
 
 **Gotchas:** A first draw that comes while the grid moves holds a place one row above the settled place for the whole life of the notice.
 
-### Phase 2 — A notice settles once with the grid, and the count-row tests regain their strength  · status: todo
+### Phase 2 — A notice settles once with the grid, and the count-row tests regain their strength  · status: done
 
 #### Work Order
 
@@ -83,7 +83,7 @@ Item 2 — count-row test strength (round 3 review findings).
 
 Item 3 — the lone blank row above "+N more" (known defect).
 1. At width 200, roster [4,5,4,5,4,5], odd heights 57-67, one command cell keeps a blank row above "+N more" while its column mates are short. Cells grow in steps of 2 (heading and row), so one row has no use. Main has the same lone row at the other parity, without a count row.
-2. A fix changes the look (for example, `TableSeparators::for_visible_groups` keeps the last `remaining` gaps, and `measured_table_row_use` models the same rule). A look change needs the user's approval: file the question before any code.
+2. A fix changes the look: `TableSeparators::for_visible_groups` keeps the last `remaining` gaps, and `measured_table_row_use` models the same rule, so the spare empty row becomes the gap between the last two directory groups. The gap is an empty row, not a drawn line. The user approved this look change on the annotated before/after mockup (2026-11-23).
 
 Item 4 — count-row code cleanups (round 3 review findings).
 1. Build `CommandRowBudget` once: `reserve_command_rows` takes the table kind, builds the budget before its single-line early return, and returns the `HiddenProcessCountRow` that `hidden_count_row` returns now. Delete `hidden_count_row`. In `prepare_table_viewport`, a command table takes its count row from `reserve_command_rows`; the `visible_group_count > 0 && body_rows_drawn < available_height` rule stays only for `TableKind::Summary`.
@@ -96,7 +96,7 @@ Item 4 — count-row code cleanups (round 3 review findings).
 - `crates/tui_pane/src/overlays/frame_tail.rs`, `crates/tui_pane/src/toasts/`, `crates/tui_pane/src/tiles/grid/tile_grid.rs` — the grid argument, the motion query, the hold rule and the settle repaint.
 - `crates/cargo-tile/CHANGELOG.md`, `crates/tui_pane/CHANGELOG.md` — one line for each user-visible fix.
 
-**Workers:** Claude subagents (no-worker mode): one for item 1, one for items 2 and 4. Item 3 waits for the user's answer.
+**Workers:** Codex workers: one for item 1 and its review; one implementer for items 4, 3 and 2 in that order (all touch render.rs).
 
 **State:** none
 

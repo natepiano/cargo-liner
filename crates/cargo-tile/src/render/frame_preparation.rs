@@ -1026,10 +1026,8 @@ fn measured_table_row_use(
 ) -> GroupRowUse {
     let header = height.min(TABLE_HEADER_HEIGHT);
     let available = height.saturating_sub(header);
-    let total = body_rows;
-    let gaps = gap_rows;
-    let retained_gaps = if total.saturating_add(gaps) <= available {
-        gaps
+    let retained_gaps = if body_rows.saturating_add(gap_rows) <= available {
+        gap_rows
     } else {
         0
     };
@@ -1055,47 +1053,47 @@ fn measured_table_row_use(
                 .windows(2)
                 .all(|pair| pair[1].saturating_sub(pair[0]) <= 1)
     });
-    // A command table that hides processes keeps its count row, which `CommandRowBudget` measures.
-    let count_reserved = groups
+    let kind = groups
         .first()
-        .is_some_and(|group| budget.reserves_hidden_count_row(group.kind));
-    if single_line && !count_reserved {
-        return single_line_table_use(groups, height, retained_gaps, separation);
+        .map_or(TableKind::Summary, |group| group.kind);
+    if single_line && budget.single_line_count_row(kind) == HiddenProcessCountRow::Absent {
+        return single_line_table_use(groups, height, retained_gaps, separation, kind);
     }
-    let mut hidden = 0;
     let mut shown = 0;
+    let mut visible = 0;
     for group in groups {
         if !budget.heading(group.heading.rows()) {
-            hidden += group.rows.len().saturating_sub(1);
-            continue;
+            break;
         }
+        visible += 1;
         for pair in group.rows.windows(2) {
-            if budget.row(pair[1].saturating_sub(pair[0])) == 0 {
-                hidden += 1;
-            } else {
+            if budget.row(pair[1].saturating_sub(pair[0])) != 0 {
                 shown += 1;
             }
         }
     }
-    let drawn = if shown == 0 {
+    let hidden = processes.saturating_sub(shown);
+    let separators = TableSeparators::for_table(groups.len(), retained_gaps).for_visible_groups(
+        visible,
+        &mut budget.remaining,
+        kind,
+    );
+    let retained_gaps = separators.rows(visible);
+    let used = if shown == 0 {
         header
-    } else if hidden > 0 {
-        height
     } else {
         header.saturating_add(available.saturating_sub(budget.remaining))
     };
-    let lendable = if separation == DirectorySeparation::YieldEarliest {
-        retained_gaps
+    let drawn = if shown > 0 && hidden > 0 && kind == TableKind::Summary {
+        height
     } else {
-        0
+        used
     };
     GroupRowUse {
         drawn,
-        kept: drawn
-            .saturating_sub(lendable)
-            .saturating_sub(if hidden > 0 { budget.remaining } else { 0 }),
+        kept: used.saturating_sub(separators.lendable_rows(visible, separation, kind)),
         separator_rows_yielded: if separation == DirectorySeparation::YieldEarliest {
-            gaps.saturating_sub(retained_gaps)
+            gap_rows.saturating_sub(retained_gaps)
         } else {
             0
         },
@@ -1239,10 +1237,10 @@ impl PreparedTableRows {
 }
 
 /// `ProcessRowVisibility` records whether the table height can contain every process.
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy)]
 enum ProcessRowVisibility {
     AllFit,
-    SomeHidden,
+    SomeHidden { count_row: HiddenProcessCountRow },
 }
 
 /// `CommandRowBudget` shares process and argument reservations between measurement and painting.
@@ -1250,7 +1248,6 @@ struct CommandRowBudget {
     remaining:  u16,
     extra:      u16,
     visibility: ProcessRowVisibility,
-    count_row:  HiddenProcessCountRow,
 }
 
 impl CommandRowBudget {
@@ -1267,24 +1264,25 @@ impl CommandRowBudget {
     fn new(height: u16, processes: usize, headings: usize, first_heading: u16) -> Self {
         let minimum = processes.saturating_add(headings);
         let visibility = if minimum > usize::from(height) {
-            ProcessRowVisibility::SomeHidden
+            // The count row needs a heading and a process row above it.
+            let count_row = if height > first_heading.saturating_add(1) {
+                HiddenProcessCountRow::Reserved
+            } else {
+                HiddenProcessCountRow::Absent
+            };
+            ProcessRowVisibility::SomeHidden { count_row }
         } else {
             ProcessRowVisibility::AllFit
         };
-        // The count row needs a row below the first heading and one process row.
-        let count_row = if visibility == ProcessRowVisibility::SomeHidden
-            && height > first_heading.saturating_add(1)
-        {
-            HiddenProcessCountRow::Reserved
-        } else {
-            HiddenProcessCountRow::Absent
-        };
         Self {
-            remaining: height
-                .saturating_sub(u16::from(count_row == HiddenProcessCountRow::Reserved)),
+            remaining: height.saturating_sub(u16::from(matches!(
+                visibility,
+                ProcessRowVisibility::SomeHidden {
+                    count_row: HiddenProcessCountRow::Reserved,
+                }
+            ))),
             extra: height.saturating_sub(u16::try_from(minimum).unwrap_or(u16::MAX)),
             visibility,
-            count_row,
         }
     }
 
@@ -1298,37 +1296,28 @@ impl CommandRowBudget {
 
     fn row(&mut self, wanted: u16) -> u16 {
         let continuation = self.extra.min(wanted.saturating_sub(1));
-        let budget = if self.visibility == ProcessRowVisibility::SomeHidden {
-            self.remaining.min(1)
-        } else {
-            1 + continuation
+        let budget = match self.visibility {
+            ProcessRowVisibility::AllFit => 1 + continuation,
+            ProcessRowVisibility::SomeHidden { .. } => self.remaining.min(1),
         };
         self.extra = self.extra.saturating_sub(continuation);
         self.remaining = self.remaining.saturating_sub(budget);
         budget
     }
 
-    /// A command table keeps its last row for the hidden count when its processes do not fit.
-    fn reserves_hidden_count_row(&self, kind: TableKind) -> bool {
-        kind == TableKind::Command && self.count_row == HiddenProcessCountRow::Reserved
+    const fn count_row(&self) -> HiddenProcessCountRow {
+        match self.visibility {
+            ProcessRowVisibility::AllFit => HiddenProcessCountRow::Absent,
+            ProcessRowVisibility::SomeHidden { count_row } => count_row,
+        }
     }
-}
 
-/// Whether a table of `kind` keeps a row for the hidden count when `directories` do not fit in
-/// `height`. `hidden` is the count from `reserve_command_rows`. Any table that hides a process
-/// there keeps the row. A command table keeps it also when its rows are single-line, which
-/// `reserve_command_rows` skips.
-pub(super) fn hidden_count_row(
-    directories: &[PathGroup<'_>],
-    height: u16,
-    kind: TableKind,
-    hidden: usize,
-) -> HiddenProcessCountRow {
-    let budget = CommandRowBudget::for_directories(height, directories);
-    if hidden > 0 || budget.reserves_hidden_count_row(kind) {
-        budget.count_row
-    } else {
-        HiddenProcessCountRow::Absent
+    /// Reserve a count row for single-line command tables. Summary tables use spare space.
+    const fn single_line_count_row(&self, kind: TableKind) -> HiddenProcessCountRow {
+        match kind {
+            TableKind::Command => self.count_row(),
+            TableKind::Summary => HiddenProcessCountRow::Absent,
+        }
     }
 }
 
@@ -1337,26 +1326,22 @@ pub(super) fn reserve_command_rows(
     groups: &mut [Vec<super::LaidOutProcessRow<'_>>],
     directories: &[PathGroup<'_>],
     height: u16,
-) -> usize {
+    kind: TableKind,
+) -> HiddenProcessCountRow {
+    let mut budget = CommandRowBudget::for_directories(height, directories);
     if groups
         .iter()
         .flatten()
         .all(|row| row.lines <= 1 && row.view.arguments == ArgumentDetail::Default)
     {
-        return 0;
+        return budget.single_line_count_row(kind);
     }
-    let mut budget = CommandRowBudget::for_directories(height, directories);
-    let mut hidden = 0;
     for (rows, directory) in groups.iter_mut().zip(directories) {
         if !budget.heading(directory.heading.rows()) {
-            hidden += rows.len();
-            continue;
+            break;
         }
         for row in rows.iter_mut() {
             let kept = budget.row(row.lines);
-            if kept == 0 {
-                hidden += 1;
-            }
             if kept > 0 && kept < row.lines {
                 let cut = row.cut_command_continuation(usize::from(kept));
                 let mut lines = row.cells[super::COMMAND_COLUMN].lines
@@ -1368,7 +1353,7 @@ pub(super) fn reserve_command_rows(
             row.lines = kept.max(1);
         }
     }
-    hidden
+    budget.count_row()
 }
 
 /// `single_line_table_use` preserves the default argument view's process capacity.
@@ -1377,6 +1362,7 @@ fn single_line_table_use(
     height: u16,
     gaps: u16,
     separation: DirectorySeparation,
+    kind: TableKind,
 ) -> GroupRowUse {
     let header = height.min(TABLE_HEADER_HEIGHT);
     let available = height.saturating_sub(header);
@@ -1397,27 +1383,18 @@ fn single_line_table_use(
             .saturating_sub(group.heading.rows())
             .saturating_sub(*group.rows.last().unwrap_or(&0));
     }
-    let separators = TableSeparators {
-        first:  if gaps > 0 { 1 } else { groups.len() },
-        groups: groups.len(),
-    }
-    .for_visible_groups(visible, &mut remaining);
+    let separators = TableSeparators::for_table(groups.len(), gaps).for_visible_groups(
+        visible,
+        &mut remaining,
+        kind,
+    );
     let retained = separators.rows(visible);
     let count = u16::from(
-        visible > 0
-            && visible < groups.len()
-            && remaining > 0
-            && groups
-                .first()
-                .is_some_and(|group| group.kind == TableKind::Summary),
+        visible > 0 && visible < groups.len() && remaining > 0 && kind == TableKind::Summary,
     );
     remaining = remaining.saturating_sub(count);
     let drawn = header.saturating_add(available.saturating_sub(remaining));
-    let lendable = if separation == DirectorySeparation::YieldEarliest {
-        retained
-    } else {
-        0
-    };
+    let lendable = separators.lendable_rows(visible, separation, kind);
     GroupRowUse {
         drawn,
         kept: drawn.saturating_sub(lendable).saturating_sub(count),
