@@ -15,6 +15,7 @@ mod sentence_tests;
 #[cfg(test)]
 mod test_support;
 
+pub(crate) use drawing::GridStability;
 pub(super) use drawing::GridToastStack;
 pub use drawing::ToastsRenderCtx;
 use drawing::fallback_toast_palette;
