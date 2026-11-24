@@ -1573,6 +1573,7 @@ pub(crate) fn reconcile_for_release(
 /// Retain immutable object evidence throughout check's decision and acquisition passes.
 pub(crate) fn reconcile_for_check(
     repository: &git::RepositorySnapshot,
+    ledger: &Ledger,
 ) -> Result<Enrollment<ReconciliationReport>, ReconcileError> {
     let context = repository.context();
     let config = match BerthConfig::read(&context.configuration_lookup())? {
@@ -1585,10 +1586,9 @@ pub(crate) fn reconcile_for_check(
             });
         },
     };
-    let ledger = Ledger::open_from_discovered_worktree(context)?;
     reconcile_with_open_ledger(
         &repository.fresh_observation(),
-        &ledger,
+        ledger,
         &config,
         ReconciliationRequest {
             repository_observation_scope: RepositoryObservationScope::CurrentOrderingGraph,
@@ -1805,14 +1805,21 @@ fn reconcile_with_open_ledger_once(
                     journal_mutation_actor.coordination_run_id,
                     |state| {
                         let observation = observation_pass.bind(state, initial_repository);
-                        let preflight = match prepare_rewrite_reconciliation(
-                            observation.repository(),
-                            ledger,
-                            berth_config,
-                        ) {
-                            Ok(preflight) => preflight,
-                            Err(error) => return ReconciliationValidation::Reject(error),
-                        };
+                        let rewrite_repository = observation.repository();
+                        let preflight =
+                            match read_rewrite_preflight(rewrite_repository, berth_config, || {
+                                observation
+                                    .state()
+                                    .reservations()
+                                    .cloned()
+                                    .map_err(ReconcileError::Replay)
+                            }) {
+                                Ok(preflight) => PreparedRewriteReconciliation {
+                                    repository: rewrite_repository,
+                                    preflight,
+                                },
+                                Err(error) => return ReconciliationValidation::Reject(error),
+                            };
                         match prepare_reconciliation_transaction(
                             observation.state(),
                             berth_config,
@@ -2163,14 +2170,19 @@ pub(crate) fn prepare_rewrite_reconciliation<'operation>(
 ) -> Result<PreparedRewriteReconciliation<'operation>, ReconcileError> {
     Ok(PreparedRewriteReconciliation {
         repository,
-        preflight: read_rewrite_preflight(repository, ledger, berth_config)?,
+        preflight: read_rewrite_preflight(repository, berth_config, || {
+            ledger
+                .read_validated_journal()?
+                .into_reservations()
+                .map_err(ReconcileError::Replay)
+        })?,
     })
 }
 
 fn read_rewrite_preflight(
     repository: &git::RepositorySnapshot,
-    ledger: &Ledger,
     berth_config: &BerthConfig,
+    read_reservations: impl FnOnce() -> Result<RetainedReservationSet, ReconcileError>,
 ) -> Result<RewriteReconciliationPreflight, ReconcileError> {
     let worktree_context = repository.context();
     let markers = permit::pending_branch_rewrite_markers(worktree_context.common_git_directory())
@@ -2185,10 +2197,7 @@ fn read_rewrite_preflight(
     if markers.is_empty() {
         return Ok(preflight);
     }
-    let mut reservations = ledger
-        .read_validated_journal()?
-        .into_reservations()
-        .map_err(ReconcileError::Replay)?;
+    let mut reservations = read_reservations()?;
     let repository_trunk = berth_config.repository_trunk().map_err(|reason| {
         ReconcileError::Config(ConfigError::InvalidValue {
             key:   "trunk".to_owned(),
