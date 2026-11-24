@@ -1242,6 +1242,36 @@ The copies are deleted. No source changes.
 - `a_large_checkpoint_limits_bytes_written_per_appended_record` and `compaction_leaves_a_checkpoint_for_the_new_journal` pass.
 - No changed test takes one second or more.
 
+### Phase 56b — a cargo-berth hook call decodes the replay checkpoint once  · status: todo
+
+#### Work Order
+
+**Goal:** a cargo-berth hook call decodes the replay checkpoint at most once, and only the parts it reads, so the gate and the edit check cost under about 100 ms release at Hana ledger size. Source: the Phase 56 release measure; the showrunner approved the split 2026-11-23. CPU cost ranks first, so it runs next.
+
+**Spec:**
+1. The fault (Mac sample, release, median of 3, after Phase 56): the gate (`__reference-transaction prepared`) costs 168 ms CPU. An edit of an unreserved file costs 5,092 ms CPU: that path runs reconcile and decodes the 27.3 MB checkpoint five times in one call. Report: `${SESSION_DIR}/phases/56/measure_reply.md`.
+2. First cut: find each place on the unreserved-edit path that replays the journal again (a new `JournalReplay` from the checkpoint). Make one hook call replay once and pass the replay on. Each hook answer stays the same.
+3. Second cut, only if the gate or the edit check stays over about 100 ms release: the lazy decode from Phase 56 `design.md` section 3 (decode only the parts a hook reads; `incursion_incidents` gets its own part).
+4. Report the CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
+
+**Constraints from prior phases:**
+- Phase 56 constraints hold: header checked before the replay is decoded; a format change bumps `FOLD_FORMAT_VERSION` (now 4); one writer per journal file; `write_temporary` seam; compaction writes a checkpoint too.
+- Probes: `${SESSION_DIR}/tmp/p56-measure/measure-decode.py` and `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py`; Mac sample `/tmp/claude/scratch/p53-probe-4406cc` (scratch end 2026-11-25).
+
+**Files:**
+- `crates/cargo-berth/src/ledger/` — replay, checkpoint and handle
+- `crates/cargo-berth/src/hook/` and `crates/cargo-berth/src/reconcile.rs` — the replay callers on the edit path; step 2 names the exact ones
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- A test counts the checkpoint decodes in one unreserved-edit hook call: one.
+- No changed test takes one second or more.
+
 ### Phase 57 — mend --fix names each fix it applies  · status: todo
 
 #### Work Order
