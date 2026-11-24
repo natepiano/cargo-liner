@@ -25,6 +25,26 @@ struct QualifiedParent<'a> {
 
 struct UncertainParent;
 
+#[derive(Default)]
+struct QualifiedDeclarations {
+    sites:        Vec<usize>,
+    data_members: Vec<usize>,
+}
+
+impl QualifiedDeclarations {
+    fn add_members(&mut self, words: &[String], body: Range<usize>, kind: MemberKind) {
+        let sites = word_syntax::member_sites(words, body.start, body.end, kind);
+        let attributed_variant = matches!(kind, MemberKind::Variant)
+            && word_syntax::attribute_spans(words)
+                .iter()
+                .any(|&(_, end)| sites.contains(&end));
+        if !attributed_variant {
+            self.data_members.extend(&sites);
+        }
+        self.sites.extend(sites);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ParentKind {
     Trait,
@@ -32,7 +52,11 @@ enum ParentKind {
 }
 
 impl QualifiedParent<'_> {
-    fn declares(&self, words: &[String], path: &str, name: &str) -> Result<bool, UncertainParent> {
+    fn declarations(
+        &self,
+        words: &[String],
+        path: &str,
+    ) -> Result<QualifiedDeclarations, UncertainParent> {
         let starts = word_syntax::item_starts(words);
         let modules = word_syntax::inline_modules(words, &starts);
         let parents = starts
@@ -63,7 +87,11 @@ impl QualifiedParent<'_> {
             .iter()
             .map(|module| module.name.as_str())
             .collect::<Vec<_>>();
-        if (!parents.is_empty() || top_level) && !home_path.ends_with(&self.qualifier) {
+        let qualifier = self
+            .qualifier
+            .strip_prefix(&[""])
+            .unwrap_or(&self.qualifier);
+        if (!parents.is_empty() || top_level) && !home_path.ends_with(qualifier) {
             return Err(UncertainParent);
         }
         let parent_kind = if parents.iter().any(|&index| words[index] == "trait") {
@@ -75,6 +103,7 @@ impl QualifiedParent<'_> {
         if top_level {
             bodies.push(0..words.len());
         }
+        let mut declarations = QualifiedDeclarations::default();
         for index in parents {
             let start = word_syntax::body_start(words, index);
             if start == words.len() {
@@ -83,34 +112,21 @@ impl QualifiedParent<'_> {
             let end = word_syntax::closing(words, start);
             match words[index].as_str() {
                 "struct" | "union" => {
-                    if has_member(words, start, end, MemberKind::Field, name) {
-                        return Ok(true);
-                    }
+                    declarations.add_members(words, start..end, MemberKind::Field);
+                },
+                "enum" if words[start] == "{" => {
+                    declarations.add_members(words, start..end, MemberKind::Variant);
                 },
                 "mod" | "trait" => bodies.push(start + 1..end),
                 _ => {},
             }
         }
-        // Scan enums outside the positions from word_syntax::item_starts.
-        for index in 0..words.len().saturating_sub(1) {
-            if words[index] == "enum" && words[index + 1] == self.parent {
-                let start = word_syntax::body_start(words, index);
-                if start < words.len()
-                    && has_member(
-                        words,
-                        start,
-                        word_syntax::closing(words, start),
-                        MemberKind::Variant,
-                        name,
-                    )
-                {
-                    return Ok(true);
-                }
-            }
+        for body in bodies {
+            declarations
+                .sites
+                .extend(direct_items(words, body, &starts));
         }
-        Ok(bodies
-            .into_iter()
-            .any(|body| direct_item(words, body, &starts, name)))
+        Ok(declarations)
     }
 
     fn impl_bodies(
@@ -185,7 +201,7 @@ pub(super) fn check(
         .map(|token| token.value.strip_prefix("r#").unwrap_or(&token.value))
         .collect::<BTreeSet<_>>();
     let (old, new) = (names.contains(rename.old), names.contains(rename.new));
-    if old == new
+    if !(old || new)
         || NAME_MACROS.iter().any(|name| names.contains(name))
         || tokens
             .windows(2)
@@ -193,25 +209,33 @@ pub(super) fn check(
     {
         return unchecked();
     }
-    let held = if old { rename.old } else { rename.new };
+    let has_macro_rules = names.contains("macro_rules");
     let words = tokens
         .into_iter()
         .map(|token| token.value)
         .collect::<Vec<_>>();
     let mut qualifier = rename.owner.split("::").collect::<Vec<_>>();
     let parent = qualifier.pop().unwrap_or_default();
-    if !(QualifiedParent { qualifier, parent })
-        .declares(&words, path, held)
-        .unwrap_or(false)
-    {
+    let Ok(declarations) = (QualifiedParent { qualifier, parent }).declarations(&words, path)
+    else {
         return unchecked();
-    }
-    if old {
-        RenameApplied::NotApplied {
+    };
+    let declares = |sites: &[usize], name| sites.iter().any(|&index| words[index] == name);
+    if declares(&declarations.sites, rename.old) {
+        return RenameApplied::NotApplied {
             path: path.to_owned(),
-        }
-    } else {
+        };
+    }
+    let data_rename = !has_macro_rules
+        && declares(&declarations.data_members, rename.new)
+        && declarations
+            .data_members
+            .iter()
+            .all(|&index| words[index].strip_prefix("r#").unwrap_or(&words[index]) != rename.old);
+    if declares(&declarations.sites, rename.new) && (!old || data_rename) {
         RenameApplied::AppliedInCode
+    } else {
+        unchecked()
     }
 }
 
@@ -282,27 +306,18 @@ fn standard_derives(words: &[String]) -> bool {
         })
 }
 
-fn has_member(words: &[String], start: usize, end: usize, kind: MemberKind, name: &str) -> bool {
-    word_syntax::member_sites(words, start, end, kind)
-        .iter()
-        .any(|&index| words[index] == name)
-}
-
-fn direct_item(words: &[String], body: Range<usize>, starts: &BTreeSet<usize>, name: &str) -> bool {
+fn direct_items(words: &[String], body: Range<usize>, starts: &BTreeSet<usize>) -> Vec<usize> {
+    let mut sites = Vec::new();
     let mut index = body.start;
     while index < body.end {
         let word = words[index].as_str();
-        if ITEM_KEYWORDS.contains(&word)
-            && starts.contains(&index)
-            && index + 1 < body.end
-            && words[index + 1] == name
-        {
-            return true;
+        if ITEM_KEYWORDS.contains(&word) && starts.contains(&index) && index + 1 < body.end {
+            sites.push(index + 1);
         }
         if matches!(word, "{" | "(" | "[") {
             index = word_syntax::closing(words, index);
         }
         index += 1;
     }
-    false
+    sites
 }

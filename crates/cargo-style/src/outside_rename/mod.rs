@@ -31,6 +31,7 @@ use crate::outside_bindings::ChildSite;
 use crate::outside_mapping::MappedDeclaration;
 use crate::outside_mapping::MappedSite;
 use crate::outside_mapping::OutsidePatch;
+use crate::same_declaration::AnchoredItem;
 use crate::same_declaration::Declaration;
 use crate::same_declaration::RelocationReader;
 use crate::same_declaration::SameDeclaration;
@@ -43,14 +44,8 @@ use crate::trait_identity::TraitSite;
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(crate) enum OutsideRename {
     NotApplicable,
-    Proven {
-        #[serde(flatten)]
-        rename: ProvenRename,
-    },
-    NotProven {
-        #[serde(flatten)]
-        refusal: OutsideRefusal,
-    },
+    #[serde(untagged)]
+    Read(Box<RenameEvidence>),
 }
 
 type SourceResult<T> = Result<T, OutsideSourceFailure>;
@@ -68,6 +63,39 @@ pub(crate) struct OutsideRefusal {
     mapped:     MappedSite,
     candidates: OutsideCandidates,
     reasons:    OutsideReasons,
+}
+
+impl ProvenRename {
+    pub(crate) const fn declaration(&self) -> &Declaration { &self.declaration }
+
+    pub(crate) const fn path(&self) -> &str { self.path.as_str() }
+
+    pub(crate) const fn line(&self) -> usize { self.line }
+}
+
+impl OutsideRefusal {
+    /// Whether the crate still declares the old name.
+    pub(crate) fn old_name_present(&self) -> bool {
+        self.reasons()
+            .any(|reason| reason == OutsideFailure::OldNamePresent)
+    }
+
+    /// The declarations of the examined candidates that the destination gained.
+    pub(crate) fn gained_declarations(&self) -> impl Iterator<Item = &Declaration> {
+        let examined = match &self.candidates {
+            OutsideCandidates::None => None,
+            OutsideCandidates::Examined { items } => Some(items),
+        };
+        examined
+            .into_iter()
+            .flat_map(ExaminedCandidates::iter)
+            .filter(|candidate| !candidate.checks.contains(&OutsideFailure::NotGained))
+            .map(|candidate| &candidate.declaration)
+    }
+
+    fn reasons(&self) -> impl Iterator<Item = OutsideFailure> {
+        std::iter::once(self.reasons.first).chain(self.reasons.rest.iter().copied())
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -121,9 +149,15 @@ struct ExaminedCandidates {
     rest:  Vec<OutsideCandidate>,
 }
 
+impl ExaminedCandidates {
+    fn iter(&self) -> impl Iterator<Item = &OutsideCandidate> {
+        std::iter::once(&self.first).chain(&self.rest)
+    }
+}
+
 impl Serialize for ExaminedCandidates {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(std::iter::once(&self.first).chain(&self.rest))
+        serializer.collect_seq(self.iter())
     }
 }
 
@@ -219,14 +253,36 @@ struct PassingItem<'a> {
     index: usize,
 }
 
-enum RenameEvidence {
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub(crate) enum RenameEvidence {
     Proven(ProvenRename),
+    #[serde(rename = "not_proven")]
     Refused(OutsideRefusal),
 }
 
-enum OutsideScope {
-    Rename,
-    Conflict,
+struct OutsideRevision {
+    tip:     Rc<RepositoryTip>,
+    changed: Rc<HashSet<String>>,
+}
+
+impl OutsideRevision {
+    fn read(
+        source: &mut FindingSource<'_>,
+        commit: &str,
+        location: SourceLocation<'_>,
+    ) -> SourceResult<Self> {
+        let tip = source
+            .tip(commit)
+            .map_err(source_failure("read the synced tip", location.path))?;
+        let changed = source
+            .changed_paths(location.commit, commit)
+            .map_err(source_failure(
+                "read changes since the source commit",
+                location.path,
+            ))?;
+        Ok(Self { tip, changed })
+    }
 }
 
 impl OutsideReader {
@@ -239,33 +295,26 @@ impl OutsideReader {
         anchor: &FindingAnchor,
         same: &SameDeclaration,
     ) -> SourceResult<OutsideRename> {
-        let scope = match same {
-            SameDeclaration::SeveralDestinations { .. } | SameDeclaration::AnotherCrate { .. } => {
-                OutsideScope::Conflict
-            },
-            SameDeclaration::NoDestination { .. } => OutsideScope::Rename,
-            _ => return Ok(OutsideRename::NotApplicable),
-        };
+        if !matches!(
+            same,
+            SameDeclaration::SeveralDestinations { .. } | SameDeclaration::AnotherCrate { .. }
+        ) {
+            return Ok(OutsideRename::NotApplicable);
+        }
         let FindingAnchor::Anchored(anchor) = anchor else {
             return Ok(OutsideRename::NotApplicable);
         };
-        let read = anchor.commit.as_str();
-        let tip = source
-            .tip(commit)
-            .map_err(source_failure("read the synced tip", &finding.path))?;
-        let changed = source.changed_paths(read, commit).map_err(source_failure(
-            "read changes since the source commit",
-            &finding.path,
-        ))?;
-        let (declarations, trait_reader) = relocation.source_readers();
         let location = SourceLocation {
-            commit: read,
+            commit: &anchor.commit,
             path:   &finding.path,
         };
-        let file = declarations.file(source, location).map_err(source_failure(
-            "read the original declarations",
+        let revision = OutsideRevision::read(source, commit, location)?;
+        let mut search = self.search(source, relocation, &revision, location.commit, commit);
+        let file = search.file(
+            location.commit,
             location.path,
-        ))?;
+            "read the original declarations",
+        )?;
         let DeclarationAt::Named(item) = file.at(finding.line) else {
             return Ok(OutsideRename::NotApplicable);
         };
@@ -274,25 +323,58 @@ impl OutsideReader {
             file:        &file,
             line:        finding.line,
         };
-        let mut search = OutsideSearch {
+        let refusal = match search.prove(original)? {
+            RenameEvidence::Proven(_) => search.refuse(original, OutsideFailure::Unmapped)?,
+            RenameEvidence::Refused(refusal) => refusal,
+        };
+        Ok(OutsideRename::Read(Box::new(RenameEvidence::Refused(
+            refusal,
+        ))))
+    }
+
+    pub(crate) fn prove_relocated(
+        &mut self,
+        source: &mut FindingSource<'_>,
+        relocation: &mut RelocationReader,
+        commit: &str,
+        finding: &HeldAnchor,
+        original: &AnchoredItem,
+    ) -> SourceResult<RenameEvidence> {
+        let location = SourceLocation {
+            commit: original.read(),
+            path:   &finding.path,
+        };
+        let revision = OutsideRevision::read(source, commit, location)?;
+        let mut search = self.search(source, relocation, &revision, location.commit, commit);
+        search.prove(OriginalSite {
+            declaration: ItemAtRevision {
+                location,
+                item: original.item(),
+            },
+            file:        original.file(),
+            line:        finding.line,
+        })
+    }
+
+    fn search<'a, 'repo>(
+        &'a mut self,
+        source: &'a mut FindingSource<'repo>,
+        relocation: &'a mut RelocationReader,
+        revision: &'a OutsideRevision,
+        read: &'a str,
+        commit: &'a str,
+    ) -> OutsideSearch<'a, 'repo> {
+        let (declarations, trait_reader) = relocation.source_readers();
+        OutsideSearch {
             source,
             declarations,
             trait_reader,
             reader: self,
-            tip: &tip,
+            tip: &revision.tip,
             read,
             commit,
-            changed: &changed,
-        };
-        Ok(match search.prove(original)? {
-            RenameEvidence::Proven(_) if matches!(scope, OutsideScope::Conflict) => {
-                OutsideRename::NotProven {
-                    refusal: search.refuse(original, OutsideFailure::Unmapped)?,
-                }
-            },
-            RenameEvidence::Proven(rename) => OutsideRename::Proven { rename },
-            RenameEvidence::Refused(refusal) => OutsideRename::NotProven { refusal },
-        })
+            changed: &revision.changed,
+        }
     }
 }
 
@@ -671,11 +753,11 @@ impl<'a> OutsideSearch<'a, '_> {
                 self.declarations,
                 TraitSite {
                     location:   left,
-                    membership: before,
+                    membership: before.into(),
                 },
                 TraitSite {
                     location:   right,
-                    membership: after,
+                    membership: after.into(),
                 },
             )
             .map_err(source_failure(

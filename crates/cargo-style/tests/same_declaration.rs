@@ -162,6 +162,9 @@ fn assert_relocation_reply(root: &Path, oracle: &OracleReplies) -> TestResult<()
                 "rename_admission",
                 "rename_applied",
                 "footprint",
+                "declaration",
+                "site_evidence",
+                "approvals",
             ] {
                 let _ = fields
                     .remove(field)
@@ -170,7 +173,7 @@ fn assert_relocation_reply(root: &Path, oracle: &OracleReplies) -> TestResult<()
         }
         assert_eq!(&*actual, &expected.answer, "{}", expected.name);
     }
-    assert_eq!(reply["schema"], 6);
+    assert_eq!(reply["schema"], 7);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip":oracle.synced_tip, "ledger_revision":"absent"})

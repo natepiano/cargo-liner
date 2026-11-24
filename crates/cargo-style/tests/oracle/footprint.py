@@ -236,10 +236,21 @@ def main(root: Path) -> None:
         ),
         FindingCase("restructure beside a byte path", "app/src/layout.rs", "restructure", "", "Split the layout"),
         FindingCase("triple colon", QUALIFIED, "rename", "SharedType:::shared", "SharedType:::common"),
+        FindingCase("trailing sentence", LOCK, "rename", "", "Rename lock.rs to guard.rs. Keep the rest."),
+        FindingCase("quoted files", LOCK, "rename", "", "Rename `lock.rs` to `guard.rs`."),
+        FindingCase("companion pair", LOCK, "rename", "",
+                    "Rename lock.rs to guard.rs. Rename old.rs to fresh.rs."),
+        FindingCase("reference update", LOCK, "rename", "",
+                    "Rename lock.rs to guard.rs. Update crate::split::Entry paths."),
+        FindingCase("rename after a combining mark", LOCK, "rename", "",
+                    "e\u0301rename lock.rs to guard.rs."),
+        FindingCase("rename after a superscript digit", LOCK, "rename", "",
+                    "\u00b2rename lock.rs to guard.rs."),
     )
     cases = {f"{index:016x}": case for index, case in enumerate(rows, 1)}
     seed_ledger(repo, database, tip, cases)
-    plain, qualified, move, restructure, unsupported, missing, dotless, second_pair, byte_path, triple_colon = cases
+    (plain, qualified, move, restructure, unsupported, missing, dotless, second_pair, byte_path, triple_colon,
+     *instructions) = cases
     file_move_regression, = footprint_rows(repo, database, style_plan.NoUnitBranch(), cases, [second_pair])
     file_move_proof = file_move_regression["footprint"]
     assert file_move_proof is not None and "app/src/fresh.rs" not in file_move_proof["files"], file_move_proof
@@ -258,7 +269,7 @@ def main(root: Path) -> None:
     assert restructure_proof is not None and "app/src/lib.rs" in restructure_proof["files"], restructure_proof
     malformed_qualified, = footprint_rows(repo, database, style_plan.NoUnitBranch(), cases, [triple_colon])
     assert malformed_qualified["footprint"] == {"files": (QUALIFIED,), "uncertain": ()}, malformed_qualified
-    requested = [move, UNKNOWN_FINDING, qualified, unsupported, plain, restructure, dotless, move]
+    requested = [move, UNKNOWN_FINDING, qualified, unsupported, plain, restructure, dotless, *instructions, move]
     synced = footprint_rows(repo, database, style_plan.NoUnitBranch(), cases, requested)
     with_base = footprint_rows(repo, database, style_plan.UnitBranchTip(base), cases, requested)
     equal_base = footprint_rows(repo, database, style_plan.UnitBranchTip(tip), cases, requested)

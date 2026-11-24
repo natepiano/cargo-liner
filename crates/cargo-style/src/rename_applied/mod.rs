@@ -8,6 +8,7 @@ mod qualified;
 use serde::Serialize;
 
 pub(crate) use self::applied_reader::AppliedReader;
+pub(crate) use self::applied_reader::applied_at;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
 use crate::finding_source::TreeFile;

@@ -194,7 +194,7 @@ fn site_reply(output: &Output, oracle: &OracleAnswers) -> TestResult<Value> {
     );
     assert_eq!(output.stderr.as_slice(), b"");
     let reply: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(reply["schema"], 6);
+    assert_eq!(reply["schema"], 7);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip":oracle.synced_tip, "ledger_revision":"absent"})
@@ -211,6 +211,9 @@ fn assert_site_fields(actual: &mut Value, expected: &SiteCase) -> TestResult<()>
             "rename_admission",
             "rename_applied",
             "footprint",
+            "declaration",
+            "site_evidence",
+            "approvals",
         ] {
             let _ = fields
                 .remove(field)

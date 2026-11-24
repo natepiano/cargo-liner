@@ -21,6 +21,7 @@ pub(crate) use self::statement_location::StatementRefusal;
 use self::statement_location::StatementTokens;
 use crate::declarations;
 use crate::declarations::DeclarationAt;
+use crate::declarations::DeclarationIndexAt;
 use crate::declarations::DeclaredFile;
 use crate::declarations::DeclaredItem;
 use crate::declarations::ItemBody;
@@ -134,6 +135,10 @@ impl DeclarationFile {
 
     pub(crate) fn at(&self, line: usize) -> DeclarationAt<'_> {
         self.declared().at(&self.word_lines, line)
+    }
+
+    pub(crate) fn index_at(&self, line: usize) -> DeclarationIndexAt {
+        self.declared().index_at(&self.word_lines, line)
     }
 
     pub(crate) fn items(&self) -> &[DeclaredItem] { &self.declared().items }

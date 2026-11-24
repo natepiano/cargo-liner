@@ -12,7 +12,7 @@ use crate::declaration_source::DeclarationSource;
 use crate::declaration_source::SourceLocation;
 use crate::declaration_source::StatementLocation;
 use crate::declaration_source::StatementRefusal;
-use crate::declarations::DeclarationAt;
+use crate::declarations::DeclarationIndexAt;
 use crate::declarations::DeclarationOwner;
 use crate::declarations::DeclaredItem;
 use crate::declarations::ImplMembership;
@@ -29,10 +29,13 @@ use crate::relocation_ledger::RelocationFindingState;
 use crate::tip_view::RepositoryTip;
 use crate::trait_identity::TraitIdentity;
 use crate::trait_identity::TraitReader;
+use crate::trait_identity::TraitRequirement;
 use crate::trait_identity::TraitSite;
 
 pub(crate) enum SameDeclaration {
-    NotRead,
+    NotRead {
+        cause: NotReadCause,
+    },
     InPlace {
         basis: InPlaceBasis,
     },
@@ -60,9 +63,26 @@ pub(crate) enum SameDeclaration {
         path:        String,
         reason:      StatementRefusal,
     },
+    /// No destination gained the item at the finding's original coordinate.
     NoDestination {
         declaration: Declaration,
+        original:    AnchoredItem,
     },
+}
+
+/// A named item in its source file at the commit that relocation read.
+pub(crate) struct AnchoredItem {
+    file:  Rc<DeclarationFile>,
+    index: usize,
+    read:  String,
+}
+
+impl AnchoredItem {
+    pub(crate) fn file(&self) -> &DeclarationFile { &self.file }
+
+    pub(crate) fn item(&self) -> &DeclaredItem { &self.file.items()[self.index] }
+
+    pub(crate) fn read(&self) -> &str { &self.read }
 }
 
 impl Serialize for SameDeclaration {
@@ -107,7 +127,7 @@ impl Serialize for SameDeclaration {
             },
         }
         let reply = match self {
-            Self::NotRead => RelocationReply::NotRead,
+            Self::NotRead { .. } => RelocationReply::NotRead,
             Self::InPlace { basis } => RelocationReply::InPlace { basis },
             Self::Moved {
                 declaration,
@@ -149,10 +169,20 @@ impl Serialize for SameDeclaration {
                 path,
                 reason,
             },
-            Self::NoDestination { declaration } => RelocationReply::NoDestination { declaration },
+            Self::NoDestination { declaration, .. } => {
+                RelocationReply::NoDestination { declaration }
+            },
         };
         reply.serialize(serializer)
     }
+}
+
+/// Why the declaration proof did not read the finding's item.
+pub(crate) enum NotReadCause {
+    /// The finding is closed, judged now, not Rust, unanchored or not an ancestor.
+    Unread,
+    /// The finding's old line holds no named declaration.
+    UnnamedLine,
 }
 
 #[derive(Serialize)]
@@ -162,16 +192,16 @@ pub(crate) enum InPlaceBasis {
     MatchingItem,
 }
 
-#[derive(Clone, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct Declaration {
     keyword: String,
     name:    String,
     owner:   Owner,
 }
 
-#[derive(Clone, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum Owner {
+pub(crate) enum Owner {
     ModuleItem,
     ImplOrTraitItem { name: String },
 }
@@ -180,6 +210,17 @@ impl Declaration {
     pub(crate) const fn keyword(&self) -> &str { self.keyword.as_str() }
 
     pub(crate) const fn name(&self) -> &str { self.name.as_str() }
+
+    pub(crate) const fn owner(&self) -> &Owner { &self.owner }
+
+    /// The same keyword under another name and owner.
+    pub(crate) fn renamed(&self, name: &str, owner: Owner) -> Self {
+        Self {
+            keyword: self.keyword.clone(),
+            name: name.to_owned(),
+            owner,
+        }
+    }
 
     pub(crate) fn has_owner(&self, owner: &DeclarationOwner) -> bool {
         match (&self.owner, owner) {
@@ -231,15 +272,15 @@ pub(crate) struct RelocationReader {
     trait_reader: TraitReader,
 }
 
-enum MatchingItems {
+pub(crate) enum MatchingItems {
     Known(Vec<usize>),
     Uncertain,
 }
 
-#[derive(Clone, Copy)]
-struct OriginalDeclaration<'a> {
-    location: SourceLocation<'a>,
-    item:     &'a DeclaredItem,
+/// Where a finding's line lands in the one item its old item moved to.
+pub(crate) enum MovedSite {
+    Line(usize),
+    StatementRefused(StatementRefusal),
 }
 
 struct GainedItems {
@@ -266,26 +307,26 @@ impl RelocationReader {
         evidence: &RelocationEvidence,
     ) -> Result<SameDeclaration, RelocationFailure> {
         match evidence.finding {
-            RelocationFindingState::Closed => return Ok(SameDeclaration::NotRead),
+            RelocationFindingState::Closed => return Ok(not_read()),
             RelocationFindingState::Unfiled
                 if matches!(evidence.judging, JudgingState::AssignedOrCheckpointed) =>
             {
-                return Ok(SameDeclaration::NotRead);
+                return Ok(not_read());
             },
-            RelocationFindingState::Unfiled | RelocationFindingState::Filed => {},
+            RelocationFindingState::Unfiled | RelocationFindingState::Filed { .. } => {},
         }
         if Path::new(&finding.path)
             .extension()
             .is_none_or(|ext| ext != "rs")
         {
-            return Ok(SameDeclaration::NotRead);
+            return Ok(not_read());
         }
         let FindingAnchor::Anchored(anchor) = anchor else {
-            return Ok(SameDeclaration::NotRead);
+            return Ok(not_read());
         };
         let read = anchor.commit.as_str();
         if !source.is_ancestor(read, synced_tip)? {
-            return Ok(SameDeclaration::NotRead);
+            return Ok(not_read());
         }
         let changed = source.changed_paths(read, synced_tip)?;
         let original_path = finding.path.as_str();
@@ -299,13 +340,12 @@ impl RelocationReader {
             path:   original_path,
         };
         let old_file = self.declarations.file(source, old_location)?;
-        let DeclarationAt::Named(old) = old_file.at(finding.line) else {
-            return Ok(SameDeclaration::NotRead);
+        let DeclarationIndexAt::Named(index) = old_file.index_at(finding.line) else {
+            return Ok(SameDeclaration::NotRead {
+                cause: NotReadCause::UnnamedLine,
+            });
         };
-        let original = OriginalDeclaration {
-            location: old_location,
-            item:     old,
-        };
+        let old = &old_file.items()[index];
         if matches!(
             old.implemented_trait(),
             ImplMembership::State(ImplementationState::Unreadable)
@@ -313,12 +353,13 @@ impl RelocationReader {
             return Ok(uncertain_trait(old.into()));
         }
 
+        let declaration = Declaration::from(old);
+        let requirement = TraitRequirement::of(old, old_location);
         let new_location = SourceLocation {
             commit: synced_tip,
             path:   original_path,
         };
-        let current = self.declarations.file(source, new_location)?;
-        match self.matching_items(source, original, new_location, &current)? {
+        match self.matching_at(source, &declaration, &requirement, new_location)? {
             MatchingItems::Uncertain => return Ok(uncertain_trait(old.into())),
             MatchingItems::Known(items) if !items.is_empty() => {
                 return Ok(SameDeclaration::InPlace {
@@ -335,36 +376,40 @@ impl RelocationReader {
                 && changed.contains(path.as_str())
                 && tip.has_rust_path(path)
         });
-        let GainedDestinations::Known(gained) =
-            self.gained_destinations(source, original, synced_tip, candidates)?
+        let GainedDestinations::Known(gained) = self.gained_destinations(
+            source,
+            &declaration,
+            &requirement,
+            read,
+            synced_tip,
+            candidates,
+        )?
         else {
             return Ok(uncertain_trait(old.into()));
         };
 
-        finish_relocation(gained, &tip, finding, &old_file, old, evidence)
+        finish_relocation(gained, &tip, finding, read, old_file, index, evidence)
     }
 
     fn gained_destinations<'p>(
         &mut self,
         source: &mut FindingSource<'_>,
-        original: OriginalDeclaration<'_>,
+        declaration: &Declaration,
+        requirement: &TraitRequirement,
+        read: &str,
         synced_tip: &str,
         candidates: impl Iterator<Item = &'p String>,
     ) -> Result<GainedDestinations, FindingSourceFailure> {
         let mut gained = BTreeMap::new();
         for path in candidates {
-            let before = SourceLocation {
-                commit: original.location.commit,
-                path,
-            };
+            let before = SourceLocation { commit: read, path };
             let after = SourceLocation {
                 commit: synced_tip,
                 path,
             };
-            let before_file = self.declarations.file(source, before)?;
-            let prior = self.matching_items(source, original, before, &before_file)?;
+            let prior = self.matching_at(source, declaration, requirement, before)?;
             let file = self.declarations.file(source, after)?;
-            let items = self.matching_items(source, original, after, &file)?;
+            let items = self.matching_items(source, declaration, requirement, after, &file)?;
             let (MatchingItems::Known(prior), MatchingItems::Known(items)) = (prior, items) else {
                 return Ok(GainedDestinations::Uncertain);
             };
@@ -375,33 +420,43 @@ impl RelocationReader {
         Ok(GainedDestinations::Known(gained))
     }
 
+    /// The items of the file at `location` that are the declaration, with the trait the
+    /// requirement names.
+    pub(crate) fn matching_at(
+        &mut self,
+        source: &mut FindingSource<'_>,
+        declaration: &Declaration,
+        requirement: &TraitRequirement,
+        location: SourceLocation<'_>,
+    ) -> Result<MatchingItems, FindingSourceFailure> {
+        let file = self.declarations.file(source, location)?;
+        self.matching_items(source, declaration, requirement, location, &file)
+    }
+
     fn matching_items(
         &mut self,
         source: &mut FindingSource<'_>,
-        original: OriginalDeclaration<'_>,
+        declaration: &Declaration,
+        requirement: &TraitRequirement,
         location: SourceLocation<'_>,
         file: &DeclarationFile,
     ) -> Result<MatchingItems, FindingSourceFailure> {
         let mut matched = Vec::new();
         for (index, candidate) in file.items().iter().enumerate() {
-            if !original.item.same_declaration(candidate) {
+            if !declaration.matches(candidate) {
                 continue;
             }
-            let identity = if original.item.is_module_item() {
-                TraitIdentity::Same
-            } else {
-                self.trait_reader.compare(
+            let identity = match requirement {
+                TraitRequirement::Unrestricted => TraitIdentity::Same,
+                TraitRequirement::Required(required) => self.trait_reader.compare(
                     source,
                     &mut self.declarations,
-                    TraitSite {
-                        location:   original.location,
-                        membership: original.item.implemented_trait(),
-                    },
+                    required.site(),
                     TraitSite {
                         location,
-                        membership: candidate.implemented_trait(),
+                        membership: candidate.implemented_trait().into(),
                     },
-                )?
+                )?,
             };
             match identity {
                 TraitIdentity::Same => matched.push(index),
@@ -417,10 +472,12 @@ fn finish_relocation(
     gained: BTreeMap<String, GainedItems>,
     tip: &RepositoryTip,
     finding: &HeldAnchor,
-    old_file: &DeclarationFile,
-    old: &DeclaredItem,
+    read: &str,
+    old_file: Rc<DeclarationFile>,
+    index: usize,
     evidence: &RelocationEvidence,
 ) -> Result<SameDeclaration, RelocationFailure> {
+    let old = &old_file.items()[index];
     let declaration = Declaration::from(old);
     if gained.len() > 1 || gained.values().any(|gain| gain.items.len() > 1) {
         return Ok(SameDeclaration::SeveralDestinations {
@@ -430,7 +487,7 @@ fn finish_relocation(
     }
     let destination = gained.into_iter().next();
     if let Some((path, _)) = &destination
-        && matches!(evidence.finding, RelocationFindingState::Filed)
+        && matches!(evidence.finding, RelocationFindingState::Filed { .. })
         && tip.crate_of(path) != tip.crate_of(&finding.path)
     {
         return Ok(SameDeclaration::AnotherCrate {
@@ -450,29 +507,53 @@ fn finish_relocation(
         LinkedBuild::NoOpenBuild => {},
     }
     let Some((path, gain)) = destination else {
-        return Ok(SameDeclaration::NoDestination { declaration });
+        return Ok(SameDeclaration::NoDestination {
+            declaration,
+            original: AnchoredItem {
+                file: old_file,
+                index,
+                read: read.to_owned(),
+            },
+        });
     };
     let item = &gain.file.items()[gain.items[0]];
-    if old_file.owns_statement(old, finding.line) {
-        match gain.file.statement_location(item, &finding.text) {
-            StatementLocation::Matched(line) => Ok(SameDeclaration::Moved {
+    Ok(
+        match moved_site(&old_file, old, finding, &gain.file, item) {
+            MovedSite::Line(line) => SameDeclaration::Moved {
                 declaration,
                 path,
                 line,
-            }),
-            StatementLocation::Refused(reason) => Ok(SameDeclaration::StatementNotFollowed {
+            },
+            MovedSite::StatementRefused(reason) => SameDeclaration::StatementNotFollowed {
                 declaration,
                 path,
                 reason,
-            }),
-        }
-    } else {
-        let line = gain.file.moved_line(item, old_file, old, finding.line);
-        Ok(SameDeclaration::Moved {
-            declaration,
-            path,
-            line,
-        })
+            },
+        },
+    )
+}
+
+/// A statement line follows only to the one statement line of the destination item that holds
+/// the finding's text; another line follows by its place in the item.
+pub(crate) fn moved_site(
+    old_file: &DeclarationFile,
+    old: &DeclaredItem,
+    finding: &HeldAnchor,
+    file: &DeclarationFile,
+    item: &DeclaredItem,
+) -> MovedSite {
+    if !old_file.owns_statement(old, finding.line) {
+        return MovedSite::Line(file.moved_line(item, old_file, old, finding.line));
+    }
+    match file.statement_location(item, &finding.text) {
+        StatementLocation::Matched(line) => MovedSite::Line(line),
+        StatementLocation::Refused(reason) => MovedSite::StatementRefused(reason),
+    }
+}
+
+const fn not_read() -> SameDeclaration {
+    SameDeclaration::NotRead {
+        cause: NotReadCause::Unread,
     }
 }
 

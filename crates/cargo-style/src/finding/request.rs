@@ -11,11 +11,18 @@ use serde::Serialize;
 
 use super::constants::FINDING_LEDGER_FLAG;
 use super::constants::FINDING_REPO_FLAG;
+use crate::constants::FINDING_APPROVALS_FLAG;
 use crate::constants::FINDING_BASE_FLAG;
 use crate::constants::FINDING_PROOF_REPLY_SCHEMA;
 use crate::constants::FINDING_RENAME_POLICY_FLAG;
 use crate::constants::FINDING_REPLY_SCHEMA;
 use crate::constants::FINDING_RULES_FLAG;
+use crate::declaration_reading::ApprovalFailure;
+use crate::declaration_reading::ApprovalSnapshot;
+use crate::declaration_reading::DeclarationAnswer;
+use crate::declaration_reading::DeclarationFailure;
+use crate::declaration_reading::DeclarationInput;
+use crate::declaration_reading::DeclarationReader;
 use crate::finding_anchor::FindingAnchor;
 use crate::finding_anchor::NeedsJudgmentReason;
 use crate::finding_source::CommitResolution;
@@ -62,7 +69,16 @@ pub(crate) struct FindingRequest {
 
 enum FindingScope {
     Anchor,
-    OriginalSite(PathBuf),
+    OriginalSite {
+        rules:     PathBuf,
+        approvals: ApprovalSource,
+    },
+}
+
+/// Where the user's answers on decision files come from.
+enum ApprovalSource {
+    File(PathBuf),
+    NoFile,
 }
 
 enum RequestedBase {
@@ -93,7 +109,7 @@ impl RequestedBase {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum FindingFailure {
     #[error(
-        "usage: cargo style finding --repo <path> --ledger <ledger.sqlite> [--rules <rules.json>] [--rename-policy <rename_policy.toml>] [--base <commit>] <finding id>..."
+        "usage: cargo style finding --repo <path> --ledger <ledger.sqlite> [--rules <rules.json> [--approvals <approvals.json>]] [--rename-policy <rename_policy.toml>] [--base <commit>] <finding id>..."
     )]
     Usage,
     #[error("cannot resolve finding base {0:?} to a commit")]
@@ -106,6 +122,17 @@ pub(crate) enum FindingFailure {
     Rules(#[from] RuleSnapshotFailure),
     #[error(transparent)]
     Site(#[from] SiteProofError),
+    #[error(transparent)]
+    Approvals(#[from] ApprovalFailure),
+    #[error("cannot read declaration for {path} from {commit} to {synced_tip}")]
+    Declaration {
+        path:       String,
+        commit:     String,
+        synced_tip: String,
+        source:     Box<DeclarationFailure>,
+    },
+    #[error(transparent)]
+    Built(Box<DeclarationFailure>),
     #[error("cannot prove declaration relocation for {path} from {commit} to {synced_tip}")]
     Relocation {
         path:       String,
@@ -149,6 +176,7 @@ impl FindingRequest {
         let mut repo = None;
         let mut ledger = None;
         let mut rules = None;
+        let mut approvals = None;
         let mut policy = PolicyInput::ErrorOnMissingFlag;
         let mut base = RequestedBase::SyncedOnly;
         let mut ids = Vec::new();
@@ -162,6 +190,14 @@ impl FindingRequest {
                 },
                 Some(FINDING_RULES_FLAG) if rules.is_none() => {
                     rules = Some(
+                        arguments
+                            .next()
+                            .map(PathBuf::from)
+                            .ok_or(FindingFailure::Usage)?,
+                    );
+                },
+                Some(FINDING_APPROVALS_FLAG) if approvals.is_none() => {
+                    approvals = Some(
                         arguments
                             .next()
                             .map(PathBuf::from)
@@ -189,7 +225,14 @@ impl FindingRequest {
                 _ => return Err(FindingFailure::Usage),
             }
         }
-        let scope = rules.map_or(FindingScope::Anchor, FindingScope::OriginalSite);
+        let scope = match (rules, approvals) {
+            (None, None) => FindingScope::Anchor,
+            (None, Some(_)) => return Err(FindingFailure::Usage),
+            (Some(rules), approvals) => FindingScope::OriginalSite {
+                rules,
+                approvals: approvals.map_or(ApprovalSource::NoFile, ApprovalSource::File),
+            },
+        };
         match (repo, ledger) {
             (Some(repo), Some(ledger)) if !ids.is_empty() => Ok(Self {
                 repo,
@@ -206,8 +249,12 @@ impl FindingRequest {
     pub(crate) fn answer(self) -> Result<(), FindingFailure> {
         let proof = match self.scope {
             FindingScope::Anchor => FindingProof::Anchor,
-            FindingScope::OriginalSite(path) => {
-                FindingProof::WithSite(SiteReader::new(RuleSnapshot::read(&path)?))
+            FindingScope::OriginalSite { rules, approvals } => {
+                let approvals = match approvals {
+                    ApprovalSource::File(path) => ApprovalSnapshot::read(&path)?,
+                    ApprovalSource::NoFile => ApprovalSnapshot::default(),
+                };
+                FindingProof::WithSite(SiteReader::new(RuleSnapshot::read(&rules)?), approvals)
             },
         };
         let reply = proof.read(&self.repo, &self.ledger, self.ids, &self.policy, self.base)?;
@@ -220,7 +267,7 @@ impl FindingRequest {
 
 enum FindingProof {
     Anchor,
-    WithSite(SiteReader),
+    WithSite(SiteReader, ApprovalSnapshot),
 }
 
 impl FindingProof {
@@ -244,8 +291,9 @@ impl FindingProof {
                     Ok(FindingAnswer::Known { id, anchor, edits })
                 })
             },
-            Self::WithSite(reader) => {
-                let snapshot = LedgerSnapshot::read_sites(ledger, &ids)?;
+            Self::WithSite(reader, approvals) => {
+                let mut snapshot = LedgerSnapshot::read_sites(ledger, &ids)?;
+                let built = std::mem::take(&mut snapshot.beside);
                 let mut source = FindingSource::open(repo)?;
                 let policy = match policy {
                     PolicyInput::ErrorOnMissingFlag => &PolicyInput::RefuseMissingFlag,
@@ -254,9 +302,10 @@ impl FindingProof {
                 let mut edits =
                     FindingEditReader::new(base, repo, &snapshot.synced_tip, &mut source, policy)?;
                 let mut rules = RuleFindingReader {
-                    site:       reader,
-                    relocation: RelocationReader::default(),
-                    outside:    OutsideReader::default(),
+                    site:         reader,
+                    relocation:   RelocationReader::default(),
+                    outside:      OutsideReader::default(),
+                    declarations: DeclarationReader::new(approvals, built),
                 };
                 reply(
                     FINDING_PROOF_REPLY_SCHEMA,
@@ -269,7 +318,7 @@ impl FindingProof {
                         Ok(FindingAnswer::WithSite {
                             id,
                             anchor,
-                            site,
+                            site: Box::new(site),
                             edits,
                         })
                     },
@@ -280,9 +329,10 @@ impl FindingProof {
 }
 
 struct RuleFindingReader {
-    site:       SiteReader,
-    relocation: RelocationReader,
-    outside:    OutsideReader,
+    site:         SiteReader,
+    relocation:   RelocationReader,
+    outside:      OutsideReader,
+    declarations: DeclarationReader,
 }
 
 impl RuleFindingReader {
@@ -318,26 +368,37 @@ impl RuleFindingReader {
                 synced_tip: tip.to_owned(),
                 source:     Box::new(source),
             })?;
-        let outside_rename = self
-            .outside
-            .prove(
-                source,
-                &mut self.relocation,
-                tip,
-                finding,
-                &anchor,
-                &same_declaration,
-            )
-            .map_err(|source| FindingFailure::OutsideRename {
-                path:       source.path.clone(),
-                commit:     read.to_owned(),
-                synced_tip: tip.to_owned(),
-                source:     Box::new(source),
+        let input = DeclarationInput {
+            held,
+            anchor: &anchor,
+            original_site: &original_site,
+            same: &same_declaration,
+        };
+        let (outside_rename, declaration) = self
+            .declarations
+            .read(source, &mut self.relocation, &mut self.outside, tip, &input)
+            .map_err(|failure| match failure {
+                DeclarationFailure::Built { .. } => FindingFailure::Built(Box::new(failure)),
+                DeclarationFailure::Outside(source) => FindingFailure::OutsideRename {
+                    path:       source.path.clone(),
+                    commit:     read.to_owned(),
+                    synced_tip: tip.to_owned(),
+                    source:     Box::new(source),
+                },
+                DeclarationFailure::Source(_) | DeclarationFailure::Applied(_) => {
+                    FindingFailure::Declaration {
+                        path:       finding.path.clone(),
+                        commit:     read.to_owned(),
+                        synced_tip: tip.to_owned(),
+                        source:     Box::new(failure),
+                    }
+                },
             })?;
         let answers = RuleFindingAnswers {
             original_site,
             same_declaration: Box::new(same_declaration),
-            outside_rename: Box::new(outside_rename),
+            outside_rename,
+            declaration,
         };
         Ok((anchor, answers))
     }
@@ -423,10 +484,10 @@ fn prove_applied(
         })
 }
 
-fn reply<T>(
+fn reply<T, B>(
     schema: u32,
     ids: Vec<String>,
-    snapshot: LedgerSnapshot<T>,
+    snapshot: LedgerSnapshot<T, B>,
     mut prove: impl FnMut(String, T, &str) -> Result<FindingAnswer, FindingFailure>,
 ) -> Result<FindingReply, FindingFailure> {
     let findings = ids
@@ -478,7 +539,7 @@ enum FindingAnswer {
         #[serde(flatten)]
         anchor: FindingAnchor,
         #[serde(flatten)]
-        site:   RuleFindingAnswers,
+        site:   Box<RuleFindingAnswers>,
         #[serde(flatten)]
         edits:  FindingEditAnswers,
     },
@@ -492,7 +553,9 @@ enum FindingAnswer {
 struct RuleFindingAnswers {
     original_site:    OriginalSite,
     same_declaration: Box<SameDeclaration>,
-    outside_rename:   Box<OutsideRename>,
+    outside_rename:   OutsideRename,
+    #[serde(flatten)]
+    declaration:      DeclarationAnswer,
 }
 
 #[derive(Serialize)]
