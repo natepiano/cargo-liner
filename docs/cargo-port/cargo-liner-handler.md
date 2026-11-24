@@ -992,38 +992,27 @@ The copies are deleted. No source changes.
 
 ### Phase 49 — a tree-scope claim on a folder that does not exist yet holds that folder  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** `cargo-berth claim tree:<folder>` on a folder that does not exist yet puts that folder in the reservation's board scopes. A claim that adds no scope does not report success. The recovery command that a refused edit names binds the reservation it selects. Source: the showrunner, 2026-11-20, from a hana errors-unit fault.
-
-**Spec:**
-1. The fault: at phase start, the hana errors unit claimed `tree:crates/hana_saved` and `tree:crates/hana_saved_macros`. Neither folder existed yet. The claim exited 0, but the board scopes did not include the folders. The lint fix pass writes only paths in the board scopes, so it could not write three import fixes. The unit then widened the reservation with `cargo-berth check` on each new file.
-2. First write a cargo-berth test that reproduces the exact command from the errors unit (command, cwd and reservation id in `${SESSION_DIR}/phases/49/errors_unit_reply.md`). The test fails before the fix.
-3. Name the function and the value that drop the scope. A lead: `ReservationAcquisitionKind::AlreadyHeld` in `crates/cargo-berth/src/verb/claim/acquisition.rs` documents "already covered every claimable path".
-4. Fix the cause: a tree scope on an absent folder is a valid scope and is held as requested. The board then shows it.
-5. A claim whose requested scopes add nothing to the reservation, and that records no answer, returns a non-zero exit with a named reason. Use the existing exit and output contract types. A retry of an ordering claim (`--before`, `--after`) whose ordering is already recorded is not this case: it stays an idempotent success.
-6. Second fault, same phase: in the home worktree an Edit of `docs/cargo-port/cargo-liner-handler.md` was refused with "cargo-berth could not select one active reservation for this edit" (candidates `01a1f0ce-2c2b-7bf2-a480-6911c82d7780`, no session, and `01a1f522-b03c-71b1-a3fb-2f7704e219dc`, session `<harness session>.phase-47`). The refusal names `cargo-berth check --reservation <reservation-id> <path>...` as the recovery (`AMBIGUOUS_RESERVATION_RECOVERY_COMMAND`, `crates/cargo-berth/src/output.rs:127`). `cargo-berth check --reservation 01a1f0ce… docs/cargo-port/cargo-liner-handler.md` answered "No foreign reservation overlaps the requested paths; the acting run already holds them." The next Edit was refused the same way. The selection must bind: after the recovery command, the next edit by the same session selects that reservation. Reproduce it in a test beside the claim test, and fix the cause.
-7. Second claim case, from hana (reservation `01a1f050`, the hana repo, the fastest unit): at 02:40 a `claim --reservation` with no overlap answer on `crates/hana_diegetic/src/render/panel_text` and `crates/hana_diegetic/src/render/analytic_paths` added nothing. Later, `cargo-berth check` on `panel_text/batching.rs` and `analytic_paths/batching.rs` printed "first-touch reservation was widened". A second check printed "the acting run already holds them". Add this shape as a second row of the claim test.
-8. Third case, from hana, the same fault as the `check --reservation` case above: the worktree `/home/natepiano/rust/hana_catalyst-lfo` holds reservation `01a1f14a`. Five uncommitted paths are outside its scopes (`crates/hana/src/annunciator/mod.rs`, `src/tool/fault_feed.rs`, `tests/annunciator_turned_panel/mod.rs`, `tests/control_tool_creation/first_frame_geometry.rs`, `tests/rear_jack_pixels/assembly_button_pixels.rs`). Reservation `01a1eee1`, of the same acting run, holds them. After `cargo-berth identity clear-session`, `check --reservation 01a1f14a` on the 5 paths (one argument each) still says "the acting run already holds them". The `01a1f14a` board lists none of them, and `01a1eee1` keeps them. The showrunner's finding: `check --reservation` counts a path that any reservation of the acting run holds as held. It does not move the path to the named reservation. The session mapping is not the cause. Reproduce this case and the home-worktree `01a1f0ce` case together in one test, then fix the cause: `check --reservation <id>` puts each path in reservation `<id>`. Read the hana worktree only; never write to it.
-9. First-touch attribution case, from hana: the errors unit's Codex P4 workers edit under the P4 reservation `01a1f925`. cargo-berth records each first touch under `01a1f4c5-cbc5-7700-819a-150881541608`, a stale style reservation keyed to the same worktree. The result is 12 false incursions (`fault.rs`, `records.rs`, `cables.rs`, `Cargo.lock` and more). The berth hint names `CARGO_BERTH_RUN`; the worker processes probably have no coordination run. Required result: first-touch attribution picks the reservation that claims the path, never another reservation of the same worktree. This is the same family as the lfo case: a reservation of the same worktree takes paths that the named or claiming reservation must hold. Reproduce it in the same test as the lfo case, with a worker process that has no `CARGO_BERTH_RUN`.
-10. Fourth claim case, from hana: the demo reservation `01a1cb9c` lacked 21 of its claimed paths. `cargo-berth check` on each file restored them. This is the same claim defect. Add it as a row of the claim test.
-11. Separate gap, showrunner ruling: one scope in `01a1cb9c` is a single string of 17 space-separated paths (`camera/editor_camera.rs` ... `glyph_cache.rs`). A claim got several paths in one quoted argument, because zsh does not word-split `$var`. It recorded one wrong path with no error. Fix: `claim` and `check` refuse a path that contains whitespace when no file or folder of that exact name exists and either its parent folder does not exist or one of its whitespace-separated parts names an existing path. The error has a named reason and a non-zero exit. When the second condition applies, the reason names the existing part. Reason (showrunner, rulings 2026-11-20): berth must never print a recovery command that it then refuses, and a hook recovery command can name a real file with a space or a new file such as `notes draft.rs`. Test rows: `notes draft.rs` (new file, parent exists) is accepted; the 17-path string is refused; `Cargo.toml Cargo.lock` is refused and its reason names `Cargo.toml`. Every recovery command that berth or the hook prints passes each path with the literal-path flag (`--path '<p>'`); the parser takes that value as one path and skips the joined-list check. A typed bare argument keeps the rule above. Rows: `--path 'Cargo.toml draft.rs'` is accepted as one path; the bare `Cargo.toml draft.rs` is refused; the printed recovery command for that refusal runs and berth accepts it. Make the invalid path unrepresentable: parse each argument into the path type, and refuse at that parse. Do not refuse a path without whitespace because it does not exist yet: a claim on a new file before it exists is valid. The two hook tests keep seeding `source file.rs` with `claim`. Add a test that a claim of several paths in one argument is refused, and a row that a claim of a space-named path that does not exist is refused.
+- `cargo-berth claim` records tree scopes for absent folders. The board shows the scopes even when the claim records a default answer.
+- A claim with no new scope or answer exits nonzero with `scope_acquisition_refused`. A retry succeeds when the requested ordering is already recorded.
+- `check --reservation <id>` adds every requested path to the named reservation, including paths a sibling reservation holds. A session without a run identity can select an active reservation in its worktree and save that selection.
+- `claim` and `check` parse each argument as a `ReservationScopePath`. A bare path with spaces is valid if it exists. A new bare path with spaces requires an existing parent and no whitespace-separated part that names an existing path.
+- `--path` accepts one literal path. Printed recovery commands use this flag for each path and preserve `argv[0]`.
 
 **Files:**
-- `crates/cargo-berth/src/verb/claim/` — the claim path and outcome that drop the scope
-- `crates/cargo-berth/src/scope/` — when the scope filter is the cause
-- `crates/cargo-berth/src/session/`, `crates/cargo-berth/src/hook/` — the session mapping and the edit-hook reservation selection
-- `crates/cargo-berth/tests/answers.rs` and `crates/cargo-berth/tests/hooks.rs` — the claim test and the edit-hook selection test of the same behavior
 
-**Workers:** 1 writer.
-- `impl`: all files.
+- `crates/cargo-berth/src/verb/check.rs` and `crates/cargo-berth/src/verb/claim/acquisition.rs` decide and acquire scopes. `NamedClaimIntent` distinguishes scope acquisition from explicit answers.
+- `crates/cargo-berth/src/session/reservation_command.rs` and `crates/cargo-berth/src/session/mod.rs` select and publish the session mapping.
+- `crates/cargo-berth/src/scope/path_parser.rs`, `crates/cargo-berth/src/scope/mod.rs`, and `crates/cargo-berth/src/cli.rs` parse scope arguments.
+- `crates/cargo-berth/src/coordination_identity.rs`, `crates/cargo-berth/src/output.rs`, and `crates/cargo-berth/src/verb/claim/recovery_command.rs` render recovery commands.
+- `crates/cargo-berth/tests/answers.rs` and `crates/cargo-berth/tests/hooks.rs` cover acquisition, attribution, and recovery.
 
-**State:** none.
+**Binds later work:** `edit_hook_authorization` selects the owner by declared scope. It reports the candidates when several reservations own the path and the session selects none of them. `locked_first_touch_selection` validates the selection under the lock.
 
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- The new test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Gotchas:** A bare joined argument reports the existing part that caused refusal. The literal recovery flag accepts paths with such parts.
+
+**Ruled out:** Using a sibling's scope to satisfy a named acquisition.
 
 ### Phase 50 — mend shortens a path beside a built-in attribute it does not list  · status: todo
 
@@ -1234,7 +1223,7 @@ The copies are deleted. No source changes.
 
 **Spec:**
 1. The fault (Mac sample, release, median of 3, after Phase 56): the gate (`__reference-transaction prepared`) costs 168 ms CPU. An edit of an unreserved file costs 5,092 ms CPU: that path runs reconcile and decodes the 27.3 MB checkpoint five times in one call. Report: `${SESSION_DIR}/phases/56/measure_reply.md`.
-2. First cut: find each place on the unreserved-edit path that replays the journal again (a new `JournalReplay` from the checkpoint). Make one hook call replay once and pass the replay on. Each hook answer stays the same.
+2. Reuse one `JournalReplay` for each edit hook call. Pass it through `check::decide`, `reconcile_for_check`, the decision retry, and first-touch acquisition. Include the default answer and the refusal audit when these paths run. Advance the journal tail and validate its generation and the session mapping under the lock before a write. Reload after journal replacement. Preserve each hook answer.
 3. If the gate or the edit check still costs more than about 100 ms in release, apply the lazy decode in `${SESSION_DIR}/phases/56/design.md`, section 3. Give `incursion_incidents` its own part. Use the format and fold constraints below.
 4. Report the CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
 
@@ -1242,11 +1231,16 @@ The copies are deleted. No source changes.
 - Version 4 still has one header line and one `JournalReplay` line. Bump `FOLD_FORMAT_VERSION` from 4 if the layout changes. Reject old headers before decoding the replay and rebuild from byte 0.
 - `AnswerRecord` keeps `worktree` and `Vec<OverlapCoverage>`. Keep the coverage rules and bindings in the reservation fold. Keep full `ConflictAuthorization` values in the answer events in `JournalReplay::coordination_events`.
 - Keep one checkpoint writer per journal file, the `write_temporary` test seam, and the checkpoint for a compacted journal. Apply the ratio of 8 to the total checkpoint bytes.
+- `edit_hook_authorization` selects by the declared path. `locked_first_touch_selection` validates that selection again under the lock. Preserve path-owner selection, ambiguity recovery, and named `check --reservation` behavior.
 - Probes: `${SESSION_DIR}/tmp/p56-measure/measure-decode.py` and `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py`; Mac sample `/tmp/claude/scratch/p53-probe-4406cc` (scratch end 2026-11-25).
 
 **Files:**
 - `crates/cargo-berth/src/ledger/` — replay, checkpoint and handle
-- `crates/cargo-berth/src/hook/` and `crates/cargo-berth/src/reconcile.rs` — the replay callers on the edit path; step 2 names the exact ones
+- `crates/cargo-berth/src/hook/` — entry to the edit check
+- `crates/cargo-berth/src/reconcile.rs` — reconciliation and replay updates
+- `crates/cargo-berth/src/verb/check.rs` — share the replay across the first decision and its retry
+- `crates/cargo-berth/src/verb/claim/acquisition.rs` — reuse the replay for identity, acquisition, and the default answer
+- `crates/cargo-berth/src/verb/refusal.rs` — reuse the replay in the check's refusal audit
 - `crates/cargo-berth/src/gate/reference_transaction.rs` and `crates/cargo-berth/src/session/reservation_command.rs` — the reservation readers named in the lazy decode design
 
 **Workers:** 1 writer.
