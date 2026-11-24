@@ -4,6 +4,8 @@
 
 The tile unit ran the `remove-running-section-tile-fixes` plan from 2026-10-08 to 2026-11-22. The plan fixed and extended cargo-tile, the grid and status line in `tui_pane`, the capture shim, and parts of cargo-berth, cargo-handler and cargo-port. All built work is on main at a9dea4906.
 
+The `tile-count-row-and-notice` plan followed on 2026-11-22 to 2026-11-24. Its design is under "Count row and notice placement" below.
+
 This page lists what each finished phase built, the phases that were not built, and the open follow-ups. The full per-phase as-built notes (files, gates, review rounds) are in the last plan doc: `git show 55f173926:docs/cargo-port/remove-running-section-tile-fixes.md`.
 
 ## Built
@@ -115,6 +117,18 @@ Each line is the behavior that one phase made true. The phase id finds its notes
 - A CI nextest run shows its progress meter (Phase 50).
 - A reader scenario ends its fake cargo processes (Phase 51).
 - A lifecycle test leaves no process running (Phase 53).
+
+## Count row and notice placement
+
+A command cell whose processes do not fit keeps its last body row for `+{hidden} more`, at every width, full width included. The notice over the grid moves at most once, when the grid settles, and then stays still.
+
+- `CommandRowBudget` (`crates/cargo-tile/src/render/frame_preparation.rs`) measures a cell's rows with the same heading rule as the painter. `reserve_command_rows` builds it once per cell.
+- `HiddenProcessCount` (render.rs) is all fit, or some hidden with a `NonZeroUsize` count. `hidden_process_count_label` is the one label formatter, and `draw_hidden_process_count` paints it. `measured_table_row_use` counts the separator row.
+- `TableSeparators::for_visible_groups` puts a cell's spare empty row between its last two directory groups, never directly above `+N more`. A one-group cell lends its spare row to a column mate through the column allocator (`crates/tui_pane/src/tiles/grid/allocation.rs`).
+- cargo-tile draws notices through `tui_pane::render_toasts_over_grid` at one site, render.rs `draw`. The hold and the settled move are in `docs/tui_pane/as-built/toast-visual-deadline.md`.
+- Tests: the count-row tests in render.rs cover heights 53-67 with exact process and CPU-cell checks (`near_full_summary_and_command_cells_leave_no_blank_rows_above_the_foot`, `a_command_cell_uses_its_spare_row_between_the_last_two_directory_groups`, `a_full_width_command_cell_counts_its_hidden_processes`). `one_click_closes_the_startup_notice_after_the_grid_changes_height` (`shim_registration/app_scenarios.rs`) checks the [x] click.
+
+Ruled out: an empty row directly above `+N more`. The user approved the split between the last two directory groups.
 
 ## Not built
 

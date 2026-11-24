@@ -41,6 +41,22 @@ The bottom border carries the page mark without covering the countdown or action
 Tracked overflow retains its own final `(+N more)` row and exact count.
 The startup body is built once for each frame after layout.
 
+## Placement over a moving grid
+
+`overlays/frame_tail.rs::render_toasts_over_grid` takes the `&TileGrid` and draws the toasts over it through the crate-private `Toasts::render_over_grid`.
+`GridToastStack` (`toasts/render/drawing.rs`, field `Toasts::grid_stack`) is `Unplaced` or `Placed`.
+The grid reports `GridStability::{Moving, Settled}`, and `Placed` stores it.
+The first draw finds the stack's rows.
+While the grid moves, the stack holds its first visible place and the card draws over a moving footer.
+`GridToastStack::next_visual_change_deadline` then asks for the next frame; the 8 ms clamp above still applies.
+On the first settled frame the card moves once to its settled place.
+If the settled place cannot hold the full stack (`full_stack_fits`), the card keeps its old place.
+After that, the place holds while the viewport stays the same, no new toast joins, each card keeps its settled height, and no protected frame foot reaches the cards.
+A grid cell that changes height does not move a card, so the [x] hitbox matches the drawn [x] on every frame.
+
+A test that steps toast deadlines must draw a settled frame first; otherwise each step waits on a grid that never settles.
+`toasts/render/placement_tests.rs` checks the hold, the one settled move, a rising protected foot, and a settled corner that is too short.
+
 ## Titles and the first sentence
 
 `toasts/render/card.rs::fitted_toast_title` fits the title beside the close control.
