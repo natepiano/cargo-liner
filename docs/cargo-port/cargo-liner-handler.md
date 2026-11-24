@@ -1224,8 +1224,8 @@ The copies are deleted. No source changes.
 **Spec:**
 1. The fault (Mac sample, release, median of 3, after Phase 56): the gate (`__reference-transaction prepared`) costs 168 ms CPU. An edit of an unreserved file costs 5,092 ms CPU: that path runs reconcile and decodes the 27.3 MB checkpoint five times in one call. Report: `${SESSION_DIR}/phases/56/measure_reply.md`.
 2. Reuse one `JournalReplay` for each edit hook call. Pass it through `check::decide`, `reconcile_for_check`, the decision retry, and first-touch acquisition. Include the default answer and the refusal audit when these paths run. Advance the journal tail and validate its generation and the session mapping under the lock before a write. Reload after journal replacement. Preserve each hook answer.
-3. If the gate or the edit check still costs more than about 100 ms in release, apply the lazy decode in `${SESSION_DIR}/phases/56/design.md`, section 3. Give `incursion_incidents` its own part. Use the format and fold constraints below.
-4. Report the CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
+3. Report the CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
+4. The lazy decode is not part of this phase. The measure showed that most of the edit cost is not the decode, so Phase 56c owns the profile and the lazy decode.
 
 **Constraints from prior phases:**
 - Version 4 still has one header line and one `JournalReplay` line. Bump `FOLD_FORMAT_VERSION` from 4 if the layout changes. Reject old headers before decoding the replay and rebuild from byte 0.
@@ -1241,7 +1241,6 @@ The copies are deleted. No source changes.
 - `crates/cargo-berth/src/verb/check.rs` — share the replay across the first decision and its retry
 - `crates/cargo-berth/src/verb/claim/acquisition.rs` — reuse the replay for identity, acquisition, and the default answer
 - `crates/cargo-berth/src/verb/refusal.rs` — reuse the replay in the check's refusal audit
-- `crates/cargo-berth/src/gate/reference_transaction.rs` and `crates/cargo-berth/src/session/reservation_command.rs` — the reservation readers named in the lazy decode design
 
 **Workers:** 1 writer.
 - `impl`: all files.
@@ -1263,7 +1262,7 @@ The copies are deleted. No source changes.
 **Spec:**
 1. The fault (Mac sample, release, median of 3, after Phase 56b): the unreserved edit costs 4,703 ms CPU with one checkpoint decode and 267.4 MB read. The decode is about 150 ms, so about 4.5 s is elsewhere. The gate costs 173.7 ms, most of it the one decode. Report: `${SESSION_DIR}/phases/56b/measure_reply.md`.
 2. First profile the unreserved edit on the Mac release sample. Name the top costs by function, with CPU ms and read bytes. Cut the top cost at its cause. Each hook answer stays the same.
-3. Then, if the gate or the edit check still costs more than about 100 ms, apply the lazy decode in `${SESSION_DIR}/phases/56/design.md`, section 3, with the format constraints of Phase 56b.
+3. Then, if the gate or the edit check still costs more than about 100 ms, apply the lazy decode in `${SESSION_DIR}/phases/56/design.md`, section 3, with the format constraints of Phase 56b. Give `incursion_incidents` its own part. The reservation readers in `crates/cargo-berth/src/gate/reference_transaction.rs` and `crates/cargo-berth/src/session/reservation_command.rs` take part in that design.
 4. Report CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
 
 **Files:** `crates/cargo-berth/src/` — the profile names them.
