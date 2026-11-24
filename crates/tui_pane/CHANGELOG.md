@@ -9,7 +9,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Added
 
-- `render_toasts_over_grid` draws the framework's toasts over a tile grid and keeps their cards out of the protected frame feet.
+- `render_toasts_over_grid` draws the framework's toasts over a `TileGrid` and keeps their cards out of the protected frame feet.
 - Grid animations hold their position during pause and continue from that position on resume.
 - `FullScreenView` and `FullScreenCell` keep one tile's identity, motion clock and app policy state on its way to and from the full pane. `FullScreenStep` and `FullScreenSettle` tell the app what to draw. Clicks and pointer regions read the drawn full-screen tile first.
 - `FullScreenView::status_hint` gives the status slot for the view: the app's expand action in the grid, and `esc collapse` while a tile shows.
@@ -60,6 +60,7 @@ and this crate adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.h
 
 ### Fixed
 
+- A toast placed while a tile grid moves finds its rows again on the first settled frame, then keeps them.
 - A toast over a tile grid keeps its place and its close button while grid cells change height. It no longer hides and slides in again. It moves once when a protected frame foot reaches it, and it finds new rows when a card has less than its full height.
 - Make the selected settings row readable in every shipped theme.
 - Wrap settings values at words or path separators and keep a space before the border.
