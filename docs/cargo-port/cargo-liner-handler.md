@@ -990,7 +990,7 @@ The copies are deleted. No source changes.
 - `crates/tui_pane/src/app_config/mod.rs`, `crates/tui_pane/src/lib.rs` — re-exports of the install function and types
 - `crates/cargo-handler/src/theme/files.rs` — the handler install call and its theme notes
 
-### Phase 49 — a tree-scope claim on a folder that does not exist yet holds that folder  · status: todo
+### Phase 49 — a tree-scope claim on a folder that does not exist yet holds that folder  · status: done
 
 #### Work Order
 
