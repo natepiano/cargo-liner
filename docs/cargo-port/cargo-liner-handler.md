@@ -1081,6 +1081,9 @@ The copies are deleted. No source changes.
 6. Add the second case as a row of the same test.
 7. Background: `~/.claude/projects/-home-natepiano-rust-hana/memory/cargo-berth-coordination.md` records the same behavior. Read it only.
 
+**Constraints from prior phases:**
+- `RetainedReservationSet::apply_evidence` skips `target_proof_commits` for `ProtectedTipAncestor` revalidations after release. Keep the released tip and earlier proof commits available to `cross_target_predecessor_evidence`.
+
 **Files:**
 - `crates/cargo-berth/src/verb/release.rs` — the release and checkpoint tip choice
 - `crates/cargo-berth/src/git/` — `reservation_checkpoint_commits` and reachability
@@ -1184,6 +1187,9 @@ The copies are deleted. No source changes.
 3. Find the cause in cargo-berth: which hold rule matched these paths, and why. Fix it so the hold answer, and the hold itself, follow the holder's scope. If the hold is correct by design, make the answer name the rule that holds the path.
 4. Add a test with a merge-protected reservation and a path outside its scopes. The write is not refused for that holder.
 
+**Constraints from prior phases:**
+- `AnswerRecord` authorizes edits through `OverlapCoverage`. The reservation holds the scopes. `JournalReplay::coordination_events` keeps the full `ConflictAuthorization` for each answer.
+
 **Files:**
 - `crates/cargo-berth/src/` — the hold check and its answer, found in step 3
 
@@ -1199,48 +1205,26 @@ The copies are deleted. No source changes.
 
 ### Phase 56 — a cargo-berth hook call no longer decodes the whole replay checkpoint  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the base CPU of a cargo-berth hook call falls well below its Phase 53 cost at Hana ledger size. Source: the Phase 53 Mac probe; the showrunner approved it 2026-11-23. CPU cost ranks first, so it runs right after Phase 54.
-
-**Spec:**
-1. The fault (Mac, 2026-11-22, Phase 53 probe): with no replay tail, one hook call costs about 1.6 s CPU and reads about 35 MB. Most of it is reading and decoding the 35-40 MB `replay-checkpoint.json` (`ReplayCheckpoint::decode_replay`, `crates/cargo-berth/src/ledger/replay_checkpoint.rs`) into a whole `JournalReplay`. The baseline for this phase is the Phase 53 Mac cycle at write ratio 8: 79 hook calls, mean hook CPU 2144 ms, mean read 43.5 MB per call, checkpoint 40.3 MB.
-2. First measure the decode share of hook CPU: time `serde_json::from_slice::<JournalReplay>` with thread CPU time on the Mac sample of the Phase 53 probe. The probe is `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py` (arguments: candidate binary, write ratio, baseline binary, mode `cycle`, and an optional decode binary). The Mac sample is `/tmp/claude/scratch/p53-probe-4406cc` (its `ledger` folder beside the binaries; scratch end 2026-11-25). Run it through `~/.claude/scripts/mac_test/mac_queue_run.py --kind probe`. With a decode binary, the probe sets `PHASE53_DECODE_CPU=1` and reads a `phase53-decode-cpu-ns <n>` stderr line: add that print only in a probe build, never in the commit. If the sample is gone, copy the Hana ledger (`/home/natepiano/rust/hana/.git/cargo-berth`) read-only to a new Mac sample.
-3. Then cut the cost at its cause. Showrunner ruling 2026-11-23, from the step 2 measure (release hook about 194 ms, 78% decode; the checkpoint grows from the fold, not the decode):
-   - Bound `target_proof_commits` to what reconcile needs. A research step and a test that reconcile answers stay the same come first.
-   - Keep each answer authorization in one record only. Two records never hold the same fact.
-   - An old checkpoint on a live ledger (Hana 45.5 MB) loads or rebuilds from the journal with no hand step. Test that path.
-   - Add a lazy decode of only the parts a hook reads only if the edit check and the gate read stay over about 100 ms release after the cut.
-   Each hook path must keep the same answers.
-4. Report the CPU and read bytes of one hook call before and after on the same Mac sample, three runs each.
-5. Measure the checkpoint write ratio again with the probe's `cycle` mode at the new checkpoint cost, on release builds. Report release numbers in the checkpoint. Keep `REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO` at 8, or set the value the cycle shows is better, and update its comment with the new numbers.
-
-**Constraints from prior phases:**
-- `replay-checkpoint.json` holds two JSON lines: a `CheckpointHeader`, then the `JournalReplay` of the first `end_offset` journal bytes. `load` decodes the header first and the replay line only when the header still describes the journal (fold version, repository, journal device and inode, length, last record digest). A new format keeps a header that is checked before the large part is decoded.
-- A checkpoint format change bumps `FOLD_FORMAT_VERSION` (`crates/cargo-berth/src/ledger/constants.rs`, now 3), so an old checkpoint is ignored and the journal replays from byte 0.
-- A refresh writes the whole checkpoint only when `WriteBudget` admits it: `REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO` (8) checkpoint bytes per complete journal byte appended since the checkpoint, after the 256 KiB or 256 record interval. A replay from byte 0 has `WriteBudget::Unlimited`. The ratio 8 is calibrated against the current full-rewrite cost.
-- One writer per journal file: the writer takes `try_lock` on the journal, then `publication_decision` rereads the published header and writes only when it is the header the replay read, or absent. A failed write never fails the replay.
-- `ReplayCheckpoint` takes its temporary-file writer as the `write_temporary` field (`fn(&mut File, &[u8]) -> io::Result<()>`). Tests set `counting_write` to count bytes. Keep this seam for the write-volume tests.
-- Compaction also writes a checkpoint for the compacted journal: `ReplayCheckpoint::store_for_journal_file`, called from `crates/cargo-berth/src/ledger/compaction/journal_compaction.rs`. The new format must cover that path (`compaction_leaves_a_checkpoint_for_the_new_journal`).
-- Compaction is the folder `crates/cargo-berth/src/ledger/compaction/` (`mod.rs`, `journal_compaction.rs`, `superseded_extents.rs`, `maintenance.rs`, `fixtures.rs`). `SupersededExtents` and `finished_history` are fold state that maintenance reads from the transaction replay.
+- `RetainedReservationSet::apply_evidence` omits new `target_proof_commits` when it revalidates a released reservation with `ProtectedTipAncestor` evidence. It retains earlier proofs, rewritten witness proofs, and proofs for outstanding reservations.
+- `Reservation::record_widen_authorization` stores identical `ExistingAnswersCoverEveryOverlap` bindings once. It keeps bindings for each distinct scope revision.
+- `AnswerRecord` stores `worktree` and `Vec<OverlapCoverage>` for edit checks. The coverage rule matches shared scope or an exact scope revision. The coordination event keeps each full `ConflictAuthorization`.
+- `FOLD_FORMAT_VERSION` is 4. The reader checks the header before decoding the full `JournalReplay`. A version-3 header causes replay from byte 0.
+- On the same Mac release sample, the checkpoint shrank from 40.3 MB to 27.3 MB. Median gate CPU fell from 286 ms to 168 ms. Median CPU for an unreserved edit fell from 5,933 ms to 5,092 ms.
+- At ratio 8, the 79-call release cycle used 199 ms mean CPU per call and wrote 28.7 MB of checkpoints. The baseline used 276 ms and wrote 43.4 MB.
 
 **Files:**
-- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — the checkpoint format and decode
-- `crates/cargo-berth/src/ledger/journal.rs` — `JournalReplay`
-- `crates/cargo-berth/src/ledger/constants.rs` — `FOLD_FORMAT_VERSION` and `REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO`
-- `crates/cargo-berth/src/ledger/compaction/journal_compaction.rs` — the checkpoint written for a compacted journal
-- `crates/cargo-berth/src/ledger/handle.rs` and `crates/cargo-berth/src/hook/` — the hook replay callers; step 3 names the exact ones
+- `crates/cargo-berth/src/answer/conflict_authorization.rs` and `crates/cargo-berth/src/answer/mod.rs` — overlap coverage rules and types
+- `crates/cargo-berth/src/ledger/constants.rs` — format version and write ratio
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — version-3 migration test
+- `crates/cargo-berth/src/reconcile.rs` — cross-target proof tests
+- `crates/cargo-berth/src/reservation/record.rs` — widen bindings
+- `crates/cargo-berth/src/reservation/retention.rs` — proof retention and answer records
 
-**Workers:** 1 writer.
-- `impl`: all files.
+**Binds later work** — A format change bumps `FOLD_FORMAT_VERSION` and preserves edit authorization and full coordination events. Cross-target readiness uses the released tip and earlier proof commits.
 
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- A test shows that replay answers from the new checkpoint equal a whole-journal replay.
-- `a_large_checkpoint_limits_bytes_written_per_appended_record` and `compaction_leaves_a_checkpoint_for_the_new_journal` pass.
-- No changed test takes one second or more.
+**Gotchas** — Released tip proof retention assumes stable ancestry. Git replace refs can change ancestry. The measured edit runs reconciliation and decodes the checkpoint five times.
 
 ### Phase 56b — a cargo-berth hook call decodes the replay checkpoint once  · status: todo
 
@@ -1251,16 +1235,19 @@ The copies are deleted. No source changes.
 **Spec:**
 1. The fault (Mac sample, release, median of 3, after Phase 56): the gate (`__reference-transaction prepared`) costs 168 ms CPU. An edit of an unreserved file costs 5,092 ms CPU: that path runs reconcile and decodes the 27.3 MB checkpoint five times in one call. Report: `${SESSION_DIR}/phases/56/measure_reply.md`.
 2. First cut: find each place on the unreserved-edit path that replays the journal again (a new `JournalReplay` from the checkpoint). Make one hook call replay once and pass the replay on. Each hook answer stays the same.
-3. Second cut, only if the gate or the edit check stays over about 100 ms release: the lazy decode from Phase 56 `design.md` section 3 (decode only the parts a hook reads; `incursion_incidents` gets its own part).
+3. If the gate or the edit check still costs more than about 100 ms in release, apply the lazy decode in `${SESSION_DIR}/phases/56/design.md`, section 3. Give `incursion_incidents` its own part. Use the format and fold constraints below.
 4. Report the CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
 
 **Constraints from prior phases:**
-- Phase 56 constraints hold: header checked before the replay is decoded; a format change bumps `FOLD_FORMAT_VERSION` (now 4); one writer per journal file; `write_temporary` seam; compaction writes a checkpoint too.
+- Version 4 still has one header line and one `JournalReplay` line. Bump `FOLD_FORMAT_VERSION` from 4 if the layout changes. Reject old headers before decoding the replay and rebuild from byte 0.
+- `AnswerRecord` keeps `worktree` and `Vec<OverlapCoverage>`. Keep the coverage rules and bindings in the reservation fold. Keep full `ConflictAuthorization` values in the answer events in `JournalReplay::coordination_events`.
+- Keep one checkpoint writer per journal file, the `write_temporary` test seam, and the checkpoint for a compacted journal. Apply the ratio of 8 to the total checkpoint bytes.
 - Probes: `${SESSION_DIR}/tmp/p56-measure/measure-decode.py` and `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py`; Mac sample `/tmp/claude/scratch/p53-probe-4406cc` (scratch end 2026-11-25).
 
 **Files:**
 - `crates/cargo-berth/src/ledger/` — replay, checkpoint and handle
 - `crates/cargo-berth/src/hook/` and `crates/cargo-berth/src/reconcile.rs` — the replay callers on the edit path; step 2 names the exact ones
+- `crates/cargo-berth/src/gate/reference_transaction.rs` and `crates/cargo-berth/src/session/reservation_command.rs` — the reservation readers named in the lazy decode design
 
 **Workers:** 1 writer.
 - `impl`: all files.
@@ -1270,6 +1257,7 @@ The copies are deleted. No source changes.
 **Verification:**
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - A test counts the checkpoint decodes in one unreserved-edit hook call: one.
+- If the format changes, check that a version-4 checkpoint rebuilds and that a partial replay gives the same answers as a whole-journal replay.
 - No changed test takes one second or more.
 
 ### Phase 57 — mend --fix names each fix it applies  · status: todo
@@ -1286,7 +1274,9 @@ The copies are deleted. No source changes.
 
 **Files:**
 - `crates/cargo-mend/src/reporting/outcome.rs` — the count notice (`"import fix(es)"`)
-- the fix pass that applies the edits and knows each finding's location; the writer names it
+- `crates/cargo-mend/src/fixes/runner/apply.rs` and `crates/cargo-mend/src/fixes/runner/chain.rs` — apply and validate the fix passes
+- `crates/cargo-mend/src/fixes/imports/import_scan.rs` — the validated fix set and the edit writer
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — the output test for applied fixes
 
 **Workers:** 1 writer.
 - `impl`: all files.
@@ -1310,6 +1300,9 @@ The copies are deleted. No source changes.
 3. Fix part 1: name the standard macros that bind no name in the block (`assert`, `assert_eq`, `assert_ne`, `debug_assert*`, `panic`, `unreachable`, `todo`, `print*`, `eprint*`, `format`, `write*`, `vec`, `matches`, and the `log` and `tracing` macros). A block with only these macros keeps its bindings `Known`. Any other macro keeps `Unknown`.
 4. Fix part 2: a macro-body name does not block the import when the new import names the same item that the name resolves to in that scope.
 5. Keep the Phase 47 positive control (`unbound_first_segment` in `BLOCK_BINDINGS_SOURCE`, `tests/diagnostics/import_fixes.rs`) and the Phase 54 glob tests passing.
+
+**Constraints from prior phases:**
+- In a scope with a glob, a new module binding collides only if the file uses the name outside the rewritten paths. Include macro bodies in this check. Blocking all glob scopes dropped the finding in 1,032 of 2,344 Hana files.
 
 **Files:**
 - `crates/cargo-mend/src/` — `BlockBindings` (Phase 47) and the macro footprint and collision check (Phase 54); the writer names the exact files
