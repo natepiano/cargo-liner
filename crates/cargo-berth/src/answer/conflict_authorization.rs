@@ -314,29 +314,147 @@ impl ConflictAuthorization {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
+        match self.overlap_coverage() {
+            ConflictOverlapCoverage::NoConflict => false,
+            ConflictOverlapCoverage::Covered {
+                coverage_rule,
+                overlaps,
+            } => matches!(
+                coverage_rule.coverage(
+                    overlaps,
+                    counterpart_id,
+                    counterpart_scope_revision,
+                    overlap_scope,
+                    path_case,
+                ),
+                CoverageMatch::Covered
+            ),
+        }
+    }
+
+    /// Collect the rules and bindings from `authorizations` that have overlaps.
+    pub(crate) fn collect_overlap_coverage(authorizations: &[Self]) -> Vec<OverlapCoverage> {
+        authorizations
+            .iter()
+            .filter_map(|authorization| match authorization.overlap_coverage() {
+                ConflictOverlapCoverage::NoConflict => None,
+                ConflictOverlapCoverage::Covered {
+                    coverage_rule,
+                    overlaps,
+                } => Some(OverlapCoverage {
+                    coverage_rule,
+                    overlaps: overlaps.clone(),
+                }),
+            })
+            .collect()
+    }
+
+    const fn overlap_coverage(&self) -> ConflictOverlapCoverage<'_> {
         match self {
-            Self::NoConflict => false,
+            Self::NoConflict => ConflictOverlapCoverage::NoConflict,
             Self::Enrollment { overlaps }
             | Self::Sequence { overlaps, .. }
             | Self::SequencePerHolder { overlaps, .. }
             | Self::SequenceWithExistingEdges { overlaps, .. }
             | Self::Defer { overlaps, .. }
-            | Self::Override { overlaps, .. } => {
-                overlaps.as_slice().iter().any(|authorized_overlap| {
-                    authorized_overlap.covers_shared_scope(counterpart_id, overlap_scope, path_case)
-                })
+            | Self::Override { overlaps, .. } => ConflictOverlapCoverage::Covered {
+                coverage_rule: CoverageRule::SharedScope,
+                overlaps,
             },
             Self::ExistingAnswersCoverEveryOverlap { overlaps } => {
-                overlaps.as_slice().iter().any(|authorized_overlap| {
-                    authorized_overlap.covers(
-                        counterpart_id,
-                        counterpart_scope_revision,
-                        overlap_scope,
-                        path_case,
-                    )
-                })
+                ConflictOverlapCoverage::Covered {
+                    coverage_rule: CoverageRule::ExactRevision,
+                    overlaps,
+                }
             },
         }
+    }
+}
+
+enum ConflictOverlapCoverage<'authorization> {
+    NoConflict,
+    Covered {
+        coverage_rule: CoverageRule,
+        overlaps:      &'authorization AuthorizedOverlapSet,
+    },
+}
+
+/// The result of applying a coverage rule to a counterpart and scope.
+pub(crate) enum CoverageMatch {
+    Covered,
+    Uncovered,
+}
+
+/// How a recorded overlap binding matches a later conflict.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CoverageRule {
+    /// An enrollment or an answer covers its shared scopes whatever else the counterpart later
+    /// protects.
+    SharedScope,
+    /// A widen covered by existing answers binds only the exact counterpart revision it observed.
+    ExactRevision,
+}
+
+/// The bindings of one [`ConflictAuthorization`] and the [`CoverageRule`] that matches them.
+///
+/// This is all that [`ConflictAuthorization::covers`] reads. It holds no ordering edge, holder or
+/// reason, so a record that keeps it holds no second copy of those fields.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct OverlapCoverage {
+    #[serde(rename = "rule")]
+    coverage_rule: CoverageRule,
+    overlaps:      AuthorizedOverlapSet,
+}
+
+impl CoverageRule {
+    /// Check whether one of `overlaps` covers this counterpart and scope.
+    fn coverage(
+        self,
+        overlaps: &AuthorizedOverlapSet,
+        counterpart_id: ReservationId,
+        counterpart_scope_revision: &OverlapScopeRevision,
+        overlap_scope: &ReservationScope,
+        path_case: PathCase,
+    ) -> CoverageMatch {
+        if overlaps
+            .as_slice()
+            .iter()
+            .any(|authorized_overlap| match self {
+                Self::SharedScope => {
+                    authorized_overlap.covers_shared_scope(counterpart_id, overlap_scope, path_case)
+                },
+                Self::ExactRevision => authorized_overlap.covers(
+                    counterpart_id,
+                    counterpart_scope_revision,
+                    overlap_scope,
+                    path_case,
+                ),
+            })
+        {
+            CoverageMatch::Covered
+        } else {
+            CoverageMatch::Uncovered
+        }
+    }
+}
+
+impl OverlapCoverage {
+    /// Check this counterpart and scope with the rule from the original [`ConflictAuthorization`].
+    pub(crate) fn coverage(
+        &self,
+        counterpart_id: ReservationId,
+        counterpart_scope_revision: &OverlapScopeRevision,
+        overlap_scope: &ReservationScope,
+        path_case: PathCase,
+    ) -> CoverageMatch {
+        self.coverage_rule.coverage(
+            &self.overlaps,
+            counterpart_id,
+            counterpart_scope_revision,
+            overlap_scope,
+            path_case,
+        )
     }
 }
 
