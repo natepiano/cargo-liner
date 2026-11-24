@@ -1197,7 +1197,7 @@ The copies are deleted. No source changes.
 - The new test fails before the fix and passes after it.
 - No changed test takes one second or more.
 
-### Phase 56 — a cargo-berth hook call no longer decodes the whole replay checkpoint  · status: todo
+### Phase 56 — a cargo-berth hook call no longer decodes the whole replay checkpoint  · status: done
 
 #### Work Order
 
