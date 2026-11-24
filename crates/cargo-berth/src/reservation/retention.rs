@@ -20,6 +20,7 @@ use super::containment::ActingHeadContainment;
 use super::evidence::ProtectedReservationTip;
 use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
+use super::lifecycle::IntegrationProof;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReleaseRevalidationSubject;
 use super::lifecycle::ReservationLifecycle;
@@ -45,6 +46,8 @@ use super::scoped_patch_evaluation::SuccessorScopedPatchTargetEvaluationSchedule
 use crate::answer::AuthorizedOverlap;
 use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
+use crate::answer::CoverageMatch;
+use crate::answer::OverlapCoverage;
 use crate::answer::OverlapScopeRevision;
 use crate::coordination_identity::PresentedCoordinationRun;
 use crate::ids::CoordinationRunId;
@@ -86,13 +89,15 @@ use crate::test_work::Work;
 /// Overlap answers one [`JournalOperation::Answer`] recorded without acquiring a reservation.
 ///
 /// The record protects nothing: it only authorizes edits by `worktree` on the overlaps its
-/// authorizations name, and reciprocally edits by a holder those authorizations name.
+/// answers name, and reciprocally edits by a holder those answers name. The `answer` event in
+/// `JournalReplay::coordination_events` keeps each whole [`ConflictAuthorization`], so this record
+/// keeps only the [`OverlapCoverage`] that `answer_records_cover` reads.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct AnswerRecord {
     /// The worktree that recorded the answers.
-    worktree:       WorktreeId,
-    /// One answer per holder, each bound to the overlap observed under the ledger lock.
-    authorizations: Vec<ConflictAuthorization>,
+    worktree:         WorktreeId,
+    /// The overlaps of each answer, bound to the holder observed under the ledger lock.
+    overlap_coverage: Vec<OverlapCoverage>,
 }
 
 /// Every retained reservation after replaying the journal in append order.
@@ -1118,8 +1123,10 @@ impl RetainedReservationSet {
             },
             JournalOperation::Answer { authorizations, .. } => {
                 self.answer_records.push(AnswerRecord {
-                    worktree:       event.actor.worktree,
-                    authorizations: authorizations.clone(),
+                    worktree:         event.actor.worktree,
+                    overlap_coverage: ConflictAuthorization::collect_overlap_coverage(
+                        authorizations,
+                    ),
                 });
                 Ok(())
             },
@@ -1535,7 +1542,7 @@ impl RetainedReservationSet {
         reservation.advance_integration_proof_subject_revision()?;
         reservation.last_activity_at = recorded_at.clone();
         reservation.advance_revision()?;
-        reservation.authorizations.push(authorization.clone());
+        reservation.record_widen_authorization(authorization);
         Ok(())
     }
 
@@ -1745,7 +1752,21 @@ impl RetainedReservationSet {
                 }
             },
         }
-        reservation.retain_target_proof(status);
+        match (&reservation.lifecycle, status) {
+            // The protected tip of a released reservation no longer changes, and this proof says
+            // the tip is an ancestor of `trunk_oid`. `cross_target_predecessor_evidence` tests that
+            // tip itself, and the tip reaches every trunk that `trunk_oid` reaches, so the tip
+            // already gives each answer that `trunk_oid` could give. Without this, a released
+            // reservation keeps one more proof commit at each trunk advance.
+            (
+                ReservationLifecycle::Released { .. },
+                IntegrationEvidenceStatus::Integrated {
+                    proof: IntegrationProof::ProtectedTipAncestor,
+                    ..
+                },
+            ) => {},
+            _ => reservation.retain_target_proof(status),
+        }
         reservation.integration_status = status.clone();
         reservation.advance_revision()
     }
@@ -1954,13 +1975,16 @@ impl RetainedReservationSet {
         self.answer_records
             .iter()
             .filter(|answer_record| answer_record.worktree == worktree)
-            .flat_map(|answer_record| &answer_record.authorizations)
-            .any(|authorization| {
-                authorization.covers(
-                    counterpart_id,
-                    counterpart_scope_revision,
-                    overlap_scope,
-                    path_case,
+            .flat_map(|answer_record| &answer_record.overlap_coverage)
+            .any(|overlap_coverage| {
+                matches!(
+                    overlap_coverage.coverage(
+                        counterpart_id,
+                        counterpart_scope_revision,
+                        overlap_scope,
+                        path_case,
+                    ),
+                    CoverageMatch::Covered
                 )
             })
     }
@@ -2183,6 +2207,7 @@ impl IncursionIncident {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
 
     use serde_json::Error;
     use serde_json::Value;
@@ -2204,9 +2229,17 @@ mod tests {
     use super::WorktreeOccupancy;
     use super::conflicts_overlapping_holders;
     use super::conflicts_overlapping_holders_by_scan;
+    use crate::answer::AuthorizedOverlap;
+    use crate::answer::AuthorizedOverlapSet;
+    use crate::answer::ClaimSequenceBinding;
+    use crate::answer::ConflictAuthorization;
+    use crate::answer::OverlapAuthorizationReason;
+    use crate::answer::OverlapScopeRevision;
+    use crate::answer::SequencedHolder;
     use crate::coordination_identity::CoordinationIdentityProvenance;
     use crate::coordination_identity::PresentedCoordinationRun;
     use crate::ids::CoordinationRunId;
+    use crate::ids::EdgeId;
     use crate::ids::GitObjectId;
     use crate::ids::InvalidReservationScopePath;
     use crate::ids::ProjectionGeneration;
@@ -2222,6 +2255,7 @@ mod tests {
     use crate::ledger::IntegrationTarget;
     use crate::ledger::JournalEvent;
     use crate::ledger::JournalOperation;
+    use crate::ledger::OrderingDirection;
     use crate::ledger::ReservationScope;
     use crate::ledger::ReservationScopeSet;
     use crate::ledger::ScopeKind;
@@ -4485,14 +4519,14 @@ mod tests {
         )
     }
 
-    /// Build the shared claim event, recording the provenance of the identity it was made under.
     /// A journal from before `answer` records, and a set serialized before `answer_records`
-    /// existed, both load with no answer records.
+    /// existed, both load with no answer records. A set with an answer record stores only the
+    /// worktree and the `OverlapCoverage` of each answer, and loads back unchanged.
     #[test]
     fn a_journal_and_set_from_before_answer_records_load() -> Result<(), Box<dyn std::error::Error>>
     {
         let [claim, checkpoint, ..] = lifecycle_events()?;
-        let retained = RetainedReservationSet::replay(&[claim, checkpoint])?;
+        let retained = RetainedReservationSet::replay(&[claim.clone(), checkpoint])?;
         let mut serialized = serde_json::to_value(&retained)?;
         let removed = serialized
             .as_object_mut()
@@ -4500,9 +4534,419 @@ mod tests {
         assert_eq!(removed, Some(json!([])));
         let loaded = serde_json::from_value::<RetainedReservationSet>(serialized)?;
         assert_eq!(loaded, retained);
+
+        let shared_scopes = test_scope_set(&[("shared.rs", ScopeKind::File)])?;
+        let overlaps = AuthorizedOverlapSet::from(authorized_overlap(
+            FOREIGN_RESERVATION_ID.parse()?,
+            &OverlapScopeRevision::from(&shared_scopes),
+            &shared_scopes,
+        ));
+        let defer = ConflictAuthorization::Defer {
+            overlaps,
+            blocker: FOREIGN_RESERVATION_ID.parse()?,
+            reason: "decide the order later".parse()?,
+        };
+        let answered = RetainedReservationSet::replay(&[claim, answer_event(2, &[defer])?])?;
+        let serialized = serde_json::to_value(&answered)?;
+        let answer_record_fields = serialized["answer_records"][0]
+            .as_object()
+            .map(|fields| fields.keys().map(String::as_str).collect::<BTreeSet<_>>());
+        assert_eq!(
+            answer_record_fields,
+            Some(BTreeSet::from(["overlap_coverage", "worktree"]))
+        );
+        assert_eq!(
+            serde_json::from_value::<RetainedReservationSet>(serialized)?,
+            answered
+        );
         Ok(())
     }
 
+    /// Rule R: an `evidence_revalidated` record of a `Released` reservation with a
+    /// `ProtectedTipAncestor` proof adds no `target_proof_commits` entry. A
+    /// `RewrittenWitnessAncestor` proof, and any proof of an `Outstanding` reservation, still add
+    /// one.
+    #[test]
+    fn a_released_tip_anchored_proof_adds_no_target_proof_commit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let reservation_id = RESERVATION_ID.parse::<ReservationId>()?;
+        let [claim, checkpoint, integrated, release, ..] = lifecycle_events()?;
+        let later_trunks = [SECOND_TRUNK_OID, THIRD_TRUNK_OID];
+        let proof_commits =
+            |events: &[JournalEvent]| -> Result<Vec<GitObjectId>, Box<dyn std::error::Error>> {
+                Ok(RetainedReservationSet::replay(events)?
+                    .reservation(reservation_id)?
+                    .target_proof_commits()
+                    .to_vec())
+            };
+        let revalidations = |proof: &str| {
+            later_trunks
+                .iter()
+                .zip(5..)
+                .map(|(trunk_oid, projection_generation)| {
+                    integrated_evidence(projection_generation, trunk_oid, proof)
+                })
+                .collect::<Result<Vec<_>, _>>()
+        };
+        let released = [
+            claim.clone(),
+            checkpoint.clone(),
+            integrated.clone(),
+            release,
+        ];
+        let first_proof = vec![TRUNK_OID.parse::<GitObjectId>()?];
+        let every_proof = [TRUNK_OID, SECOND_TRUNK_OID, THIRD_TRUNK_OID]
+            .iter()
+            .map(|trunk_oid| trunk_oid.parse::<GitObjectId>())
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(proof_commits(&released)?, first_proof);
+
+        let tip_anchored = [
+            released.as_slice(),
+            revalidations("protected_tip_ancestor")?.as_slice(),
+        ]
+        .concat();
+        assert_eq!(proof_commits(&tip_anchored)?, first_proof);
+        let tip_anchored_set = RetainedReservationSet::replay(&tip_anchored)?;
+        assert!(matches!(
+            &tip_anchored_set.reservation(reservation_id)?.integration_status,
+            IntegrationEvidenceStatus::Integrated { trunk_oid, .. }
+                if trunk_oid.to_string() == THIRD_TRUNK_OID
+        ));
+
+        let witness_anchored = [
+            released.as_slice(),
+            revalidations("rewritten_witness_ancestor")?.as_slice(),
+        ]
+        .concat();
+        assert_eq!(proof_commits(&witness_anchored)?, every_proof);
+
+        let outstanding = [
+            [claim, checkpoint, integrated].as_slice(),
+            revalidations("protected_tip_ancestor")?.as_slice(),
+        ]
+        .concat();
+        assert_eq!(proof_commits(&outstanding)?, every_proof);
+        Ok(())
+    }
+
+    /// Repeated widens under `ExistingAnswersCoverEveryOverlap` store one copy of each binding,
+    /// and a widen that adds no binding records nothing. `reservations_authorize_scope` and each
+    /// `covers` answer stay as they were with every copy.
+    #[test]
+    fn repeated_widen_bindings_are_stored_once_and_answer_alike()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let holder_id = FOREIGN_RESERVATION_ID.parse::<ReservationId>()?;
+        let holder_scopes = test_scope_set(&[("src", ScopeKind::Tree)])?;
+        let holder_revision = OverlapScopeRevision::from(&holder_scopes);
+        let stale_revision =
+            OverlapScopeRevision::from(&test_scope_set(&[("src/old.rs", ScopeKind::File)])?);
+        let library = test_scope_set(&[("src/lib.rs", ScopeKind::File)])?;
+        let old = test_scope_set(&[("src/old.rs", ScopeKind::File)])?;
+        let main = test_scope_set(&[("src/main.rs", ScopeKind::File)])?;
+        let covered = authorized_overlap(holder_id, &holder_revision, &library);
+        let stale = authorized_overlap(holder_id, &stale_revision, &old);
+        let added = authorized_overlap(holder_id, &holder_revision, &main);
+        let widen_authorizations = [
+            vec![covered.clone(), stale.clone()],
+            vec![covered.clone(), stale.clone()],
+            vec![covered.clone(), added.clone()],
+        ]
+        .into_iter()
+        .map(|overlaps| {
+            Ok(ConflictAuthorization::ExistingAnswersCoverEveryOverlap {
+                overlaps: AuthorizedOverlapSet::try_from(overlaps)?,
+            })
+        })
+        .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
+        let retained = RetainedReservationSet::replay(&widen_events(&widen_authorizations)?)?;
+        let holder = retained.reservation(holder_id)?;
+        let requester = retained.reservation(RESERVATION_ID.parse()?)?;
+        let stored_bindings = requester
+            .authorizations
+            .iter()
+            .filter_map(|authorization| match authorization {
+                ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps } => {
+                    Some(overlaps.as_slice())
+                },
+                _ => None,
+            })
+            .flatten()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            stored_bindings,
+            [covered.clone(), stale.clone(), added.clone()]
+        );
+        assert_eq!(
+            requester.authorizations.len(),
+            3,
+            "the second widen records nothing"
+        );
+
+        let mut every_copy = requester.clone();
+        every_copy.authorizations = std::iter::once(ConflictAuthorization::NoConflict)
+            .chain(widen_authorizations)
+            .collect();
+        for (scope_path, authorized) in [
+            ("src/lib.rs", true),
+            ("src/old.rs", false),
+            ("src/main.rs", true),
+            ("src/other.rs", false),
+        ] {
+            let overlap_scope = ReservationScope {
+                path: scope_path.parse()?,
+                kind: ScopeKind::File,
+            };
+            for requester in [requester, &every_copy] {
+                assert_eq!(
+                    super::super::partition::reservations_authorize_scope(
+                        &retained,
+                        requester,
+                        holder,
+                        &overlap_scope,
+                        PathCase::Sensitive,
+                    ),
+                    authorized,
+                    "{scope_path}"
+                );
+            }
+        }
+        for (counterpart_id, revision, overlap_scope) in
+            [&covered, &stale, &added].into_iter().flat_map(|binding| {
+                [&holder_revision, &stale_revision].map(|revision| {
+                    (
+                        binding.reservation_id,
+                        revision,
+                        binding.scopes.as_slice()[0].clone(),
+                    )
+                })
+            })
+        {
+            let covers = |reservation: &Reservation| {
+                reservation.authorizations.iter().any(|authorization| {
+                    authorization.covers(
+                        counterpart_id,
+                        revision,
+                        &overlap_scope,
+                        PathCase::Sensitive,
+                    )
+                })
+            };
+            assert_eq!(covers(requester), covers(&every_copy), "{overlap_scope:?}");
+        }
+        Ok(())
+    }
+
+    /// A holder claim, the shared claim, and one widen of the shared claim under each of
+    /// `authorizations`.
+    fn widen_events(authorizations: &[ConflictAuthorization]) -> Result<Vec<JournalEvent>, Error> {
+        let claims = [
+            claim_event_for(FOREIGN_RESERVATION_ID, "presented")?,
+            claim_event("presented")?,
+        ];
+        let widens = authorizations
+            .iter()
+            .zip(3..)
+            .map(|(authorization, projection_generation)| {
+                journal_event(
+                    projection_generation,
+                    &json!({
+                        "op": "widen",
+                        "reservation_id": RESERVATION_ID,
+                        "added_scopes": [{"path": format!("added_{projection_generation}.rs"), "kind": "file"}],
+                        "cause": {"kind": "explicit", "reason": "repeated widen"},
+                        "authorization": authorization,
+                        "edit_blocking_status": "blocking"
+                    }),
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(claims.into_iter().chain(widens).collect())
+    }
+
+    /// Check `answer_records_cover` against the expected matches for each answer kind.
+    #[test]
+    fn answer_records_cover_as_their_whole_authorizations_did()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let answering_worktree = WORKTREE_ID.parse::<WorktreeId>()?;
+        let holder_id = FOREIGN_RESERVATION_ID.parse::<ReservationId>()?;
+        let second_holder_id = SECOND_FOREIGN_RESERVATION_ID.parse::<ReservationId>()?;
+        let shared = test_scope_set(&[("shared.rs", ScopeKind::File)])?;
+        let other = test_scope_set(&[("other.rs", ScopeKind::File)])?;
+        let bound_revision = OverlapScopeRevision::from(&shared);
+        let widened_revision = OverlapScopeRevision::from(&test_scope_set(&[
+            ("shared.rs", ScopeKind::File),
+            ("other.rs", ScopeKind::File),
+        ])?);
+        let overlaps = AuthorizedOverlapSet::try_from(vec![
+            authorized_overlap(holder_id, &bound_revision, &shared),
+            authorized_overlap(second_holder_id, &bound_revision, &other),
+        ])?;
+        let answers = every_answer_kind(overlaps, holder_id, second_holder_id)?;
+        let scope_holders = [
+            (&shared.as_slice()[0], holder_id),
+            (&other.as_slice()[0], second_holder_id),
+        ];
+        let bound_revisions = [&bound_revision];
+        let revisions = [&bound_revision, &widened_revision];
+        for answer in &answers {
+            let covered_revisions: &[_] = match answer {
+                ConflictAuthorization::NoConflict => &[],
+                ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => &bound_revisions,
+                ConflictAuthorization::Enrollment { .. }
+                | ConflictAuthorization::Sequence { .. }
+                | ConflictAuthorization::SequencePerHolder { .. }
+                | ConflictAuthorization::SequenceWithExistingEdges { .. }
+                | ConflictAuthorization::Defer { .. }
+                | ConflictAuthorization::Override { .. } => &revisions,
+            };
+            let retained = RetainedReservationSet::replay(&[
+                claim_event("presented")?,
+                answer_event(2, std::slice::from_ref(answer))?,
+            ])?;
+            let mut covered_cases = 0_usize;
+            for worktree in [answering_worktree, SECOND_WORKTREE_ID.parse()?] {
+                for counterpart_id in [holder_id, second_holder_id, ReservationId::new()] {
+                    for revision in revisions {
+                        for (overlap_scope, expected_holder_id) in scope_holders {
+                            let expected_coverage = worktree == answering_worktree
+                                && counterpart_id == expected_holder_id
+                                && covered_revisions.contains(&revision);
+                            assert_eq!(
+                                retained.answer_records_cover(
+                                    worktree,
+                                    counterpart_id,
+                                    revision,
+                                    overlap_scope,
+                                    PathCase::Sensitive,
+                                ),
+                                expected_coverage,
+                                "{answer:?} {worktree} {counterpart_id} \
+                                 {revision:?} {overlap_scope:?}"
+                            );
+                            covered_cases += usize::from(expected_coverage);
+                        }
+                    }
+                }
+            }
+            let expected_covered_cases = match answer {
+                ConflictAuthorization::NoConflict => 0,
+                ConflictAuthorization::ExistingAnswersCoverEveryOverlap { .. } => 2,
+                _ => 4,
+            };
+            assert_eq!(covered_cases, expected_covered_cases, "{answer:?}");
+        }
+        Ok(())
+    }
+
+    /// One `ConflictAuthorization` of each kind over `overlaps`, each naming `holder_id` and,
+    /// for a per-holder sequence, `second_holder_id`.
+    fn every_answer_kind(
+        overlaps: AuthorizedOverlapSet,
+        holder_id: ReservationId,
+        second_holder_id: ReservationId,
+    ) -> Result<[ConflictAuthorization; 8], Box<dyn std::error::Error>> {
+        let sequenced_holder = SequencedHolder {
+            blocker:   holder_id,
+            direction: OrderingDirection::HolderBeforeRequester,
+            edge_id:   EdgeId::new(),
+        };
+        let reason = "integrate after the holder".parse::<OverlapAuthorizationReason>()?;
+        Ok([
+            ConflictAuthorization::NoConflict,
+            ConflictAuthorization::Enrollment {
+                overlaps: overlaps.clone(),
+            },
+            ConflictAuthorization::Sequence {
+                overlaps:  overlaps.clone(),
+                blocker:   holder_id,
+                direction: sequenced_holder.direction,
+                edge_id:   sequenced_holder.edge_id,
+                reason:    reason.clone(),
+                replaced:  Vec::new(),
+            },
+            ConflictAuthorization::SequencePerHolder {
+                overlaps: overlaps.clone(),
+                holders:  vec![
+                    sequenced_holder,
+                    SequencedHolder {
+                        blocker: second_holder_id,
+                        ..sequenced_holder
+                    },
+                ],
+                reason:   reason.clone(),
+                replaced: Vec::new(),
+            },
+            ConflictAuthorization::SequenceWithExistingEdges {
+                overlaps: overlaps.clone(),
+                holders:  vec![ClaimSequenceBinding::ExistingEdge {
+                    holder: sequenced_holder,
+                    reason: reason.clone(),
+                }],
+                replaced: Vec::new(),
+            },
+            ConflictAuthorization::Defer {
+                overlaps: overlaps.clone(),
+                blocker:  holder_id,
+                reason:   reason.clone(),
+            },
+            ConflictAuthorization::Override {
+                overlaps: overlaps.clone(),
+                blocker: holder_id,
+                reason,
+            },
+            ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps },
+        ])
+    }
+
+    /// One holder binding at `scope_revision` that covers `scopes`.
+    fn authorized_overlap(
+        reservation_id: ReservationId,
+        scope_revision: &OverlapScopeRevision,
+        scopes: &ReservationScopeSet,
+    ) -> AuthorizedOverlap {
+        AuthorizedOverlap {
+            reservation_id,
+            scope_revision: scope_revision.clone(),
+            scopes: scopes.clone().into(),
+        }
+    }
+
+    /// An `answer` record of `authorizations` by the shared actor.
+    fn answer_event(
+        projection_generation: u64,
+        authorizations: &[ConflictAuthorization],
+    ) -> Result<JournalEvent, Error> {
+        journal_event(
+            projection_generation,
+            &json!({
+                "op": "answer",
+                "scopes": [{"path": "shared.rs", "kind": "file"}],
+                "authorizations": authorizations,
+            }),
+        )
+    }
+
+    /// An `evidence_revalidated` record that the shared reservation is integrated at `trunk_oid`
+    /// by `proof`.
+    fn integrated_evidence(
+        projection_generation: u64,
+        trunk_oid: &str,
+        proof: &str,
+    ) -> Result<JournalEvent, Error> {
+        journal_event(
+            projection_generation,
+            &json!({
+                "op": "evidence_revalidated",
+                "reservation_id": RESERVATION_ID,
+                "status": {"status": "integrated", "trunk_oid": trunk_oid, "proof": proof},
+                "edit_blocking_status": "clear",
+            }),
+        )
+    }
+
+    /// Build the shared claim event, recording the provenance of the identity it was made under.
     fn claim_event(provenance: &str) -> Result<JournalEvent, Error> {
         claim_event_for(RESERVATION_ID, provenance)
     }
