@@ -1353,8 +1353,8 @@ mod layout_tests {
         assert_eq!(layout(&app), expected);
     }
 
-    /// The popup is as wide as its widest row plus the border, never
-    /// narrower than 64 cells, measured from the drawn frame.
+    /// The popup fits its widest row, two borders, and one blank column.
+    /// The popup uses at least 64 cells when the frame has room.
     #[test]
     fn settings_popup_fits_its_widest_row() {
         let mut app = App::new_for_test().expect("quiet settings app");
@@ -1377,7 +1377,7 @@ mod layout_tests {
             .max()
             .unwrap_or(0);
         let widest = SECTION_ITEM_INDENT.chars().count() + 2 + label + 2 + value;
-        let expected = (widest + 2).max(64);
+        let expected = (widest + 3).max(64);
 
         let keymap = Rc::clone(&app.keymap);
         keymap.dispatch_framework_global(GlobalAction::OpenSettings, &mut app);
@@ -1404,5 +1404,10 @@ mod layout_tests {
             .position(|cell| cell == '┐')
             .expect("right border");
         assert_eq!(right - left + 1, expected);
+        let inner = app.framework.settings_pane.viewport().content_area();
+        let gap = u16::try_from(right - 1).expect("blank column position");
+        for y in inner.top()..inner.bottom() {
+            assert_eq!(buffer[(gap, y)].symbol(), " ", "row {y}");
+        }
     }
 }

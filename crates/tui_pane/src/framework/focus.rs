@@ -10,15 +10,14 @@ use crate::CycleDirection;
 use crate::FocusedPane;
 use crate::FrameworkFocusId;
 
-/// Reconcile focus after a focused-toast dismiss or a prune empties
-/// the active set.
+/// Return focus to the first app pane when the last toast closes.
 ///
 /// No-op when current focus is not on Toasts, or when toasts are still
 /// active. When focus is on Toasts and the active set is empty, move
 /// focus to the first live app tab stop. Routes through
 /// [`AppContext::set_focus`] so binary-side overrides observe the
 /// transition.
-pub(super) fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx) {
+pub fn reconcile_focus_after_toast_change<Ctx: AppContext>(ctx: &mut Ctx) {
     {
         let framework = ctx.framework();
         if !matches!(

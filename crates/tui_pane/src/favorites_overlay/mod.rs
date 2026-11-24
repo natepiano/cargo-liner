@@ -137,6 +137,13 @@ impl Default for FavoritesOverlay {
     }
 }
 
+/// Draw Favorites over the notices and record its bounds for input.
+pub fn draw_favorites_overlay<A: FavoritesHost>(frame: &mut Frame<'_>, app: &mut A) {
+    let mode = app.framework().color_mode;
+    let bounds = app.favorites_overlay_mut().render_popup(frame, mode);
+    app.framework_mut().set_app_overlay_bounds(bounds);
+}
+
 impl FavoritesOverlay {
     /// Whether the app modal is currently consuming input.
     #[must_use]
@@ -697,10 +704,14 @@ impl FavoritesOverlay {
         }
     }
 
-    /// Draw only the cached lines intersecting the current viewport.
+    /// Draw only the cached lines in the current viewport.
     pub fn render(&mut self, frame: &mut Frame<'_>, mode: crate::ColorMode) {
+        self.render_popup(frame, mode);
+    }
+
+    fn render_popup(&mut self, frame: &mut Frame<'_>, mode: crate::ColorMode) -> Rect {
         if !self.is_open() {
-            return;
+            return Rect::default();
         }
         let area = frame.area();
         let width = popup_width(area);
@@ -798,6 +809,7 @@ impl FavoritesOverlay {
             ViewportOverflow::new(line_count, scroll_offset, visible_rows, active_line),
             Style::default().fg(label_color()),
         );
+        popup.outer
     }
 
     fn update_vertical_viewport(&mut self, content_area: Rect) -> usize {

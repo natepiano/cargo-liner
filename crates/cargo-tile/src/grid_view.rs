@@ -67,17 +67,55 @@ impl CellScroll {
 /// The grid, or the expanded cell with its scroll position.
 pub(crate) type GridView = FullScreenView<InvocationId, CellScroll>;
 
+/// Grid, view, and row motion use display time.
+pub(super) struct DisplayClock {
+    displayed: Instant,
+    sampled:   Instant,
+}
+
+impl DisplayClock {
+    pub(super) const fn new(now: Instant) -> Self {
+        Self {
+            displayed: now,
+            sampled:   now,
+        }
+    }
+
+    pub(super) const fn held(&self) -> Instant { self.displayed }
+
+    pub(super) fn at(&self, now: Instant) -> Instant {
+        self.displayed + now.saturating_duration_since(self.sampled)
+    }
+
+    pub(super) fn sample(&mut self, now: Instant) -> Instant {
+        self.displayed = self.at(now);
+        self.sampled = self.sampled.max(now);
+        self.displayed
+    }
+
+    pub(super) const fn resume(&mut self, now: Instant) { self.sampled = now; }
+}
+
+/// How preparation samples body motion for this frame.
+#[derive(Clone, Copy)]
+pub(crate) enum DisplayFrameTime {
+    Live,
+    Paused(Instant),
+}
+
 /// Scroll the expanded cell one row, as the arrow key does.
 pub(super) fn scroll(view: &mut GridView, direction: ScrollDirection) {
     let code = match direction {
         ScrollDirection::Up => KeyCode::Up,
         ScrollDirection::Down => KeyCode::Down,
     };
-    key(view, &KeyBind::from(code));
+    if let Some(cell) = view.policy_mut() {
+        cell.key(code);
+    }
 }
 
 /// Esc collapses the cell, and the arrow and page keys scroll it.
-pub(super) fn key(view: &mut GridView, bind: &KeyBind) -> KeyOutcome {
+pub(super) fn key(view: &mut GridView, bind: &KeyBind, display_time: Instant) -> KeyOutcome {
     if matches!(view, GridView::Grid) {
         return KeyOutcome::Unhandled;
     }
@@ -93,7 +131,7 @@ pub(super) fn key(view: &mut GridView, bind: &KeyBind) -> KeyOutcome {
         };
     }
     if bind.code == KeyCode::Esc {
-        view.collapse(Instant::now());
+        view.collapse(display_time);
         return KeyOutcome::Consumed;
     }
     view.policy_mut().map_or_else(

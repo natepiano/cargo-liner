@@ -50,6 +50,8 @@ exit 37
 
     /// Bound subprocess waits even if a regression leaves a FIFO reader blocked.
     const CHILD_OUTPUT_TIMEOUT: Duration = Duration::from_secs(5);
+    /// Use the same lock path as the CLI under test.
+    const SHIM_LOCK_FILE: &str = "cargo-tile-shim.lock";
 
     /// Keep all subprocess resources alive until synchronous commands and assertions finish.
     struct ToolchainLifecycle {
@@ -305,9 +307,13 @@ exit 37
             fs::read_dir(fixture.cargo.parent().expect("toolchain bin path"))
                 .expect("inspect toolchain after uninstall")
                 .count(),
-            1,
-            "no staging or lock file remains"
+            2,
+            "only cargo and the lock file remain"
         );
+        fs::File::open(fixture.cargo.with_file_name(SHIM_LOCK_FILE))
+            .expect("open persistent lock file")
+            .try_lock()
+            .expect("uninstall released the lock");
         let output = fixture
             .command(&fixture.cargo)
             .arg("build")
@@ -315,6 +321,46 @@ exit 37
             .expect("execute restored original cargo");
         assert_cargo_output(&output);
         fixture.assert_fallback_untouched();
+    }
+
+    #[test]
+    fn install_succeeds_with_a_leftover_shim_lock_file() {
+        let fixture = ToolchainLifecycle::new();
+        let original = fs::metadata(&fixture.cargo).expect("inspect original fake cargo");
+        let lock = fixture.cargo.with_file_name(SHIM_LOCK_FILE);
+        fs::write(&lock, b"left by a former installer").expect("create unheld lock file");
+        let lock_file = fs::File::open(&lock).expect("open the unheld lock file");
+
+        assert_eq!(
+            fixture.cli(&["install"]).lines().next(),
+            Some(format!("{TOOLCHAIN}: capture shim installed").as_str())
+        );
+        assert_original_cargo(&fixture.cargo.with_file_name("cargo-tile-real"), &original);
+        assert_installed_shim(&fixture.cargo);
+        assert_eq!(
+            fs::read(&lock).expect("read the persistent lock file"),
+            b"left by a former installer"
+        );
+        let original_lock = lock_file
+            .metadata()
+            .expect("inspect the original lock file");
+        let installed_lock = fs::metadata(&lock).expect("inspect the lock file after install");
+        assert_eq!(installed_lock.dev(), original_lock.dev());
+        assert_eq!(installed_lock.ino(), original_lock.ino());
+
+        lock_file.try_lock().expect("hold the original lock file");
+        let output = fixture
+            .command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")))
+            .arg("install")
+            .output()
+            .expect("install while the original lock is held");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&format!(
+                "{}: another capture shim operation holds the lock",
+                lock.display()
+            )),
+            "{output:?}"
+        );
     }
 
     #[test]
@@ -341,17 +387,20 @@ exit 37
         }
         let waiting = fixture.path("rustup/toolchains/z-waiting/bin");
         fs::create_dir_all(&waiting).expect("later toolchain directory");
-        if operation == "status" {
+        let _held_lock = if operation == "status" {
             let output = Command::new("mkfifo")
                 .arg(waiting.join("cargo"))
                 .output()
                 .expect("create blocked status inspection");
             assert!(output.status.success(), "{output:?}");
+            None
         } else {
             write_executable(&waiting.join("cargo"));
-            fs::write(waiting.join("cargo-tile-shim.lock"), b"another writer")
-                .expect("hold the later toolchain lock");
-        }
+            Some(hold_shim_lock(
+                &waiting.join(SHIM_LOCK_FILE),
+                b"another writer",
+            ))
+        };
         let mut command = fixture.command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")));
         command.arg(operation);
         let output = terminate_after_first_row(&mut command);
@@ -376,11 +425,19 @@ exit 37
                 FIXTURE_CARGO.as_bytes()
             );
             assert_eq!(
-                fs::read(waiting.join("cargo-tile-shim.lock")).expect("other writer's lock"),
+                fs::read(waiting.join(SHIM_LOCK_FILE)).expect("other writer's lock"),
                 b"another writer"
             );
         }
         fixture.assert_fallback_untouched();
+    }
+
+    /// Keep an independent lock alive while a CLI child tries to acquire it.
+    fn hold_shim_lock(path: &Path, contents: &[u8]) -> fs::File {
+        fs::write(path, contents).expect("write lock fixture");
+        let file = fs::File::open(path).expect("open lock fixture");
+        file.try_lock().expect("hold fixture lock");
+        file
     }
 
     /// Own the CLI child until cleanup completes, including during a panic.
@@ -446,8 +503,8 @@ exit 37
         fixture.cli(&["install"]);
         let saved = fixture.cargo.with_file_name("cargo-tile-real");
         let pending = fixture.cargo.with_file_name("pending-real-cargo");
-        let lock = fixture.cargo.with_file_name("cargo-tile-shim.lock");
-        fs::write(&lock, b"concurrent installer").expect("other installer holds lock");
+        let lock = fixture.cargo.with_file_name(SHIM_LOCK_FILE);
+        let held_lock = hold_shim_lock(&lock, b"concurrent installer");
         fs::rename(&saved, &pending).expect("other installer temporarily moves saved cargo");
         let output = fixture
             .command(Path::new(env!("CARGO_BIN_EXE_cargo-tile")))
@@ -458,7 +515,7 @@ exit 37
         assert!(output.stdout.is_empty(), "{output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains("cargo-tile-shim.lock"),
+            stderr.contains(SHIM_LOCK_FILE),
             "wait for the writer before inspecting its temporary state: {output:?}"
         );
         assert!(!stderr.contains("real cargo is missing"), "{output:?}");
@@ -468,7 +525,7 @@ exit 37
             b"concurrent installer"
         );
         fs::rename(&pending, &saved).expect("other installer restores saved cargo");
-        fs::remove_file(&lock).expect("other installer releases lock");
+        drop(held_lock);
         assert_eq!(
             fixture.cli(&["uninstall"]),
             format!("{TOOLCHAIN}: capture shim removed\n")

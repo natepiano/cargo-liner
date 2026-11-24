@@ -401,14 +401,14 @@ mode = "future_mode"
     }
 
     #[test]
-    fn an_adjusted_random_favorite_schedules_a_lowercase_warning_while_frozen() {
+    fn an_adjusted_random_favorite_schedules_a_lowercase_warning_while_paused() {
         let oversized = MOVING_BAND_ROW.replace("width = 10", "width = 10000");
         let directory = TempDir::new().expect("temporary directory should be created");
         let path = directory.path().join("favorites.toml");
         fs::write(&path, &oversized).expect("favorites fixture should be written");
         let file_before = fs::read(&path).expect("favorites fixture should be readable");
         let mut app = TestApp::new_for_test().expect("test app should build");
-        app.updates = Updates::Frozen;
+        app.updates = Updates::Paused;
         app.attract.record_terminal_resize(Rect::new(0, 0, 10, 5));
         let before_settings = app.attract.current_settings();
         let now = Instant::now();

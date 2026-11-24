@@ -76,51 +76,30 @@ impl CargoPortConfigurationPathResolution {
     }
 }
 
-/// Resolve the one supported Cargo Port configuration root.
-pub(crate) fn cargo_port_configuration_root() -> CargoPortConfigurationPathResolution {
-    resolve_configuration_root(
-        std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
-        dirs::config_dir(),
-    )
+#[cfg(test)]
+#[derive(Clone)]
+enum ConfigPathOverrideState {
+    Ambient,
+    Installed(PathBuf),
 }
 
-fn resolve_configuration_child_path(
-    test_path_override: Option<PathBuf>,
-    configuration_root_override: Option<OsString>,
-    platform_configuration_directory: Option<PathBuf>,
-    child_name: &str,
-) -> CargoPortConfigurationPathResolution {
-    test_path_override.map_or_else(
-        || {
-            resolve_configuration_root(
-                configuration_root_override,
-                platform_configuration_directory,
-            )
-            .child(child_name)
-        },
-        CargoPortConfigurationPathResolution::Resolved,
-    )
+#[cfg(test)]
+thread_local! {
+    static CONFIG_PATH_OVERRIDE: RefCell<ConfigPathOverrideState> = const {
+        RefCell::new(ConfigPathOverrideState::Ambient)
+    };
 }
 
-fn resolve_configuration_root(
-    configuration_root_override: Option<OsString>,
-    platform_configuration_directory: Option<PathBuf>,
-) -> CargoPortConfigurationPathResolution {
-    match configuration_root_override {
-        Some(configuration_root_override) if configuration_root_override.is_empty() => {
-            CargoPortConfigurationPathResolution::InvalidEmptyOverride
-        },
-        Some(configuration_root_override) => CargoPortConfigurationPathResolution::Resolved(
-            PathBuf::from(configuration_root_override),
-        ),
-        None => platform_configuration_directory.map_or(
-            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
-            |platform_configuration_directory| {
-                CargoPortConfigurationPathResolution::Resolved(
-                    platform_configuration_directory.join(APP_NAME),
-                )
-            },
-        ),
+#[cfg(test)]
+pub(crate) struct ConfigPathOverrideGuard {
+    previous: ConfigPathOverrideState,
+}
+
+#[cfg(test)]
+impl Drop for ConfigPathOverrideGuard {
+    fn drop(&mut self) {
+        let previous = std::mem::replace(&mut self.previous, ConfigPathOverrideState::Ambient);
+        CONFIG_PATH_OVERRIDE.with(|slot| *slot.borrow_mut() = previous);
     }
 }
 
@@ -133,16 +112,16 @@ pub enum NonRustInclusion {
     Exclude,
 }
 
+impl NonRustInclusion {
+    pub(crate) const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
+}
+
 impl From<bool> for NonRustInclusion {
     fn from(b: bool) -> Self { if b { Self::Include } else { Self::Exclude } }
 }
 
 impl From<NonRustInclusion> for bool {
     fn from(val: NonRustInclusion) -> Self { matches!(val, NonRustInclusion::Include) }
-}
-
-impl NonRustInclusion {
-    pub(crate) const fn includes_non_rust(self) -> bool { matches!(self, Self::Include) }
 }
 
 /// Scroll direction for mouse wheel events.
@@ -154,16 +133,16 @@ pub enum ScrollDirection {
     Inverted,
 }
 
+impl ScrollDirection {
+    pub(crate) const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
+}
+
 impl From<bool> for ScrollDirection {
     fn from(b: bool) -> Self { if b { Self::Inverted } else { Self::Normal } }
 }
 
 impl From<ScrollDirection> for bool {
     fn from(val: ScrollDirection) -> Self { matches!(val, ScrollDirection::Inverted) }
-}
-
-impl ScrollDirection {
-    pub(crate) const fn is_inverted(self) -> bool { matches!(self, Self::Inverted) }
 }
 
 /// Whether newly discovered projects trigger an immediate lint run or wait
@@ -178,16 +157,16 @@ pub enum DiscoveryLint {
     Deferred,
 }
 
+impl DiscoveryLint {
+    pub(crate) const fn is_immediate(self) -> bool { matches!(self, Self::Immediate) }
+}
+
 impl From<bool> for DiscoveryLint {
     fn from(b: bool) -> Self { if b { Self::Immediate } else { Self::Deferred } }
 }
 
 impl From<DiscoveryLint> for bool {
     fn from(val: DiscoveryLint) -> Self { matches!(val, DiscoveryLint::Immediate) }
-}
-
-impl DiscoveryLint {
-    pub(crate) const fn is_immediate(self) -> bool { matches!(self, Self::Immediate) }
 }
 
 /// Whether `hjkl` should mirror arrow-key navigation in non-text panes.
@@ -197,6 +176,10 @@ pub enum NavigationKeys {
     #[default]
     ArrowsOnly,
     ArrowsAndVim,
+}
+
+impl NavigationKeys {
+    pub(crate) const fn uses_vim(self) -> bool { matches!(self, Self::ArrowsAndVim) }
 }
 
 impl From<bool> for NavigationKeys {
@@ -213,10 +196,6 @@ impl From<NavigationKeys> for bool {
     fn from(value: NavigationKeys) -> Self { matches!(value, NavigationKeys::ArrowsAndVim) }
 }
 
-impl NavigationKeys {
-    pub(crate) const fn uses_vim(self) -> bool { matches!(self, Self::ArrowsAndVim) }
-}
-
 /// Whether scrolling past the top or bottom of a list rolls focus to the
 /// adjacent pane in tab order, or stops at the edge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,6 +204,10 @@ pub enum EdgeScroll {
     #[default]
     Stops,
     AdvancesPane,
+}
+
+impl EdgeScroll {
+    pub(crate) const fn advances_pane(self) -> bool { matches!(self, Self::AdvancesPane) }
 }
 
 impl From<bool> for EdgeScroll {
@@ -241,10 +224,6 @@ impl From<EdgeScroll> for bool {
     fn from(value: EdgeScroll) -> Self { matches!(value, EdgeScroll::AdvancesPane) }
 }
 
-impl EdgeScroll {
-    pub(crate) const fn advances_pane(self) -> bool { matches!(self, Self::AdvancesPane) }
-}
-
 /// Whether lint status indicators render for projects.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -252,6 +231,10 @@ pub enum LintIndicator {
     Enabled,
     #[default]
     Disabled,
+}
+
+impl LintIndicator {
+    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 impl From<bool> for LintIndicator {
@@ -268,10 +251,6 @@ impl From<LintIndicator> for bool {
     fn from(value: LintIndicator) -> Self { matches!(value, LintIndicator::Enabled) }
 }
 
-impl LintIndicator {
-    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
-}
-
 /// Whether the focused pane receives a background tint.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -279,6 +258,10 @@ pub enum FocusedPaneTint {
     #[default]
     Enabled,
     Disabled,
+}
+
+impl FocusedPaneTint {
+    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
 }
 
 impl From<bool> for FocusedPaneTint {
@@ -295,10 +278,6 @@ impl From<FocusedPaneTint> for bool {
     fn from(value: FocusedPaneTint) -> Self { matches!(value, FocusedPaneTint::Enabled) }
 }
 
-impl FocusedPaneTint {
-    pub(crate) const fn is_enabled(self) -> bool { matches!(self, Self::Enabled) }
-}
-
 /// Whether the main screen is left transparent or painted solid.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -306,6 +285,10 @@ pub enum Transparency {
     #[default]
     Transparent,
     Solid,
+}
+
+impl Transparency {
+    pub(crate) const fn is_transparent(self) -> bool { matches!(self, Self::Transparent) }
 }
 
 impl From<bool> for Transparency {
@@ -322,10 +305,6 @@ impl From<Transparency> for bool {
     fn from(value: Transparency) -> Self { matches!(value, Transparency::Transparent) }
 }
 
-impl Transparency {
-    pub(crate) const fn is_transparent(self) -> bool { matches!(self, Self::Transparent) }
-}
-
 /// Whether GitHub HTTP calls synthesize rate-limit responses.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(from = "bool", into = "bool")]
@@ -333,6 +312,10 @@ pub enum GitHubRateLimitMode {
     Forced,
     #[default]
     Normal,
+}
+
+impl GitHubRateLimitMode {
+    pub(crate) const fn is_forced(self) -> bool { matches!(self, Self::Forced) }
 }
 
 impl From<bool> for GitHubRateLimitMode {
@@ -343,10 +326,6 @@ impl From<GitHubRateLimitMode> for bool {
     fn from(value: GitHubRateLimitMode) -> Self { matches!(value, GitHubRateLimitMode::Forced) }
 }
 
-impl GitHubRateLimitMode {
-    pub(crate) const fn is_forced(self) -> bool { matches!(self, Self::Forced) }
-}
-
 /// Whether a crates.io release group includes every publishable member of the
 /// representative crate's root workspace.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -355,6 +334,10 @@ pub enum WorkspaceMemberInclusion {
     Include,
     #[default]
     Exclude,
+}
+
+impl WorkspaceMemberInclusion {
+    const fn includes(self) -> bool { matches!(self, Self::Include) }
 }
 
 impl From<bool> for WorkspaceMemberInclusion {
@@ -371,10 +354,6 @@ impl From<WorkspaceMemberInclusion> for bool {
     fn from(inclusion: WorkspaceMemberInclusion) -> Self {
         matches!(inclusion, WorkspaceMemberInclusion::Include)
     }
-}
-
-impl WorkspaceMemberInclusion {
-    const fn includes(self) -> bool { matches!(self, Self::Include) }
 }
 
 /// Crates that publish one coordinated release represented by a single crate.
@@ -436,6 +415,11 @@ pub struct LintCommandConfig {
     pub command: String,
 }
 
+enum LintCommandResolution {
+    UnrecognizedBuiltin,
+    Command(LintCommandConfig),
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, confique::Config, Serialize)]
 pub struct LintConfig {
     /// Show a lint status indicator per project by reading cache-rooted
@@ -482,10 +466,6 @@ pub struct LintConfig {
     pub(crate) stale_timeout_mins: NonZeroU64,
 }
 
-impl Default for LintConfig {
-    fn default() -> Self { configuration_defaults() }
-}
-
 impl LintConfig {
     pub(crate) const fn stale_timeout(&self) -> Duration {
         Duration::from_secs(
@@ -512,62 +492,8 @@ impl LintConfig {
     }
 }
 
-pub(crate) fn default_clippy_lint_command() -> LintCommandConfig {
-    LintCommandConfig {
-        name:    CLIPPY_LINT_COMMAND_NAME.to_string(),
-        command: DEFAULT_CLIPPY_LINT_COMMAND.to_string(),
-    }
-}
-
-fn builtin_lint_command(name: &str) -> Option<LintCommandConfig> {
-    match name.trim().to_ascii_lowercase().as_str() {
-        CLIPPY_LINT_COMMAND_NAME => Some(default_clippy_lint_command()),
-        _ => None,
-    }
-}
-
-fn infer_lint_command_name(command: &str) -> String {
-    let mut parts = command.split_whitespace();
-    let Some(first) = parts.next() else {
-        return String::new();
-    };
-
-    if first == CARGO_COMMAND_NAME {
-        if let Some(second) = parts.next()
-            && !second.starts_with('-')
-        {
-            return second.to_string();
-        }
-        return CARGO_COMMAND_NAME.to_string();
-    }
-
-    Path::new(first)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(first)
-        .to_string()
-}
-
-fn normalize_lint_command(command: &LintCommandConfig) -> Option<LintCommandConfig> {
-    let name = command.name.trim();
-    let command_str = command.command.trim();
-
-    if command_str.is_empty() {
-        return builtin_lint_command(name);
-    }
-
-    Some(LintCommandConfig {
-        name:    if name.is_empty() {
-            infer_lint_command_name(command_str)
-        } else {
-            name.to_string()
-        },
-        command: command_str.to_string(),
-    })
-}
-
-pub(crate) fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintCommandConfig> {
-    commands.iter().filter_map(normalize_lint_command).collect()
+impl Default for LintConfig {
+    fn default() -> Self { configuration_defaults() }
 }
 
 pub(crate) struct ParsedCacheSize {
@@ -575,329 +501,12 @@ pub(crate) struct ParsedCacheSize {
     pub normalized: String,
 }
 
-fn normalize_cache_size_number(number: &str) -> Result<String, String> {
-    let (whole_raw, fraction_raw) = number
-        .split_once('.')
-        .map_or((number, None), |(whole, fraction)| (whole, Some(fraction)));
-
-    if whole_raw.is_empty() && fraction_raw.is_none() {
-        return Err(format!("Invalid cache size quantity `{number}`"));
-    }
-    if !whole_raw.is_empty() && !whole_raw.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(format!("Invalid cache size quantity `{number}`"));
-    }
-
-    let whole = if whole_raw.is_empty() {
-        "0"
-    } else {
-        whole_raw.trim_start_matches('0')
-    };
-    let whole = if whole.is_empty() { "0" } else { whole };
-
-    let Some(fraction_raw) = fraction_raw else {
-        return Ok(whole.to_string());
-    };
-    if !fraction_raw.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(format!("Invalid cache size quantity `{number}`"));
-    }
-
-    let fraction = fraction_raw.trim_end_matches('0');
-    if fraction.is_empty() {
-        Ok(whole.to_string())
-    } else {
-        Ok(format!("{whole}.{fraction}"))
-    }
-}
-
-fn parse_cache_size_bytes(number: &str, multiplier: u64) -> Result<Option<u64>, String> {
-    let (whole_raw, fraction_raw) = number
-        .split_once('.')
-        .map_or((number, None), |(whole, fraction)| (whole, Some(fraction)));
-    if whole_raw.is_empty() && fraction_raw.is_none() {
-        return Err(format!("Invalid cache size quantity `{number}`"));
-    }
-
-    let whole = if whole_raw.is_empty() {
-        0_u128
-    } else {
-        whole_raw
-            .parse::<u128>()
-            .map_err(|_| format!("Invalid cache size quantity `{number}`"))?
-    };
-    let multiplier = u128::from(multiplier);
-    let whole_bytes = whole
-        .checked_mul(multiplier)
-        .ok_or_else(|| "Cache size is too large".to_string())?;
-
-    let Some(fraction_raw) = fraction_raw else {
-        return u64::try_from(whole_bytes)
-            .map(Some)
-            .map_err(|_| "Cache size is too large".to_string());
-    };
-    if !fraction_raw.chars().all(|ch| ch.is_ascii_digit()) {
-        return Err(format!("Invalid cache size quantity `{number}`"));
-    }
-    if fraction_raw.is_empty() {
-        return u64::try_from(whole_bytes)
-            .map(Some)
-            .map_err(|_| "Cache size is too large".to_string());
-    }
-
-    let fraction = fraction_raw
-        .parse::<u128>()
-        .map_err(|_| format!("Invalid cache size quantity `{number}`"))?;
-    let scale = 10_u128
-        .checked_pow(u32::try_from(fraction_raw.len()).unwrap_or(u32::MAX))
-        .ok_or_else(|| "Cache size is too large".to_string())?;
-    let fraction_bytes = fraction
-        .checked_mul(multiplier)
-        .ok_or_else(|| "Cache size is too large".to_string())?
-        .div_ceil(scale);
-    let total = whole_bytes
-        .checked_add(fraction_bytes)
-        .ok_or_else(|| "Cache size is too large".to_string())?;
-
-    if total == 0 {
-        Ok(None)
-    } else {
-        u64::try_from(total)
-            .map(Some)
-            .map_err(|_| "Cache size is too large".to_string())
-    }
-}
-
-fn canonical_cache_size_unit(unit: &str) -> Option<(&'static str, u64)> {
-    match unit.trim().to_ascii_lowercase().as_str() {
-        "b" | "byte" | "bytes" => Some(("B", 1)),
-        "kib" | "kb" => Some(("KiB", BYTES_PER_KIB)),
-        "mib" | "mb" => Some(("MiB", BYTES_PER_MIB)),
-        "gib" | "gb" => Some(("GiB", BYTES_PER_GIB)),
-        _ => None,
-    }
-}
-
-pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("Cache size cannot be empty".to_string());
-    }
-    if trimmed.eq_ignore_ascii_case("unlimited") {
-        return Ok(ParsedCacheSize {
-            bytes:      None,
-            normalized: "unlimited".to_string(),
-        });
-    }
-    if trimmed == "0" {
-        return Ok(ParsedCacheSize {
-            bytes:      None,
-            normalized: "0".to_string(),
-        });
-    }
-
-    let split_at = trimmed
-        .find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
-        .unwrap_or(trimmed.len());
-    let number = trimmed[..split_at].trim();
-    let unit = trimmed[split_at..].trim();
-
-    if number.is_empty() || unit.is_empty() {
-        return Err(
-            "Cache size must include a number and unit like `512 MiB` or `1.5 GiB`".to_string(),
-        );
-    }
-
-    let Some((canonical_unit, multiplier)) = canonical_cache_size_unit(unit) else {
-        return Err(format!("Unsupported cache size unit `{unit}`"));
-    };
-    let normalized = format!(
-        "{} {}",
-        normalize_cache_size_number(number)?,
-        canonical_unit
-    );
-    Ok(ParsedCacheSize {
-        bytes: parse_cache_size_bytes(number, multiplier)?,
-        normalized,
-    })
-}
-
-fn normalize_config(mut cargo_port_config: CargoPortConfig) -> Result<CargoPortConfig, String> {
-    if cargo_port_config.scan.storage_low_free.bytes
-        >= cargo_port_config.scan.storage_ample_free.bytes
-    {
-        return Err("scan.storage_low_free must be below scan.storage_ample_free".to_string());
-    }
-    normalize_crates_io_release_groups(&mut cargo_port_config.crates_io.release_groups)?;
-    cargo_port_config.lint.commands = normalize_lint_commands(&cargo_port_config.lint.commands);
-    cargo_port_config.lint.cache_size = cargo_port_config.lint.normalized_cache_size()?;
-    cargo_port_config.cpu.poll_ms = cargo_port_config.cpu.poll_ms.max(MIN_CPU_POLL_MS);
-    cargo_port_config.cpu.low_utilization_max_percent =
-        cargo_port_config.cpu.low_utilization_max_percent.min(100);
-    cargo_port_config.cpu.medium_utilization_max_percent = cargo_port_config
-        .cpu
-        .medium_utilization_max_percent
-        .max(cargo_port_config.cpu.low_utilization_max_percent)
-        .min(100);
-    cargo_port_config.tui.main_branch =
-        normalize_branch_name(&cargo_port_config.tui.main_branch, "tui.main_branch")?;
-    cargo_port_config.tui.other_primary_branches = normalize_branch_list(
-        &cargo_port_config.tui.other_primary_branches,
-        "tui.other_primary_branches",
-    )?;
-    cargo_port_config.tui.discovery_shimmer_secs =
-        normalize_non_negative_secs(cargo_port_config.tui.discovery_shimmer_secs);
-    Ok(cargo_port_config)
-}
-
-fn normalize_crates_io_release_groups(
-    release_groups: &mut [CratesIoReleaseGroupConfig],
-) -> Result<(), String> {
-    let mut configured_crates = HashSet::new();
-
-    for (group_index, release_group) in release_groups.iter_mut().enumerate() {
-        let group_field = format!("crates_io.release_groups[{group_index}]");
-        release_group.representative = normalize_crate_name(
-            &release_group.representative,
-            &format!("{group_field}.representative"),
-        )?;
-        if !configured_crates.insert(release_group.representative.clone()) {
-            return Err(format!(
-                "{}.representative duplicates crate `{}` from another release group",
-                group_field, release_group.representative
-            ));
-        }
-
-        release_group.label = release_group.label.trim().to_string();
-        if release_group.label.is_empty() {
-            release_group
-                .label
-                .clone_from(&release_group.representative);
-        }
-
-        for (member_index, member) in release_group.members.iter_mut().enumerate() {
-            *member =
-                normalize_crate_name(member, &format!("{group_field}.members[{member_index}]"))?;
-            if !configured_crates.insert(member.clone()) {
-                return Err(format!(
-                    "{group_field}.members[{member_index}] duplicates crate `{member}` from a release group"
-                ));
-            }
-        }
-
-        if !release_group.includes_workspace_members() && release_group.members.is_empty() {
-            return Err(format!(
-                "{group_field} must enable workspace_members or list at least one member"
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn normalize_crate_name(value: &str, field: &str) -> Result<String, String> {
-    let name = value.trim();
-    if name.is_empty() {
-        return Err(format!("{field} must not be empty"));
-    }
-    if !name
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
-    {
-        return Err(format!("{field} must be a valid Cargo package name"));
-    }
-    Ok(name.to_string())
-}
-
-impl CargoPortConfig {
-    pub(crate) fn from_table(table: &Table) -> Result<Self, String> {
-        let value = Value::Table(table.clone());
-        let layer: <Self as confique::Config>::Layer = value
-            .try_into()
-            .map_err(|err| format!("config from table: {err}"))?;
-        Self::from_layer(layer.with_fallback(<Self as confique::Config>::Layer::default_values()))
-            .map_err(|err| format!("config from table: {err}"))
-            .and_then(normalize_config)
-    }
-}
-
-pub(crate) fn normalize_branch_name(value: &str, field: &str) -> Result<String, String> {
-    let branch = value.trim();
-    if branch.is_empty() {
-        return Err(format!("{field} must not be empty"));
-    }
-    validate_branch_name(branch, field)?;
-    Ok(branch.to_string())
-}
-
-pub(crate) fn normalize_branch_list(values: &[String], field: &str) -> Result<Vec<String>, String> {
-    values
-        .iter()
-        .enumerate()
-        .filter_map(|(index, value)| {
-            let trimmed = value.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some((index, trimmed))
-            }
-        })
-        .map(|(index, branch)| {
-            validate_branch_name(branch, &format!("{field}[{index}]"))?;
-            Ok(branch.to_string())
-        })
-        .collect()
-}
-
-fn validate_branch_name(branch: &str, field: &str) -> Result<(), String> {
-    if branch == "@"
-        || branch.starts_with('-')
-        || branch.starts_with('/')
-        || branch.ends_with('/')
-        || branch.ends_with('.')
-        || std::path::Path::new(branch)
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("lock"))
-        || branch.contains("..")
-        || branch.contains("@{")
-        || branch.contains("//")
-    {
-        return Err(format!("{field} must be a valid branch name"));
-    }
-
-    if branch
-        .split('/')
-        .any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.'))
-    {
-        return Err(format!("{field} must be a valid branch name"));
-    }
-
-    if branch.chars().any(|ch| {
-        ch.is_ascii_control()
-            || ch.is_whitespace()
-            || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
-    }) {
-        return Err(format!("{field} must be a valid branch name"));
-    }
-
-    Ok(())
-}
-
-fn normalize_non_negative_secs(secs: f64) -> f64 {
-    if secs.is_finite() && secs >= 0.0 {
-        secs
-    } else {
-        0.0
-    }
-}
-
-/// Load Rust defaults from the same declarations used by config files and templates.
-#[expect(
-    clippy::expect_used,
-    reason = "all fields have valid confique defaults; a missing default is a programming error"
-)]
-fn configuration_defaults<T: confique::Config>() -> T {
-    T::builder()
-        .load()
-        .expect("complete built-in configuration defaults")
+enum CacheSizeUnitResolution {
+    Supported {
+        canonical_label: &'static str,
+        bytes_per_unit:  u64,
+    },
+    Unsupported,
 }
 
 /// A finite storage threshold, parsed with the shared cache-size grammar.
@@ -953,14 +562,14 @@ pub(super) struct ScanConfig {
     pub(crate) storage_low_free:     StorageFreeSpaceThreshold,
 }
 
-impl Default for ScanConfig {
-    fn default() -> Self { configuration_defaults() }
-}
-
 impl ScanConfig {
     pub(crate) const fn metadata_timeout(&self) -> Duration {
         Duration::from_secs(self.metadata_timeout_secs.get())
     }
+}
+
+impl Default for ScanConfig {
+    fn default() -> Self { configuration_defaults() }
 }
 
 /// File watcher scheduling and worker limits. All values must be positive.
@@ -986,10 +595,6 @@ pub(super) struct WatcherConfig {
     pub(crate) git_concurrency:  NonZeroUsize,
 }
 
-impl Default for WatcherConfig {
-    fn default() -> Self { configuration_defaults() }
-}
-
 impl WatcherConfig {
     pub(crate) const fn debounce(&self) -> Duration {
         Duration::from_millis(self.debounce_ms.get())
@@ -1003,6 +608,10 @@ impl WatcherConfig {
     pub(crate) const fn poll_interval(&self) -> Duration {
         Duration::from_millis(self.poll_interval_ms.get())
     }
+}
+
+impl Default for WatcherConfig {
+    fn default() -> Self { configuration_defaults() }
 }
 
 /// HTTP request timing and recovery probes. All values must be positive.
@@ -1023,10 +632,6 @@ pub(super) struct HttpConfig {
     unavailable_grace_secs: NonZeroU64,
 }
 
-impl Default for HttpConfig {
-    fn default() -> Self { configuration_defaults() }
-}
-
 impl HttpConfig {
     pub(crate) const fn timeout(&self) -> Duration { Duration::from_secs(self.timeout_secs.get()) }
     pub(crate) const fn retry(&self) -> Duration { Duration::from_secs(self.retry_secs.get()) }
@@ -1035,31 +640,8 @@ impl HttpConfig {
     }
 }
 
-/// Top-level application configuration.
-#[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
-pub struct CargoPortConfig {
-    #[config(nested)]
-    pub(crate) scan:    ScanConfig,
-    #[config(nested)]
-    pub(crate) watcher: WatcherConfig,
-    #[config(nested)]
-    pub(crate) http:    HttpConfig,
-    #[config(nested)]
-    pub cache:          CacheConfig,
-    #[config(nested)]
-    pub crates_io:      CratesIoConfig,
-    #[config(nested)]
-    pub cpu:            CpuConfig,
-    #[config(nested)]
-    pub mouse:          MouseConfig,
-    #[config(nested)]
-    pub tui:            TuiConfig,
-    #[config(nested)]
-    pub lint:           LintConfig,
-    #[config(nested)]
-    pub debug:          DebugConfig,
-    #[config(nested)]
-    pub appearance:     AppearanceConfig,
+impl Default for HttpConfig {
+    fn default() -> Self { configuration_defaults() }
 }
 
 /// Theme selection and OS appearance tracking.
@@ -1262,46 +844,510 @@ impl Default for MouseConfig {
     }
 }
 
-/// Resolve Cargo Port's `config.toml` without treating an invalid override as
-/// the normal per-user configuration directory.
-pub(crate) fn config_path() -> CargoPortConfigurationPathResolution {
-    #[cfg(test)]
-    let test_path_override = CONFIG_PATH_OVERRIDE.with(|slot| slot.borrow().clone());
-    #[cfg(not(test))]
-    let test_path_override = None;
-    resolve_configuration_child_path(
-        test_path_override,
+/// Top-level application configuration.
+#[derive(Clone, Debug, Default, PartialEq, confique::Config, Serialize)]
+pub struct CargoPortConfig {
+    #[config(nested)]
+    pub(crate) scan:    ScanConfig,
+    #[config(nested)]
+    pub(crate) watcher: WatcherConfig,
+    #[config(nested)]
+    pub(crate) http:    HttpConfig,
+    #[config(nested)]
+    pub cache:          CacheConfig,
+    #[config(nested)]
+    pub crates_io:      CratesIoConfig,
+    #[config(nested)]
+    pub cpu:            CpuConfig,
+    #[config(nested)]
+    pub mouse:          MouseConfig,
+    #[config(nested)]
+    pub tui:            TuiConfig,
+    #[config(nested)]
+    pub lint:           LintConfig,
+    #[config(nested)]
+    pub debug:          DebugConfig,
+    #[config(nested)]
+    pub appearance:     AppearanceConfig,
+}
+
+impl CargoPortConfig {
+    pub(crate) fn from_table(table: &Table) -> Result<Self, String> {
+        let value = Value::Table(table.clone());
+        let layer: <Self as confique::Config>::Layer = value
+            .try_into()
+            .map_err(|err| format!("config from table: {err}"))?;
+        Self::from_layer(layer.with_fallback(<Self as confique::Config>::Layer::default_values()))
+            .map_err(|err| format!("config from table: {err}"))
+            .and_then(normalize_config)
+    }
+}
+
+/// Resolve the one supported Cargo Port configuration root.
+pub(crate) fn cargo_port_configuration_root() -> CargoPortConfigurationPathResolution {
+    resolve_configuration_root(
         std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
         dirs::config_dir(),
-        CONFIG_FILE,
     )
 }
 
 #[cfg(test)]
-thread_local! {
-    static CONFIG_PATH_OVERRIDE: RefCell<Option<PathBuf>> = const {
-        RefCell::new(None)
+fn resolve_configuration_child_path(
+    test_path_override: ConfigPathOverrideState,
+    configuration_root_override: Option<OsString>,
+    platform_configuration_directory: Option<PathBuf>,
+    child_name: &str,
+) -> CargoPortConfigurationPathResolution {
+    match test_path_override {
+        ConfigPathOverrideState::Ambient => resolve_configuration_root(
+            configuration_root_override,
+            platform_configuration_directory,
+        )
+        .child(child_name),
+        ConfigPathOverrideState::Installed(path) => {
+            CargoPortConfigurationPathResolution::Resolved(path)
+        },
+    }
+}
+
+fn resolve_configuration_root(
+    configuration_root_override: Option<OsString>,
+    platform_configuration_directory: Option<PathBuf>,
+) -> CargoPortConfigurationPathResolution {
+    match configuration_root_override {
+        Some(configuration_root_override) if configuration_root_override.is_empty() => {
+            CargoPortConfigurationPathResolution::InvalidEmptyOverride
+        },
+        Some(configuration_root_override) => CargoPortConfigurationPathResolution::Resolved(
+            PathBuf::from(configuration_root_override),
+        ),
+        None => platform_configuration_directory.map_or(
+            CargoPortConfigurationPathResolution::PlatformDirectoryUnavailable,
+            |platform_configuration_directory| {
+                CargoPortConfigurationPathResolution::Resolved(
+                    platform_configuration_directory.join(APP_NAME),
+                )
+            },
+        ),
+    }
+}
+
+pub(crate) fn default_clippy_lint_command() -> LintCommandConfig {
+    LintCommandConfig {
+        name:    CLIPPY_LINT_COMMAND_NAME.to_string(),
+        command: DEFAULT_CLIPPY_LINT_COMMAND.to_string(),
+    }
+}
+
+fn builtin_lint_command(name: &str) -> LintCommandResolution {
+    match name.trim().to_ascii_lowercase().as_str() {
+        CLIPPY_LINT_COMMAND_NAME => LintCommandResolution::Command(default_clippy_lint_command()),
+        _ => LintCommandResolution::UnrecognizedBuiltin,
+    }
+}
+
+fn infer_lint_command_name(command: &str) -> String {
+    let mut parts = command.split_whitespace();
+    let Some(first) = parts.next() else {
+        return String::new();
     };
+
+    if first == CARGO_COMMAND_NAME {
+        if let Some(second) = parts.next()
+            && !second.starts_with('-')
+        {
+            return second.to_string();
+        }
+        return CARGO_COMMAND_NAME.to_string();
+    }
+
+    Path::new(first)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(first)
+        .to_string()
 }
 
-#[cfg(test)]
-pub(crate) struct ConfigPathOverrideGuard {
-    previous: Option<PathBuf>,
+fn normalize_lint_command(command: &LintCommandConfig) -> LintCommandResolution {
+    let name = command.name.trim();
+    let command_str = command.command.trim();
+
+    if command_str.is_empty() {
+        return builtin_lint_command(name);
+    }
+
+    LintCommandResolution::Command(LintCommandConfig {
+        name:    if name.is_empty() {
+            infer_lint_command_name(command_str)
+        } else {
+            name.to_string()
+        },
+        command: command_str.to_string(),
+    })
 }
 
-#[cfg(test)]
-impl Drop for ConfigPathOverrideGuard {
-    fn drop(&mut self) {
-        let previous = self.previous.take();
-        CONFIG_PATH_OVERRIDE.with(|slot| {
-            *slot.borrow_mut() = previous;
+pub(crate) fn normalize_lint_commands(commands: &[LintCommandConfig]) -> Vec<LintCommandConfig> {
+    commands
+        .iter()
+        .filter_map(|command| match normalize_lint_command(command) {
+            LintCommandResolution::UnrecognizedBuiltin => None,
+            LintCommandResolution::Command(command) => Some(command),
+        })
+        .collect()
+}
+
+fn normalize_cache_size_number(number: &str) -> Result<String, String> {
+    let (whole_raw, fraction_raw) = number
+        .split_once('.')
+        .map_or((number, None), |(whole, fraction)| (whole, Some(fraction)));
+
+    if whole_raw.is_empty() && fraction_raw.is_none() {
+        return Err(format!("Invalid cache size quantity `{number}`"));
+    }
+    if !whole_raw.is_empty() && !whole_raw.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("Invalid cache size quantity `{number}`"));
+    }
+
+    let whole = if whole_raw.is_empty() {
+        "0"
+    } else {
+        whole_raw.trim_start_matches('0')
+    };
+    let whole = if whole.is_empty() { "0" } else { whole };
+
+    let Some(fraction_raw) = fraction_raw else {
+        return Ok(whole.to_string());
+    };
+    if !fraction_raw.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("Invalid cache size quantity `{number}`"));
+    }
+
+    let fraction = fraction_raw.trim_end_matches('0');
+    if fraction.is_empty() {
+        Ok(whole.to_string())
+    } else {
+        Ok(format!("{whole}.{fraction}"))
+    }
+}
+
+fn parse_cache_size_bytes(number: &str, multiplier: u64) -> Result<Option<u64>, String> {
+    let (whole_raw, fraction_raw) = number
+        .split_once('.')
+        .map_or((number, None), |(whole, fraction)| (whole, Some(fraction)));
+    if whole_raw.is_empty() && fraction_raw.is_none() {
+        return Err(format!("Invalid cache size quantity `{number}`"));
+    }
+
+    let whole = if whole_raw.is_empty() {
+        0_u128
+    } else {
+        whole_raw
+            .parse::<u128>()
+            .map_err(|_| format!("Invalid cache size quantity `{number}`"))?
+    };
+    let multiplier = u128::from(multiplier);
+    let whole_bytes = whole
+        .checked_mul(multiplier)
+        .ok_or_else(|| "Cache size is too large".to_string())?;
+
+    let Some(fraction_raw) = fraction_raw else {
+        return u64::try_from(whole_bytes)
+            .map(Some)
+            .map_err(|_| "Cache size is too large".to_string());
+    };
+    if !fraction_raw.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err(format!("Invalid cache size quantity `{number}`"));
+    }
+    if fraction_raw.is_empty() {
+        return u64::try_from(whole_bytes)
+            .map(Some)
+            .map_err(|_| "Cache size is too large".to_string());
+    }
+
+    let fraction = fraction_raw
+        .parse::<u128>()
+        .map_err(|_| format!("Invalid cache size quantity `{number}`"))?;
+    let scale = 10_u128
+        .checked_pow(u32::try_from(fraction_raw.len()).unwrap_or(u32::MAX))
+        .ok_or_else(|| "Cache size is too large".to_string())?;
+    let fraction_bytes = fraction
+        .checked_mul(multiplier)
+        .ok_or_else(|| "Cache size is too large".to_string())?
+        .div_ceil(scale);
+    let total = whole_bytes
+        .checked_add(fraction_bytes)
+        .ok_or_else(|| "Cache size is too large".to_string())?;
+
+    if total == 0 {
+        Ok(None)
+    } else {
+        u64::try_from(total)
+            .map(Some)
+            .map_err(|_| "Cache size is too large".to_string())
+    }
+}
+
+fn canonical_cache_size_unit(unit: &str) -> CacheSizeUnitResolution {
+    match unit.trim().to_ascii_lowercase().as_str() {
+        "b" | "byte" | "bytes" => CacheSizeUnitResolution::Supported {
+            canonical_label: "B",
+            bytes_per_unit:  1,
+        },
+        "kib" | "kb" => CacheSizeUnitResolution::Supported {
+            canonical_label: "KiB",
+            bytes_per_unit:  BYTES_PER_KIB,
+        },
+        "mib" | "mb" => CacheSizeUnitResolution::Supported {
+            canonical_label: "MiB",
+            bytes_per_unit:  BYTES_PER_MIB,
+        },
+        "gib" | "gb" => CacheSizeUnitResolution::Supported {
+            canonical_label: "GiB",
+            bytes_per_unit:  BYTES_PER_GIB,
+        },
+        _ => CacheSizeUnitResolution::Unsupported,
+    }
+}
+
+pub(crate) fn parse_cache_size(value: &str) -> Result<ParsedCacheSize, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("Cache size cannot be empty".to_string());
+    }
+    if trimmed.eq_ignore_ascii_case("unlimited") {
+        return Ok(ParsedCacheSize {
+            bytes:      None,
+            normalized: "unlimited".to_string(),
         });
+    }
+    if trimmed == "0" {
+        return Ok(ParsedCacheSize {
+            bytes:      None,
+            normalized: "0".to_string(),
+        });
+    }
+
+    let split_at = trimmed
+        .find(|ch: char| !(ch.is_ascii_digit() || ch == '.'))
+        .unwrap_or(trimmed.len());
+    let number = trimmed[..split_at].trim();
+    let unit = trimmed[split_at..].trim();
+
+    if number.is_empty() || unit.is_empty() {
+        return Err(
+            "Cache size must include a number and unit like `512 MiB` or `1.5 GiB`".to_string(),
+        );
+    }
+
+    let CacheSizeUnitResolution::Supported {
+        canonical_label,
+        bytes_per_unit,
+    } = canonical_cache_size_unit(unit)
+    else {
+        return Err(format!("Unsupported cache size unit `{unit}`"));
+    };
+    let normalized = format!(
+        "{} {}",
+        normalize_cache_size_number(number)?,
+        canonical_label
+    );
+    Ok(ParsedCacheSize {
+        bytes: parse_cache_size_bytes(number, bytes_per_unit)?,
+        normalized,
+    })
+}
+
+fn normalize_config(mut cargo_port_config: CargoPortConfig) -> Result<CargoPortConfig, String> {
+    if cargo_port_config.scan.storage_low_free.bytes
+        >= cargo_port_config.scan.storage_ample_free.bytes
+    {
+        return Err("scan.storage_low_free must be below scan.storage_ample_free".to_string());
+    }
+    normalize_crates_io_release_groups(&mut cargo_port_config.crates_io.release_groups)?;
+    cargo_port_config.lint.commands = normalize_lint_commands(&cargo_port_config.lint.commands);
+    cargo_port_config.lint.cache_size = cargo_port_config.lint.normalized_cache_size()?;
+    cargo_port_config.cpu.poll_ms = cargo_port_config.cpu.poll_ms.max(MIN_CPU_POLL_MS);
+    cargo_port_config.cpu.low_utilization_max_percent =
+        cargo_port_config.cpu.low_utilization_max_percent.min(100);
+    cargo_port_config.cpu.medium_utilization_max_percent = cargo_port_config
+        .cpu
+        .medium_utilization_max_percent
+        .max(cargo_port_config.cpu.low_utilization_max_percent)
+        .min(100);
+    cargo_port_config.tui.main_branch =
+        normalize_branch_name(&cargo_port_config.tui.main_branch, "tui.main_branch")?;
+    cargo_port_config.tui.other_primary_branches = normalize_branch_list(
+        &cargo_port_config.tui.other_primary_branches,
+        "tui.other_primary_branches",
+    )?;
+    cargo_port_config.tui.discovery_shimmer_secs =
+        normalize_non_negative_secs(cargo_port_config.tui.discovery_shimmer_secs);
+    Ok(cargo_port_config)
+}
+
+fn normalize_crates_io_release_groups(
+    release_groups: &mut [CratesIoReleaseGroupConfig],
+) -> Result<(), String> {
+    let mut configured_crates = HashSet::new();
+
+    for (group_index, release_group) in release_groups.iter_mut().enumerate() {
+        let group_field = format!("crates_io.release_groups[{group_index}]");
+        release_group.representative = normalize_crate_name(
+            &release_group.representative,
+            &format!("{group_field}.representative"),
+        )?;
+        if !configured_crates.insert(release_group.representative.clone()) {
+            return Err(format!(
+                "{}.representative duplicates crate `{}` from another release group",
+                group_field, release_group.representative
+            ));
+        }
+
+        release_group.label = release_group.label.trim().to_string();
+        if release_group.label.is_empty() {
+            release_group
+                .label
+                .clone_from(&release_group.representative);
+        }
+
+        for (member_index, member) in release_group.members.iter_mut().enumerate() {
+            *member =
+                normalize_crate_name(member, &format!("{group_field}.members[{member_index}]"))?;
+            if !configured_crates.insert(member.clone()) {
+                return Err(format!(
+                    "{group_field}.members[{member_index}] duplicates crate `{member}` from a release group"
+                ));
+            }
+        }
+
+        if !release_group.includes_workspace_members() && release_group.members.is_empty() {
+            return Err(format!(
+                "{group_field} must enable workspace_members or list at least one member"
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_crate_name(value: &str, field: &str) -> Result<String, String> {
+    let name = value.trim();
+    if name.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        return Err(format!("{field} must be a valid Cargo package name"));
+    }
+    Ok(name.to_string())
+}
+
+pub(crate) fn normalize_branch_name(value: &str, field: &str) -> Result<String, String> {
+    let branch = value.trim();
+    if branch.is_empty() {
+        return Err(format!("{field} must not be empty"));
+    }
+    validate_branch_name(branch, field)?;
+    Ok(branch.to_string())
+}
+
+pub(crate) fn normalize_branch_list(values: &[String], field: &str) -> Result<Vec<String>, String> {
+    values
+        .iter()
+        .enumerate()
+        .filter_map(|(index, value)| {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some((index, trimmed))
+            }
+        })
+        .map(|(index, branch)| {
+            validate_branch_name(branch, &format!("{field}[{index}]"))?;
+            Ok(branch.to_string())
+        })
+        .collect()
+}
+
+fn validate_branch_name(branch: &str, field: &str) -> Result<(), String> {
+    if branch == "@"
+        || branch.starts_with('-')
+        || branch.starts_with('/')
+        || branch.ends_with('/')
+        || branch.ends_with('.')
+        || std::path::Path::new(branch)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("lock"))
+        || branch.contains("..")
+        || branch.contains("@{")
+        || branch.contains("//")
+    {
+        return Err(format!("{field} must be a valid branch name"));
+    }
+
+    if branch
+        .split('/')
+        .any(|part| part.is_empty() || part == "." || part == ".." || part.starts_with('.'))
+    {
+        return Err(format!("{field} must be a valid branch name"));
+    }
+
+    if branch.chars().any(|ch| {
+        ch.is_ascii_control()
+            || ch.is_whitespace()
+            || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+    }) {
+        return Err(format!("{field} must be a valid branch name"));
+    }
+
+    Ok(())
+}
+
+fn normalize_non_negative_secs(secs: f64) -> f64 {
+    if secs.is_finite() && secs >= 0.0 {
+        secs
+    } else {
+        0.0
+    }
+}
+
+/// Load Rust defaults from the same declarations used by config files and templates.
+#[expect(
+    clippy::expect_used,
+    reason = "all fields have valid confique defaults; a missing default is a programming error"
+)]
+fn configuration_defaults<T: confique::Config>() -> T {
+    T::builder()
+        .load()
+        .expect("complete built-in configuration defaults")
+}
+
+/// Resolve Cargo Port's `config.toml` without treating an invalid override as
+/// the normal per-user configuration directory.
+pub(crate) fn config_path() -> CargoPortConfigurationPathResolution {
+    #[cfg(test)]
+    {
+        let test_path_override = CONFIG_PATH_OVERRIDE.with(|slot| slot.borrow().clone());
+        resolve_configuration_child_path(
+            test_path_override,
+            std::env::var_os(CONFIG_ROOT_OVERRIDE_ENV),
+            dirs::config_dir(),
+            CONFIG_FILE,
+        )
+    }
+    #[cfg(not(test))]
+    {
+        cargo_port_configuration_root().child(CONFIG_FILE)
     }
 }
 
 #[cfg(test)]
 pub(crate) fn override_config_path_for_test(path: PathBuf) -> ConfigPathOverrideGuard {
-    let previous = CONFIG_PATH_OVERRIDE.with(|slot| slot.replace(Some(path)));
+    let previous =
+        CONFIG_PATH_OVERRIDE.with(|slot| slot.replace(ConfigPathOverrideState::Installed(path)));
     ConfigPathOverrideGuard { previous }
 }
 
@@ -1378,18 +1424,23 @@ mod tests {
         let explicit_root = Some(OsString::from("/disposable/cargo-port"));
         let platform_root = Some(PathBuf::from("/user/config"));
         let config = resolve_configuration_child_path(
-            None,
+            ConfigPathOverrideState::Ambient,
             explicit_root.clone(),
             platform_root.clone(),
             CONFIG_FILE,
         );
         let keymap = resolve_configuration_child_path(
-            None,
+            ConfigPathOverrideState::Ambient,
             explicit_root.clone(),
             platform_root.clone(),
             KEYMAP_FILE,
         );
-        let themes = resolve_configuration_child_path(None, explicit_root, platform_root, "themes");
+        let themes = resolve_configuration_child_path(
+            ConfigPathOverrideState::Ambient,
+            explicit_root,
+            platform_root,
+            "themes",
+        );
         assert_eq!(
             config,
             CargoPortConfigurationPathResolution::Resolved(PathBuf::from(
@@ -1412,7 +1463,7 @@ mod tests {
         for child_name in [CONFIG_FILE, KEYMAP_FILE, "themes"] {
             assert_eq!(
                 resolve_configuration_child_path(
-                    None,
+                    ConfigPathOverrideState::Ambient,
                     Some(OsString::new()),
                     Some(PathBuf::from("/user/config")),
                     child_name,
@@ -1426,7 +1477,7 @@ mod tests {
     fn test_configuration_path_override_precedes_an_ambient_explicit_root() {
         assert_eq!(
             resolve_configuration_child_path(
-                Some(PathBuf::from("/test-fixture/config.toml")),
+                ConfigPathOverrideState::Installed(PathBuf::from("/test-fixture/config.toml")),
                 Some(OsString::from("/ambient/cargo-port")),
                 Some(PathBuf::from("/user/config")),
                 CONFIG_FILE,
@@ -1435,6 +1486,26 @@ mod tests {
                 "/test-fixture/config.toml"
             ))
         );
+    }
+
+    #[test]
+    fn nested_configuration_path_overrides_restore_previous_paths() {
+        let ambient_path = config_path();
+        let outer_path = PathBuf::from("/test-fixture/outer.toml");
+        let inner_path = PathBuf::from("/test-fixture/inner.toml");
+        let outer_override = override_config_path_for_test(outer_path.clone());
+        let inner_override = override_config_path_for_test(inner_path.clone());
+        assert_eq!(
+            config_path(),
+            CargoPortConfigurationPathResolution::Resolved(inner_path)
+        );
+        drop(inner_override);
+        assert_eq!(
+            config_path(),
+            CargoPortConfigurationPathResolution::Resolved(outer_path)
+        );
+        drop(outer_override);
+        assert_eq!(config_path(), ambient_path);
     }
 
     // Keep the historical assertions pinned to the checked-in public template,

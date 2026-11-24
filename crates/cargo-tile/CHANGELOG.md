@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Command cells show the number of hidden processes on the last body row when the processes do not fit.
+- Notices and their close buttons keep their place while grid cells change height.
+- Hidden process counts keep their last letter when the label fits and use the cell background. Fading process text stays readable. Shortened crate names keep their ellipsis. The compiler options `-L`, `--out-dir`, and `--check-cfg` wrap with their values.
+- An unheld capture shim lock file no longer blocks installation.
 - Compiler rows retain their crate with all arguments shown. The status bar uses `processes` and hint ink for display modes.
 - A nextest run without a terminal shows `testing` from its `Starting N tests` line.
 - A command's CPU counts only what its live processes add. A helper that leaves the tree no longer holds the reading at 0%.
@@ -74,6 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Space pauses and resumes the display. The status bar shows `paused` while updates are paused.
 - Command cells use a plain border. The account and directory occupy body row 1. The optional progress reading follows.
 - A command cell names only its account and directory in its top border, as in `┌ [natepiano] ~/rust/hana ─`; its build or test progress is the first body row, above its process table.
 - Skip equal tile frames while preserving content fades and appearance changes.

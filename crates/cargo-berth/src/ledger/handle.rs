@@ -65,7 +65,6 @@ use crate::git;
 use crate::ids::CoordinationRunId;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
-use crate::ids::RecordedAt;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
@@ -1256,11 +1255,7 @@ impl Ledger {
             self.automatic_compaction,
             AutomaticCompaction::AfterTransaction
         ) {
-            if replay.finished_history.is_due(&RecordedAt::now()) {
-                self.compact_expired_history();
-            } else {
-                self.compact_if_due(replay.superseded.droppable_bytes);
-            }
+            self.maintain_compaction(&replay);
         }
         output
     }

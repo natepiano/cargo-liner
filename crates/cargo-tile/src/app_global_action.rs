@@ -9,9 +9,7 @@
 //! rest from the registration in [`crate::keymap`]: TOML loading, the
 //! status-line slots, and the rows in the keymap overlay.
 //!
-//! Some are not about the grid at all: `f` holds the whole display
-//! still, which is what makes a screen that repaints four times a
-//! second readable, `a` draws the attract screen over the grid whether
+//! Space pauses the display. Press `a` to show the attract screen whether
 //! or not anything is running, `r` draws a fresh attract screen at
 //! random, `u` restores the attract configuration that replacement
 //! displaced, `p` shows the process hierarchy, and `h` shows all arguments.
@@ -49,7 +47,7 @@ macro_rules! app_global_actions {
                 FocusUp    => ("focus_up", "focus_up", "Focus the tile above");
                 FocusDown  => ("focus_down", "focus_down", "Focus the tile below");
                 Expand     => ("expand", "expand", "Expand the focused cell");
-                Freeze     => ("freeze", "freeze", "Freeze the display");
+                Pause      => ("pause", "pause", "Pause the display");
                 $($attract)*
                 ProcessTree => ("process_tree", "processes", "Show process hierarchy");
                 Arguments => ("arguments", "arguments", "Show all arguments");
@@ -105,7 +103,7 @@ impl Globals<App> for AppGlobalAction {
             KeyCode::Up => Self::FocusUp,
             KeyCode::Down => Self::FocusDown,
             KeyCode::Enter => Self::Expand,
-            'f' => Self::Freeze,
+            ' ' => Self::Pause,
         };
         #[cfg(feature = "attract")]
         {
@@ -129,16 +127,18 @@ impl Globals<App> for AppGlobalAction {
 
 /// Run one app-global action.
 fn dispatch(action: AppGlobalAction, app: &mut App) {
-    let growth = app.loaded_config.config.tiles.growth();
     match action {
-        AppGlobalAction::AddTile => app.tiles.apply(TileAction::Add, growth),
-        AppGlobalAction::RemoveTile => app.tiles.apply(TileAction::Remove, growth),
-        AppGlobalAction::FocusLeft => app.tiles.apply(TileAction::FocusLeft, growth),
-        AppGlobalAction::FocusRight => app.tiles.apply(TileAction::FocusRight, growth),
-        AppGlobalAction::FocusUp => app.tiles.apply(TileAction::FocusUp, growth),
-        AppGlobalAction::FocusDown => app.tiles.apply(TileAction::FocusDown, growth),
-        AppGlobalAction::Expand => app.grid_view.expand(std::time::Instant::now()),
-        AppGlobalAction::Freeze => app.updates = app.updates.toggled(),
+        AppGlobalAction::AddTile => apply_tile_action(app, TileAction::Add),
+        AppGlobalAction::RemoveTile => apply_tile_action(app, TileAction::Remove),
+        AppGlobalAction::FocusLeft => apply_tile_action(app, TileAction::FocusLeft),
+        AppGlobalAction::FocusRight => apply_tile_action(app, TileAction::FocusRight),
+        AppGlobalAction::FocusUp => apply_tile_action(app, TileAction::FocusUp),
+        AppGlobalAction::FocusDown => apply_tile_action(app, TileAction::FocusDown),
+        AppGlobalAction::Expand => {
+            let time = app.display_time(std::time::Instant::now());
+            app.grid_view.expand(time);
+        },
+        AppGlobalAction::Pause => app.toggle_display_pause(std::time::Instant::now()),
         #[cfg(feature = "attract")]
         AppGlobalAction::Attract => app.attract.toggle(),
         #[cfg(feature = "attract")]
@@ -160,6 +160,11 @@ fn dispatch(action: AppGlobalAction, app: &mut App) {
     ) {
         refresh_toggle_hints(app);
     }
+}
+
+fn apply_tile_action(app: &mut App, action: TileAction) {
+    let growth = app.loaded_config.config.tiles.growth();
+    tui_pane::TileGridHost::tile_grid_mut(app).apply(action, growth);
 }
 
 pub(crate) fn refresh_toggle_hints(app: &mut App) {
@@ -278,9 +283,9 @@ fraying = "leading"
 
     #[test]
     #[cfg(feature = "attract")]
-    fn exact_hidden_restore_confirms_and_expires_while_frozen() {
+    fn exact_hidden_restore_confirms_and_expires_while_paused() {
         let mut app = App::new_for_test().expect("test app should build");
-        app.updates = Updates::Frozen;
+        app.updates = Updates::Paused;
         app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
         let before = app.attract.current_settings();
         app.attract.apply_settings(moving_band_settings());
@@ -300,9 +305,9 @@ fraying = "leading"
 
     #[test]
     #[cfg(feature = "attract")]
-    fn adjusted_restore_names_the_moved_parameter_sets_and_expires_while_frozen() {
+    fn adjusted_restore_names_the_moved_parameter_sets_and_expires_while_paused() {
         let mut app = App::new_for_test().expect("test app should build");
-        app.updates = Updates::Frozen;
+        app.updates = Updates::Paused;
         app.attract.record_terminal_resize(Rect::new(0, 0, 80, 24));
         app.attract.apply_settings(moving_band_settings());
         app.attract.record_terminal_resize(Rect::new(0, 0, 4, 3));
@@ -317,9 +322,9 @@ fraying = "leading"
 
     #[test]
     #[cfg(feature = "attract")]
-    fn unavailable_undo_says_so_and_expires_while_frozen() {
+    fn unavailable_undo_says_so_and_expires_while_paused() {
         let mut app = App::new_for_test().expect("test app should build");
-        app.updates = Updates::Frozen;
+        app.updates = Updates::Paused;
 
         dispatch(AppGlobalAction::UndoAttractReplacement, &mut app);
 

@@ -1,25 +1,37 @@
 //! Finds the Rust blobs of commits and reads their facts on every CPU.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::env;
 use std::io::Write;
 use std::path::Path;
 
+use gix::Blob;
 use gix::ObjectId;
+use gix::Repository;
 use gix::ThreadSafeRepository;
-use gix::objs::tree::EntryKind;
-use gix::traverse::tree::Recorder;
+use gix::odb::pack::index;
+use gix::odb::pack::multi_index;
+use gix::odb::store::structure::IndexState;
+use gix::odb::store::structure::Record;
 use rayon::prelude::*;
-use serde::Serialize;
-use serde::Serializer;
-use serde::ser::Error as _;
+use serde_json::Error as JsonError;
 
+use crate::cache_constants::PARSE_COUNT_ENV;
 use crate::constants::BLOB_BATCH_SIZE;
 use crate::error::ReaderError;
-use crate::facts;
+use crate::fact_store::CacheFailure;
+use crate::fact_store::CachedFact;
+use crate::fact_store::FactCache;
+use crate::fact_store::NewFactRow;
+use crate::facts::BlobSource;
+use crate::facts::BlobSyntax;
+use crate::facts::FactReading;
 use crate::module_sites::ModuleSitesQuery;
 use crate::request::FactKind;
 use crate::request::NameWordClass;
+use crate::tree_inventory::TreeInventory;
 
 /// One repository, shared by the reader threads.
 pub(crate) struct BlobReader {
@@ -45,58 +57,53 @@ impl BlobReader {
         let repository = self.repository.to_thread_local();
         commits
             .iter()
-            .map(|commit| {
-                let id = ObjectId::from_hex(commit.as_bytes()).map_err(|source| {
-                    ReaderError::CommitId {
-                        commit: commit.clone(),
-                        source,
-                    }
-                })?;
-                let tree_error =
-                    |source: Box<dyn std::error::Error + Send + Sync>| ReaderError::Tree {
-                        commit: commit.clone(),
-                        source,
-                    };
-                let tree = repository
-                    .find_object(id)
-                    .map_err(|source| tree_error(Box::new(source)))?
-                    .peel_to_tree()
-                    .map_err(|source| tree_error(Box::new(source)))?;
-                let mut recorder = Recorder::default();
-                tree.traverse()
-                    .breadthfirst(&mut recorder)
-                    .map_err(|source| tree_error(Box::new(source)))?;
-                let mut entries = Vec::with_capacity(recorder.records.len());
-                for entry in recorder.records {
-                    let path = entry.filepath.to_vec();
-                    let kind = match entry.mode.kind() {
-                        EntryKind::Tree => "tree",
-                        EntryKind::Commit => "commit",
-                        EntryKind::Blob | EntryKind::BlobExecutable | EntryKind::Link => "blob",
-                    };
-                    entries.push((
-                        path,
-                        format!("{:06o}", entry.mode.value()),
-                        kind.to_owned(),
-                        entry.oid.to_string(),
-                    ));
-                }
-                entries.sort_by_cached_key(|(path, _, kind, _)| {
-                    if kind == "tree" {
-                        let mut directory = path.clone();
-                        directory.push(b'/');
-                        directory
-                    } else {
-                        path.clone()
-                    }
-                });
-                Ok(TreeInventory {
-                    commit: commit.clone(),
-                    tree: tree.id.to_string(),
-                    entries,
-                })
-            })
+            .map(|commit| TreeInventory::read(&repository, commit))
             .collect()
+    }
+
+    pub(crate) fn existing_fact_cache(&self) -> FactCache {
+        FactCache::open_existing(self.repository.to_thread_local().common_dir())
+    }
+
+    pub(crate) fn source(
+        &self,
+        blob: &str,
+        cache: &mut FactCache,
+    ) -> Result<BlobSource, ReaderError> {
+        let (repository, id) = self.blob_lookup(blob)?;
+        if let CachedFact::Found(encoded) = cache.lookup(id) {
+            match validated_cached_blob(&repository, id, &encoded)? {
+                Ok(reading) => return Ok(reading.into_source()),
+                Err(error) => cache.disable(CacheFailure::from(error)),
+            }
+        }
+        Ok(
+            read_blob_object(&repository, id)?.map_or(BlobSource::Missing, |blob| {
+                match String::from_utf8_lossy(&blob.data) {
+                    Cow::Borrowed(text) => BlobSource::Utf8 {
+                        text:   text.to_owned(),
+                        syntax: BlobSyntax::Unparsed,
+                    },
+                    Cow::Owned(text) => BlobSource::NotUtf8(text),
+                }
+            }),
+        )
+    }
+
+    pub(crate) fn raw_bytes(&self, blob: &str) -> Result<Option<Vec<u8>>, ReaderError> {
+        let (repository, id) = self.blob_lookup(blob)?;
+        Ok(read_blob_object(&repository, id)?.map(|blob| blob.detach().data))
+    }
+
+    fn blob_lookup(&self, blob: &str) -> Result<(Repository, ObjectId), ReaderError> {
+        let id =
+            ObjectId::from_hex(blob.as_bytes()).map_err(|source| ReaderError::QueryBlobId {
+                blob: blob.to_owned(),
+                source,
+            })?;
+        let mut repository = self.repository.to_thread_local();
+        repository.objects.ignore_replacements = true;
+        Ok((repository, id))
     }
 
     /// Write all facts and queries in bounded batches, including queried blobs outside the commits.
@@ -126,72 +133,201 @@ impl BlobReader {
             .into_iter()
             .collect();
         let requested: BTreeSet<_> = blobs.iter().copied().collect();
-        all.chunks(BLOB_BATCH_SIZE).try_for_each(|batch| {
-            let lines: Result<Vec<_>, _> = batch
+        if all.is_empty() {
+            return Ok(());
+        }
+        let repository = self.repository.to_thread_local();
+        let mut cache = FactCache::open(repository.common_dir());
+        let mut parsed = 0;
+        for batch in all.chunks(BLOB_BATCH_SIZE) {
+            let lookups: Vec<_> = batch
+                .iter()
+                .map(|&blob| (blob, cache.lookup(blob)))
+                .collect();
+            let lines = lookups
                 .par_iter()
                 .map_init(
-                    || self.repository.to_thread_local(),
-                    |repository, &blob| {
-                        let blob_kinds = if requested.contains(&blob) {
-                            kinds
-                        } else {
-                            &[]
-                        };
-                        let blob_queries = grouped.get(&blob).map_or(&[][..], Vec::as_slice);
-                        let object = repository.try_find_object(blob).map_err(|source| {
-                            ReaderError::Blob {
-                                blob,
-                                source: Box::new(source),
-                            }
-                        })?;
-                        let Some(object) = object else {
-                            return facts::missing_readings(blob, blob_kinds, blob_queries)
-                                .map_err(|source| ReaderError::Serialize { blob, source });
-                        };
-                        let object =
-                            object.try_into_blob().map_err(|source| ReaderError::Blob {
-                                blob,
-                                source: Box::new(source),
-                            })?;
-                        facts::blob_readings(
-                            blob,
-                            &object.data,
-                            blob_kinds,
-                            blob_queries,
-                            word_class,
-                        )
-                        .map_err(|source| ReaderError::Serialize { blob, source })
+                    || {
+                        let mut repository = self.repository.to_thread_local();
+                        repository.objects.ignore_replacements = true;
+                        repository
+                    },
+                    |repository, (blob, cached)| {
+                        let kinds = if requested.contains(blob) { kinds } else { &[] };
+                        let queries = grouped.get(blob).map_or(&[][..], Vec::as_slice);
+                        read_and_render(repository, *blob, cached, kinds, queries, word_class)
                     },
                 )
-                .collect();
-            lines?.iter().try_for_each(|line| {
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut rows = Vec::new();
+            for line in lines {
+                match line.outcome {
+                    BlobReadOutcome::NotParsed => {},
+                    BlobReadOutcome::Parsed => parsed += 1,
+                    BlobReadOutcome::ParsedWithRow(row) => {
+                        parsed += 1;
+                        rows.push(row);
+                    },
+                    BlobReadOutcome::NotParsedWithCacheFailure(reason) => cache.disable(reason),
+                    BlobReadOutcome::ParsedWithCacheFailure(reason) => {
+                        parsed += 1;
+                        cache.disable(reason);
+                    },
+                }
                 output
-                    .write_all(line.as_bytes())
-                    .map_err(ReaderError::Write)
-            })
-        })
+                    .write_all(line.json.as_bytes())
+                    .map_err(ReaderError::Write)?;
+            }
+            cache.store_batch(&rows);
+        }
+        cache.finish();
+        report_parse_count(parsed);
+        Ok(())
     }
 }
 
-/// The complete recursive inventory of one commit or tree.
-#[derive(Serialize)]
-pub(crate) struct TreeInventory {
-    commit:             String,
-    tree:               String,
-    #[serde(serialize_with = "serialize_entries")]
-    pub(crate) entries: Vec<(Vec<u8>, String, String, String)>,
+/// An output line group and any cache update from reading its blob.
+struct BlobOutput {
+    json:    String,
+    outcome: BlobReadOutcome,
 }
 
-/// Decode tree paths only when the caller requests a text inventory.
-fn serialize_entries<S: Serializer>(
-    entries: &[(Vec<u8>, String, String, String)],
-    serializer: S,
-) -> Result<S::Ok, S::Error> {
-    let decoded: Result<Vec<_>, _> = entries
-        .iter()
-        .map(|(path, mode, kind, blob)| {
-            std::str::from_utf8(path).map(|path| (path, mode, kind, blob))
+enum BlobReadOutcome {
+    NotParsed,
+    Parsed,
+    ParsedWithRow(NewFactRow),
+    NotParsedWithCacheFailure(CacheFailure),
+    ParsedWithCacheFailure(CacheFailure),
+}
+
+fn read_and_render(
+    repository: &Repository,
+    blob: ObjectId,
+    cached: &CachedFact,
+    kinds: &[FactKind],
+    queries: &[&ModuleSitesQuery],
+    word_class: NameWordClass,
+) -> Result<BlobOutput, ReaderError> {
+    let serialize_error = |source| ReaderError::Serialize { blob, source };
+    let cache_validation = match cached {
+        CachedFact::Found(encoded) => match validated_cached_blob(repository, blob, encoded)? {
+            Ok(reading) => {
+                return Ok(BlobOutput {
+                    json:    reading
+                        .render(blob, kinds, queries, word_class)
+                        .map_err(serialize_error)?,
+                    outcome: BlobReadOutcome::NotParsed,
+                });
+            },
+            Err(error) => Err(CacheFailure::from(error)),
+        },
+        CachedFact::Missing | CachedFact::Unavailable => Ok(()),
+    };
+
+    let reading = read_blob(repository, blob)?;
+    let outcome = match (&reading, cache_validation, cached) {
+        (FactReading::MissingBlob, Err(reason), _) => {
+            BlobReadOutcome::NotParsedWithCacheFailure(reason)
+        },
+        (FactReading::MissingBlob, Ok(()), _) => BlobReadOutcome::NotParsed,
+        (_, Err(reason), _) => BlobReadOutcome::ParsedWithCacheFailure(reason),
+        (_, Ok(()), CachedFact::Missing) => match NewFactRow::encode(blob, &reading) {
+            Ok(row) => BlobReadOutcome::ParsedWithRow(row),
+            Err(reason) => BlobReadOutcome::ParsedWithCacheFailure(reason),
+        },
+        (_, Ok(()), _) => BlobReadOutcome::Parsed,
+    };
+    Ok(BlobOutput {
+        json: reading
+            .render(blob, kinds, queries, word_class)
+            .map_err(serialize_error)?,
+        outcome,
+    })
+}
+
+fn validated_cached_blob(
+    repository: &Repository,
+    blob: ObjectId,
+    encoded: &str,
+) -> Result<Result<FactReading, JsonError>, ReaderError> {
+    let header = repository
+        .try_find_header(blob)
+        .map_err(|source| ReaderError::Blob {
+            blob,
+            source: Box::new(source),
+        })?;
+    if header.is_some() {
+        Ok(serde_json::from_str(encoded))
+    } else {
+        check_unloaded_pack_indexes(repository, blob)?;
+        Ok(Ok(FactReading::MissingBlob))
+    }
+}
+
+fn read_blob(repository: &Repository, blob: ObjectId) -> Result<FactReading, ReaderError> {
+    let Some(object) = read_blob_object(repository, blob)? else {
+        return Ok(FactReading::MissingBlob);
+    };
+    FactReading::parse(&object.data).map_err(|source| ReaderError::Serialize { blob, source })
+}
+
+fn read_blob_object(
+    repository: &Repository,
+    blob: ObjectId,
+) -> Result<Option<Blob<'_>>, ReaderError> {
+    let object = repository
+        .try_find_object(blob)
+        .map_err(|source| ReaderError::Blob {
+            blob,
+            source: Box::new(source),
+        })?;
+    let Some(object) = object else {
+        check_unloaded_pack_indexes(repository, blob)?;
+        return Ok(None);
+    };
+    object
+        .try_into_blob()
+        .map(Some)
+        .map_err(|source| ReaderError::Blob {
+            blob,
+            source: Box::new(source),
         })
-        .collect();
-    decoded.map_err(S::Error::custom)?.serialize(serializer)
+}
+
+fn check_unloaded_pack_indexes(repository: &Repository, blob: ObjectId) -> Result<(), ReaderError> {
+    // gix can skip an unreadable index and report a missing object.
+    let store = repository.objects.store_ref();
+    let metrics = store.metrics();
+    if metrics.open_reachable_indices == metrics.known_reachable_indices {
+        return Ok(());
+    }
+
+    let read_error = |source| ReaderError::Blob {
+        blob,
+        source: Box::new(source),
+    };
+    for record in store.structure().map_err(read_error)? {
+        match record {
+            Record::Index {
+                path,
+                state: IndexState::Unloaded,
+            } => {
+                let _ = index::File::at(path, repository.object_hash()).map_err(read_error)?;
+            },
+            Record::MultiIndex {
+                path,
+                state: IndexState::Unloaded,
+            } => {
+                let _ = multi_index::File::at(path, None).map_err(read_error)?;
+            },
+            _ => {},
+        }
+    }
+    Ok(())
+}
+
+fn report_parse_count(parsed: usize) {
+    if cfg!(debug_assertions) && env::var_os(PARSE_COUNT_ENV).is_some_and(|value| value == "1") {
+        eprintln!("cargo-style: parsed {parsed} blobs");
+    }
 }

@@ -199,7 +199,7 @@ pub(crate) fn item_starts(words: &[String]) -> BTreeSet<usize> {
 }
 
 /// The matched delimiter pairs, following the Python stack rules.
-fn delimiter_ends(words: &[String]) -> BTreeMap<usize, usize> {
+pub(crate) fn delimiter_ends(words: &[String]) -> BTreeMap<usize, usize> {
     let mut stack = Vec::new();
     let mut ends = BTreeMap::new();
     for (index, value) in words.iter().enumerate() {
@@ -226,7 +226,7 @@ fn delimiter_ends(words: &[String]) -> BTreeMap<usize, usize> {
 }
 
 /// Each macro tree, from its bang to the word after its closer.
-fn macro_spans(words: &[String], ends: &BTreeMap<usize, usize>) -> Vec<(usize, usize)> {
+pub(crate) fn macro_spans(words: &[String], ends: &BTreeMap<usize, usize>) -> Vec<(usize, usize)> {
     words
         .iter()
         .enumerate()
@@ -253,11 +253,55 @@ pub(crate) fn code_item_starts(words: &[String]) -> BTreeSet<usize> {
 }
 
 /// The first body brace after a name, or the word count for a declaration.
-fn body_start(words: &[String], keyword: usize) -> usize {
+pub(crate) fn body_start(words: &[String], keyword: usize) -> usize {
     (keyword + 2..words.len())
         .find(|&index| matches!(word(words, index), "{" | ";"))
         .filter(|&index| word(words, index) == "{")
         .unwrap_or(words.len())
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum MemberKind {
+    Field,
+    Variant,
+}
+
+/// Direct named fields or variants in the given braced body.
+pub(crate) fn member_sites(
+    words: &[String],
+    start: usize,
+    end: usize,
+    kind: MemberKind,
+) -> Vec<usize> {
+    let attributes: BTreeMap<_, _> = attribute_spans(words).into_iter().collect();
+    let mut members = Vec::new();
+    let mut index = start + 1;
+    while index < end {
+        while let Some(&next) = attributes.get(&index) {
+            index = next;
+        }
+        if matches!(kind, MemberKind::Field) && word(words, index) == "pub" {
+            index += 1;
+            if word(words, index) == "(" {
+                index = closing(words, index) + 1;
+            }
+        }
+        let at_name = match kind {
+            MemberKind::Field => index + 1 < end && word(words, index + 1) == ":",
+            MemberKind::Variant => index < end,
+        };
+        if at_name && identifier(word(words, index)) {
+            members.push(index);
+        }
+        while index < end && word(words, index) != "," {
+            if matches!(word(words, index), "{" | "(" | "[") {
+                index = closing(words, index);
+            }
+            index += 1;
+        }
+        index += 1;
+    }
+    members
 }
 
 /// Inline modules in source order, with outer modules before their children.

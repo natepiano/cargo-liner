@@ -223,6 +223,53 @@ mod tests {
         Ok(())
     }
 
+    /// `use super::*;` brings in a `Foo` that only `assert_eq!` uses. `syn` does not parse the
+    /// macro body, so `use crate::other::Foo;` was added and hid the glob's `Foo` there. A
+    /// `Foo` after `::` in a macro body does not resolve through scope, so it keeps the finding.
+    /// The `Foo` after a leading `self::` resolves through the module scope.
+    #[test]
+    fn name_used_in_a_macro_body_keeps_its_inline_path() -> anyhow::Result<()> {
+        for (body, expected_findings) in [
+            ("assert_eq!(Foo::X, 1);", 0),
+            ("", 1),
+            ("assert_eq!(crate::other::Foo::X, Kind::Foo);", 1),
+            ("assert_eq!(self::Foo::X, 1);", 0),
+        ] {
+            assert_glob_foo_findings(body, expected_findings)?;
+        }
+        Ok(())
+    }
+
+    /// `self::Foo::X` resolves `Foo` through the module scope, so it uses the `Foo` that
+    /// `use super::*;` brings in. `use crate::other::Foo;` would hide that `Foo`. The `Foo`
+    /// in `self::foo::Foo::X` is a later segment, so it keeps the finding.
+    #[test]
+    fn name_used_through_a_self_path_keeps_its_inline_path() -> anyhow::Result<()> {
+        for (body, expected_findings) in [
+            ("let _ = self::Foo::X;", 0),
+            ("let _ = self::foo::Foo::X;", 1),
+        ] {
+            assert_glob_foo_findings(body, expected_findings)?;
+        }
+        Ok(())
+    }
+
+    /// Scan a file where `use super::*;` brings in a `Foo` and `f` names `crate::other::Foo`,
+    /// with `body` in `f`. Assert `expected_findings` findings, and a fix only with a finding.
+    fn assert_glob_foo_findings(body: &str, expected_findings: usize) -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("lib.rs");
+        let text = format!("use super::*;\nfn f(_: crate::other::Foo) {{ {body} }}\n");
+        std::fs::write(&path, &text)?;
+        let sources = ParsedSources::default();
+        let module_map = sources.module_map(dir.path());
+        let (findings, fixes) =
+            super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+        assert_eq!(findings.len(), expected_findings, "{text}");
+        assert_eq!(fixes.is_empty(), expected_findings == 0, "{text}");
+        Ok(())
+    }
+
     #[test]
     fn full_file_scan_shares_one_index_across_scopes_and_paths() -> anyhow::Result<()> {
         let dir = tempfile::tempdir()?;

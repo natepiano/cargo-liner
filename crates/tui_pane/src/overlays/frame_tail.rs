@@ -16,7 +16,6 @@ use crate::PaneFocusState;
 use crate::Renderable;
 use crate::SettingsRows;
 use crate::ToastsRenderCtx;
-use crate::draw_settings;
 
 /// Draw the framework's toasts inside `area`.
 pub fn render_toasts<Ctx: AppContext>(
@@ -24,15 +23,29 @@ pub fn render_toasts<Ctx: AppContext>(
     framework: &mut Framework<Ctx>,
     rect: Rect,
 ) {
-    Renderable::render(
-        &mut framework.toasts,
-        frame,
-        rect,
-        &ToastsRenderCtx {
-            now:              Instant::now(),
-            pane_focus_state: PaneFocusState::Inactive,
-        },
-    );
+    Renderable::render(&mut framework.toasts, frame, rect, &frame_toasts_ctx());
+}
+
+/// Draw the framework's toasts over a tile grid in `viewport`. Keep the cards
+/// out of the feet of `protected_frames`, and keep a card in place while grid
+/// cells change height.
+pub fn render_toasts_over_grid<Ctx: AppContext>(
+    frame: &mut Frame,
+    framework: &mut Framework<Ctx>,
+    viewport: Rect,
+    protected_frames: &[Rect],
+) {
+    framework
+        .toasts
+        .render_over_grid(frame, viewport, protected_frames, &frame_toasts_ctx());
+}
+
+/// The `ToastsRenderCtx` for toasts drawn after the app's panes: now, with no pane focus.
+fn frame_toasts_ctx() -> ToastsRenderCtx {
+    ToastsRenderCtx {
+        now:              Instant::now(),
+        pane_focus_state: PaneFocusState::Inactive,
+    }
 }
 
 /// Draw whichever framework overlay is open: settings with the app's
@@ -45,21 +58,19 @@ pub fn draw_framework_overlay<A: KeymapUiContext + 'static, S: Copy>(
     keymap: &Keymap<A>,
     settings_rows: impl FnOnce(&A) -> SettingsRows<S>,
 ) {
-    match app.framework().overlay() {
+    let area = match app.framework().overlay() {
         Some(FrameworkOverlayId::Settings) => {
             let resolved_settings_rows = settings_rows(app);
             let mode = app.framework().color_mode;
-            draw_settings(
-                frame,
-                &mut app.framework_mut().settings_pane,
-                &resolved_settings_rows,
-                mode,
-            );
+            app.framework_mut()
+                .settings_pane
+                .draw_popup(frame, &resolved_settings_rows, mode)
         },
-        Some(FrameworkOverlayId::Keymap) => keymap_ui::draw_keymap_overlay(frame, app, keymap),
+        Some(FrameworkOverlayId::Keymap) => keymap_ui::draw_keymap_popup(frame, app, keymap),
         Some(FrameworkOverlayId::GlobalShortcuts) => {
-            global_shortcuts::draw_global_shortcuts_overlay(frame, app, keymap);
+            global_shortcuts::draw_global_shortcuts_popup(frame, app, keymap)
         },
-        None => (),
-    }
+        None => Rect::default(),
+    };
+    app.framework_mut().set_framework_overlay_bounds(area);
 }
