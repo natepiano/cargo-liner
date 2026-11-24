@@ -24,8 +24,8 @@ pub(crate) enum ClaimRecoverySelector {
 }
 
 impl ClaimRecoverySelector {
-    fn append_arguments(&self, arguments: &mut Vec<String>) {
-        let (flag, value) = match self {
+    pub(crate) fn argument(&self) -> (&'static str, String) {
+        match self {
             Self::Reservation(id) => ("--reservation", id.to_string()),
             Self::Target(target) => ("--target", target.clone()),
             Self::Purpose(reason) => ("--why", reason.clone()),
@@ -33,7 +33,11 @@ impl ClaimRecoverySelector {
             Self::Phase(phase) => ("--phase", phase.to_string()),
             Self::Run(run) => ("--run", run.to_string()),
             Self::Head(head) => ("--head", head.as_ref().to_string()),
-        };
+        }
+    }
+
+    fn append_arguments(&self, arguments: &mut Vec<String>) {
+        let (flag, value) = self.argument();
         if value.starts_with('-') {
             arguments.push(format!(
                 "{flag}={}",
@@ -57,8 +61,14 @@ pub(crate) struct ClaimRecoveryCommand {
 impl ClaimRecoveryCommand {
     pub(super) fn leading_arguments(&self) -> Vec<String> {
         let mut arguments = vec!["cargo-berth".to_owned(), "claim".to_owned()];
-        if !self.paths_need_separator() {
-            self.append_paths(&mut arguments);
+        for path in &self.paths {
+            let path = path.to_string_lossy();
+            let quoted = coordination_identity::shell_quote(&path);
+            if path.starts_with('-') {
+                arguments.push(format!("--path={quoted}"));
+            } else {
+                arguments.extend(["--path".to_owned(), quoted]);
+            }
         }
         for selector in &self.selectors {
             selector.append_arguments(&mut arguments);
@@ -73,23 +83,5 @@ impl ClaimRecoveryCommand {
         if matches!(self.output, CliOutputFormat::Json) {
             arguments.push("--json".to_owned());
         }
-        if self.paths_need_separator() {
-            arguments.push("--".to_owned());
-            self.append_paths(arguments);
-        }
-    }
-
-    fn paths_need_separator(&self) -> bool {
-        self.paths
-            .iter()
-            .any(|path| path.as_os_str().as_encoded_bytes().starts_with(b"-"))
-    }
-
-    fn append_paths(&self, arguments: &mut Vec<String>) {
-        arguments.extend(
-            self.paths
-                .iter()
-                .map(|path| coordination_identity::shell_quote(&path.to_string_lossy())),
-        );
     }
 }

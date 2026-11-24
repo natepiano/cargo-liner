@@ -125,7 +125,7 @@ const JOURNAL_NOTHING_TO_COMPACT_MESSAGE: &str = "The journal holds no supersede
 const BOARD_READY_MESSAGE: &str =
     "The reservation board was read. Use `cargo-berth board --json` to inspect it.";
 const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
-    "cargo-berth check --reservation <reservation-id> <path>...";
+    "cargo-berth check --reservation <reservation-id> --path <path>";
 
 /// The command that selects one candidate, runnable verbatim by whoever reads the refusal.
 ///
@@ -135,20 +135,20 @@ const AMBIGUOUS_RESERVATION_RECOVERY_COMMAND: &str =
 /// plain: an environment assignment in front of it would take it outside a
 /// `Bash(cargo-berth *)` permission rule. A session `HARNESS_SESSION_ENVIRONMENT` named is
 /// not carried by a plain shell, so the command names it, quoted for `sh`.
-fn ambiguous_reservation_recovery_command() -> String {
+fn ambiguous_reservation_recovery_command(command: &str) -> String {
     match session::current_process_harness_session() {
         HarnessSessionIdentity::Available {
             harness_session_id,
             source: HarnessSessionSource::CargoBerthEnvironment,
         } => format!(
-            "{HARNESS_SESSION_ENVIRONMENT}={} {AMBIGUOUS_RESERVATION_RECOVERY_COMMAND}",
+            "{HARNESS_SESSION_ENVIRONMENT}={} {command}",
             coordination_identity::shell_quote(harness_session_id.as_str())
         ),
         HarnessSessionIdentity::Available {
             source: HarnessSessionSource::ClaudeCode,
             ..
         }
-        | HarnessSessionIdentity::Unavailable => AMBIGUOUS_RESERVATION_RECOVERY_COMMAND.to_owned(),
+        | HarnessSessionIdentity::Unavailable => command.to_owned(),
     }
 }
 /// The one sentence a fail-open edit decision states, wherever it is rendered.
@@ -2339,6 +2339,17 @@ impl OutputEnvelope {
         }
     }
 
+    /// Refuse a claim whose selected reservation already declares every requested scope.
+    pub(crate) fn claim_scopes_already_held(id: ReservationId) -> Self {
+        let mut output = Self::invalid_input(
+            CommandVerb::Claim,
+            &format!("Reservation {id} already holds every requested scope. No scope was added."),
+        );
+        output.status = OutputStatus::ScopeAcquisitionRefused;
+        output.reservations = vec![id];
+        output
+    }
+
     /// Build the successful result for one appended claim.
     pub(crate) fn claimed(
         reservation_id: ReservationId,
@@ -3023,7 +3034,8 @@ impl OutputEnvelope {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(", ");
-        let recovery_command = ambiguous_reservation_recovery_command();
+        let recovery_command =
+            ambiguous_reservation_recovery_command(AMBIGUOUS_RESERVATION_RECOVERY_COMMAND);
         let message = format!(
             "No session names one phase's reservation among {rendered_candidates}. Run `{recovery_command}` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
         );
@@ -3045,6 +3057,25 @@ impl OutputEnvelope {
                 },
             )),
         }
+    }
+
+    /// Print the exact path and reservation in each recovery command.
+    pub(crate) fn edit_hook_ambiguity_recovery(&self, path: &str) -> String {
+        if self.status != OutputStatus::AmbiguousActiveRunReservations {
+            return String::new();
+        }
+        let path = coordination_identity::shell_quote(&format!("file:{path}"));
+        let commands = self
+            .reservations
+            .iter()
+            .map(|reservation| {
+                let command =
+                    format!("cargo-berth check --reservation {reservation} --path {path}");
+                format!("- `{}`", ambiguous_reservation_recovery_command(&command))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        format!("Run one of these commands for this edit.\n\n{commands}")
     }
 
     /// Build a blocked mutation-free edit check that names who chooses the answer.
@@ -4420,10 +4451,10 @@ fn blocked_edit_answer_guidance(
 pub(crate) const fn blocked_edit_answer_guidance_template() -> &'static str {
     r#"Answers 1, 2 and 3 name every holder by repeating their flag once per holder, and one claim may mix answers 1 and 2, one flag per holder; answer 4 settles one named holder. Answers 1-4 are `cargo-berth claim` commands run from the repository; each takes the paths and requires a non-empty reason, and records the answer in that one run.
 
-1. Land before the holder: `cargo-berth claim <paths...> --before <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates first; the holder stays held until the requester is on trunk. For a holder that will build on the requester's change.
-2. Land after the holder: `cargo-berth claim <paths...> --after <holder-reservation-id> --overlap-why "<reason>"`. The requester integrates second, held until the holder's protected tip is on trunk and is an ancestor of the requester's `HEAD`. For a requester that will build on the holder.
-3. Defer the order: `cargo-berth claim <paths...> --defer <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge and no new reservation, so the paths stay open to every other lane; the unresolved overlap stays on the board until someone later sequences it.
-4. Override: `cargo-berth claim <paths...> --override <holder-reservation-id> --overlap-why "<reason>"`. No ordering edge; the override and its reason stay on the board.
+1. Land before the holder. Run `cargo-berth claim --path '<path>' --before <holder-reservation-id> --overlap-why "<reason>"`. The holder waits for the requester to reach trunk.
+2. Land after the holder. Run `cargo-berth claim --path '<path>' --after <holder-reservation-id> --overlap-why "<reason>"`. The holder's protected tip must reach trunk and be an ancestor of the requester's `HEAD`.
+3. Defer the order. Run `cargo-berth claim --path '<path>' --defer <holder-reservation-id> --overlap-why "<reason>"`. The overlap stays on the board until someone records an order.
+4. Override. Run `cargo-berth claim --path '<path>' --override <holder-reservation-id> --overlap-why "<reason>"`. The board keeps the override and its reason.
 5. Leave it alone: run no engine command, append nothing, and work elsewhere."#
 }
 

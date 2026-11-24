@@ -2102,7 +2102,7 @@ fn a_check_without_a_session_joins_one_reservation_but_refuses_to_choose_between
     assert_eq!(
         ambiguous["message"],
         format!(
-            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> --path <path>` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
         )
     );
     assert_eq!(journal_events(root), events_before);
