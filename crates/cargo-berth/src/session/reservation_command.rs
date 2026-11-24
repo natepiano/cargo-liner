@@ -10,6 +10,7 @@ use super::SessionIdentityStore;
 use super::SessionReservationIdentity;
 use crate::ids::ReservationId;
 use crate::ledger;
+use crate::ledger::EditAuthorization;
 use crate::ledger::Ledger;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
@@ -40,8 +41,9 @@ pub(super) fn selected_identity(ledger_directory: &Path) -> Option<SessionReserv
         .map(|command| command.identity)
 }
 
-/// Route a command to the holder of an active reservation that the resolved
-/// session claimed. Any other reservation keeps the existing worktree rules.
+/// Route a command to the holder of an active reservation.
+///
+/// A check with no run identity can select a phase in its own worktree.
 pub(crate) fn select_owned_reservation(
     reservation_id: ReservationId,
     verb: CommandVerb,
@@ -80,17 +82,33 @@ pub(crate) fn select_owned_reservation(
     {
         return Ok(());
     }
-    // A reservation this session does not own, or one no longer active, keeps
-    // the existing worktree rules and their refusals.
-    let Some(run) = store
+    let owned_run = store
         .owned_reservations
         .get(&harness_session_id)
         .and_then(|owned| owned.get(&reservation_id))
-    else {
-        return Ok(());
+        .copied();
+    let local_check = if owned_run.is_none() && matches!(verb, CommandVerb::Check) {
+        let caller = ledger::resolve_identity(&context)
+            .map_err(|error| OutputEnvelope::ledger_error(verb, &error))?;
+        matches!(caller.edit_authorization(), EditAuthorization::Unidentified)
+            .then_some(caller.worktree_id)
+    } else {
+        None
     };
     let Some(reservation) = reservations.iter().find(|reservation| {
-        reservation.id() == reservation_id && reservation.is_active_for_coordination_run(*run)
+        reservation.id() == reservation_id
+            && owned_run.map_or_else(
+                || {
+                    local_check.is_some_and(|worktree_id| {
+                        !reservation.is_plan_shrink()
+                            && reservation.is_active_for_coordination_run_and_worktree(
+                                reservation.actor().run,
+                                worktree_id,
+                            )
+                    })
+                },
+                |run| reservation.is_active_for_coordination_run(run),
+            )
     }) else {
         return Ok(());
     };
@@ -109,7 +127,7 @@ pub(crate) fn select_owned_reservation(
     let command = OwnedReservationCommand {
         root: holder.repository_root().to_path_buf(),
         ledger_directory,
-        identity: SessionReservationIdentity::new(*run, reservation_id),
+        identity: SessionReservationIdentity::new(reservation.actor().run, reservation_id),
     };
     COMMAND_RESERVATION.set(command).map_err(|_| {
         Box::new(OutputEnvelope::invalid_input(

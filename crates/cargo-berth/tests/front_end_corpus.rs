@@ -532,7 +532,11 @@ fn compare_ambiguous_first_touch_text(
         .and_then(|expected| expected.get("stderr"))
         .and_then(Value::as_str)
         .ok_or_else(|| failure("ambiguous first-touch corpus entry should carry stderr"))?
-        .trim_end_matches('\n');
+        .trim_end_matches('\n')
+        .replace(
+            "cargo-berth check --reservation <reservation-id> <path>...",
+            "cargo-berth check --reservation <reservation-id> --path <path>",
+        );
     let normalized_detail = normalize_reservation_ids(entry, real_envelope, block.detail)?;
     if normalized_detail != expected {
         return Err(failure(format!(

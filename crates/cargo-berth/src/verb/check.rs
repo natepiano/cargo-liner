@@ -11,6 +11,7 @@ use super::claim::FirstTouchClaimExecution;
 use super::claim::FirstTouchClaimRequest;
 use super::claim::FirstTouchConflictHandling;
 use super::claim::FirstTouchConflictOutcome;
+use super::claim::PhaseReservationCandidate;
 use super::refusal;
 use crate::answer::OverlapApprover;
 use crate::config::DefaultAnswer;
@@ -80,6 +81,8 @@ enum CheckDecisionError {
     ReservationReplay(ReservationReplayError),
     /// The process identity is stale or belongs to another worktree.
     CoordinationIdentity(CoordinationIdentityRejection),
+    /// More than one reservation declares the edit and the caller has not selected an owner.
+    AmbiguousEditHookOwners(Vec<PhaseReservationCandidate>),
 }
 
 impl From<CoordinationIdentityValidationError> for CheckDecisionError {
@@ -107,6 +110,9 @@ impl CheckDecisionError {
             },
             Self::CoordinationIdentity(rejection) => {
                 OutputEnvelope::coordination_identity_rejected(CommandVerb::Check, rejection)
+            },
+            Self::AmbiguousEditHookOwners(candidates) => {
+                OutputEnvelope::ambiguous_active_run_reservations(CommandVerb::Check, &candidates)
             },
         }
     }
@@ -378,39 +384,45 @@ fn decide(
     let acquisition_scopes = declared_scopes.clone().into_exact_file_antichain(path_case);
     let scopes = declared_scopes.into_minimal_antichain(path_case);
     let reservations = reservations.map_err(CheckDecisionError::ReservationReplay)?;
-    let resolved_edit_authorization =
+    let caller_identity =
         ledger::resolve_identity(&worktree_context).map_err(CheckDecisionError::Ledger)?;
-    let resolved_edit_authorization =
-        if matches!(reservation_selection, CheckReservationSelection::EditHook) {
-            claim::sole_phase_edit_authorization(&reservations, resolved_edit_authorization)
-        } else {
-            resolved_edit_authorization
-        };
+    let edit_authorization = if matches!(reservation_selection, CheckReservationSelection::EditHook)
+    {
+        claim::edit_hook_authorization(
+            &reservations,
+            caller_identity,
+            &acquisition_scopes,
+            path_case,
+            &worktree_context.ledger_directory(),
+        )
+        .map_err(CheckDecisionError::AmbiguousEditHookOwners)
+    } else {
+        Ok(caller_identity)
+    };
     let repository = check_repository_observation(repository);
     let acting_head_containment = ActingHeadContainment::observe_for_edit(
         &reservations,
         &repository,
-        resolved_edit_authorization,
+        *edit_authorization.as_ref().unwrap_or(&caller_identity),
         &scopes,
         path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(
-        resolved_edit_authorization,
+        caller_identity,
         &worktree_context,
         recovery_command_line,
     );
     coordination_identity::validate_coordination_identity(&reservations, &identity_validation)
         .map_err(CheckDecisionError::from)?;
-    validate_edit_worktree_occupancy(
-        &reservations,
-        &worktree_context,
-        resolved_edit_authorization,
-    )
-    .map_err(CheckDecisionError::from)?;
+    validate_edit_worktree_occupancy(&reservations, &worktree_context, caller_identity)
+        .map_err(CheckDecisionError::from)?;
+    let resolved_edit_authorization = edit_authorization?;
     let conflicts =
         reservations.conflicts_for_edit(&scopes, resolved_edit_authorization, path_case);
     let acquisition = if conflicts.is_empty()
+        && resolved_edit_authorization == caller_identity
+        && !session::command_selection_needs_publication(&worktree_context.ledger_directory())
         && let Ok(repository_trunk) = configuration.repository_trunk()
     {
         claim::selected_reservation_check_acquisition(
