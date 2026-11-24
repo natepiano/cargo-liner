@@ -151,9 +151,14 @@ impl<'a> FootprintReader<'a> {
             .classify(path, &finding.edit)
             .map_err(FootprintError::classify_finding)?
         {
-            FindingChange::FileMove(moved) => {
-                files.add(&moved.new);
-                self.add_move_sites(source, &moved, &mut files, &mut uncertain)?;
+            FindingChange::FileMoves(plan) => {
+                for moved in plan.moves() {
+                    files.add(&moved.old);
+                    files.add(&moved.new);
+                }
+                for moved in plan.moves() {
+                    self.add_move_sites(source, moved, &mut files, &mut uncertain)?;
+                }
             },
             FindingChange::QualifiedRename { old } => {
                 self.add_qualified_paths(source, old, &mut files)?;
@@ -173,19 +178,19 @@ impl<'a> FootprintReader<'a> {
     fn add_move_sites(
         &mut self,
         source: &mut FindingSource<'_>,
-        moved: &FileRename<'_>,
+        moved: &FileRename,
         files: &mut FootprintPaths,
         uncertain: &mut FootprintPaths,
     ) -> Result<(), FootprintError> {
-        let root = self.crates.root_for(moved.old);
-        for named in self.declaring_versions(source, rename_classifiers::stem(moved.old))? {
+        let root = self.crates.root_for(&moved.old);
+        for named in self.declaring_versions(source, rename_classifiers::stem(&moved.old))? {
             let CrateRoot::Found { folder, library } = &root else {
                 files.add(&named.path);
                 continue;
             };
             let file_module = FileModule::for_path(&named.path, folder);
             if matches!(file_module, FileModule::Outside(_))
-                && !outside_candidate(source.text(&named.blob)?, moved.old, library)
+                && !outside_candidate(source.text(&named.blob)?, &moved.old, library)
                 && matches!(
                     self.unread_path_string(source, &named.blob)?,
                     UnreadPathString::Absent
@@ -193,13 +198,13 @@ impl<'a> FootprintReader<'a> {
             {
                 continue;
             }
-            let FileModule::Crate { mut path } = FileModule::for_path(moved.old, folder) else {
+            let FileModule::Crate { mut path } = FileModule::for_path(&moved.old, folder) else {
                 files.add(&named.path);
                 continue;
             };
             path.pop();
             let query = ModuleMove::new(
-                moved.old.to_owned(),
+                moved.old.clone(),
                 moved.new.clone(),
                 file_module,
                 path,

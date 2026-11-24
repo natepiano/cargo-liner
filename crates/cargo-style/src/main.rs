@@ -11,6 +11,7 @@ mod binding;
 mod blob_reader;
 mod cache_constants;
 mod constants;
+mod declaration_reading;
 mod declaration_source;
 mod declarations;
 mod enclosing_items;

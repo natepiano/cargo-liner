@@ -14,7 +14,7 @@ use crate::tokenizer;
 use crate::tokenizer::Token;
 use crate::tokenizer::TokenKind;
 
-#[derive(Serialize)]
+#[derive(Clone, Copy, Serialize)]
 pub(crate) enum StatementRefusal {
     #[serde(rename = "text not on a statement line of the moved function")]
     TextNotFound,

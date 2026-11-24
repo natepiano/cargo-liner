@@ -254,11 +254,11 @@ def file_rows(cases: Cases) -> None:
         ("neither file", False, False, "", "", "no_applied_check"),
         ("old stem child module", False, True, "old", "", "no_applied_check"),
         ("new stem child module", False, True, "fresh", "", "no_applied_check"),
-        ("instructions name another change", False, True, "", " Then move the code to helper.rs.", "no_applied_check"),
-        ("instructions use dotted capital I", False, True, "", " Then SPLİT the code.", "no_applied_check"),
+        ("instructions name another change", False, True, "", " Then move the code to helper.rs.", "not_applied"),
+        ("instructions use dotted capital I", False, True, "", " Then SPLİT the code.", "not_applied"),
         ("instructions separate a second file pair with U+001F", False, True, "",
-         " Then rename other.rs\x1fto helper.rs.", "no_applied_check"),
-        ("instructions use a decomposed accent", False, True, "", " No e\u0301 definitions move.", "no_applied_check"),
+         " Then rename other.rs\x1fto helper.rs.", "not_applied"),
+        ("instructions use a decomposed accent", False, True, "", " No e\u0301 definitions move.", "not_applied"),
     ):
         directory = f"src/{name.replace(' ', '-')}"
         path = f"{directory}/old.rs"
@@ -277,8 +277,37 @@ def file_rows(cases: Cases) -> None:
                       before="", after="Rename old.rs to fresh.rs."))
 
 
+def file_instruction_rows(cases: Cases) -> None:
+    """Check complete instructions against the files at the target."""
+    for name, instruction, extra_files, expect in (
+        ("trailing sentence", "Rename old.rs to fresh.rs. Keep the rest.", (), "not_applied"),
+        ("move verb", "Move old.rs to fresh.rs.", (), "not_applied"),
+        ("quoted files", "Rename `old.rs` to `fresh.rs`.", (), "applied_in_code"),
+        ("companion applied", "Rename old.rs to fresh.rs. Rename other.rs to helper.rs.",
+         ("helper.rs",), "applied_in_code"),
+        ("companion remains", "Rename old.rs to fresh.rs and other.rs to helper.rs.",
+         ("other.rs",), "not_applied"),
+        ("companion is the anchor", "Rename other.rs to helper.rs and rename old.rs to fresh.rs.",
+         ("helper.rs",), "applied_in_code"),
+        ("explicit source folder", "Rename {directory}/old.rs to fresh.rs.", (), "applied_in_code"),
+        ("reference update", "Rename old.rs to fresh.rs. Update crate::split::Entry paths.",
+         (), "applied_in_code"),
+        ("rename description", "Rename the companion file old.rs to fresh.rs (the type it holds).",
+         (), "applied_in_code"),
+        ("reused path", "Rename `old.rs` to `fresh.rs` and `fresh.rs` to `helper.rs`.",
+         ("helper.rs",), "not_applied"),
+    ):
+        directory = f"src/{name.replace(' ', '-')}"
+        path = f"{directory}/old.rs"
+        cases.base[path] = LOCAL
+        for filename in ("fresh.rs", *extra_files):
+            cases.tip[f"{directory}/{filename}"] = LOCAL
+        cases.add(Finding(name, path, LOCAL.splitlines()[1], expect, before="",
+                          after=instruction.format(directory=directory), build_ticket="missing-ticket"))
+
+
 def qualified_rows(cases: Cases) -> None:
-    """Ask for a declaration of exactly one spelling under the parent."""
+    """Check which names the target parent declares."""
     for name, parent, source, expect in (
         ("inherent method", "Parent", "struct Parent; impl Parent { fn fresh() {} }", "applied_in_code"),
         ("trait method", "Parent", "trait Parent { fn fresh(); }", "applied_in_code"),
@@ -286,7 +315,11 @@ def qualified_rows(cases: Cases) -> None:
         ("enum variant", "Parent", "enum Parent { fresh }", "applied_in_code"),
         ("module item", "parent", "mod parent { fn fresh() {} }", "applied_in_code"),
         ("old method remains", "Parent", "struct Parent; impl Parent { fn old() {} }", "not_applied"),
-        ("both names present", "Parent", "trait Parent { fn old(); fn fresh(); }", "no_applied_check"),
+        ("both names present", "Parent", "trait Parent { fn old(); fn fresh(); }", "not_applied"),
+        ("variant with old name outside the parent", "Parent", "enum Parent { fresh } enum Other { old }",
+         "applied_in_code"),
+        ("method with old name outside the parent", "Parent", "trait Parent { fn fresh(); } fn old() {}",
+         "no_applied_check"),
         ("neither name present", "Parent", "trait Parent { fn other(); }", "no_applied_check"),
         ("reference without declaration", "Parent", "fn f() { Parent::fresh(); }", "no_applied_check"),
         ("ambiguous parents", "Parent", "mod a { struct Parent { fresh: usize } } mod b { struct Parent; }",
@@ -305,6 +338,22 @@ def qualified_rows(cases: Cases) -> None:
         kind = "type" if name == "other finding kind" else "rename"
         cases.add(Finding(name, path, old.strip(), expect, line=1, before=f"{parent}::old",
                           after=f"{parent}::fresh", kind=kind, build_ticket="missing-ticket"))
+
+
+def unparsed_rows(cases: Cases) -> None:
+    """Check refusals for an incomplete instruction or an unreadable item pair."""
+    for name, before, after in (
+        ("file instruction without a verb", "", "old.rs to fresh.rs."),
+        ("item target without a source name", "", "fresh"),
+        ("item target after a name with a comment", "old /* comment */", "fresh"),
+        ("prose changes one name", "keep the old name", "keep the fresh name"),
+        ("snippet changes two names", "use_item(old, other);", "use_item(fresh, helper);"),
+        ("same binding name", "old", "old"),
+        ("keyword as item target", "old", "fn"),
+    ):
+        path = f"src/{name.replace(' ', '-')}/old.rs"
+        cases.source(path, LOCAL, LOCAL)
+        cases.add(Finding(name, path, LOCAL.splitlines()[1], "not_applied", before=before, after=after))
 
 
 def git(repo: Path, *arguments: str, input_text: str = "") -> str:
@@ -476,9 +525,11 @@ def main(root: Path) -> None:
     ticket_rows(cases)
     companion_rows(cases)
     batch_rows(cases)
+    unparsed_rows(cases)
     first, *remaining = cases.findings
     policy_ids = [first, UNKNOWN, *reversed(remaining), first]
     file_rows(cases)
+    file_instruction_rows(cases)
     qualified_rows(cases)
     no_policy_ids = sorted(cases.findings.keys() - set(policy_ids), reverse=True)
     assert_edit_proof(cases)

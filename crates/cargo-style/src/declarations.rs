@@ -193,33 +193,48 @@ pub(crate) enum DeclarationAt<'a> {
     Unnamed,
 }
 
+/// The index of the declaration that owns a line in this file.
+pub(crate) enum DeclarationIndexAt {
+    Named(usize),
+    Unnamed,
+}
+
 impl DeclaredFile {
     pub(crate) fn at(&self, word_lines: &[usize], line: usize) -> DeclarationAt<'_> {
+        match self.index_at(word_lines, line) {
+            DeclarationIndexAt::Named(index) => DeclarationAt::Named(&self.items[index]),
+            DeclarationIndexAt::Unnamed => DeclarationAt::Unnamed,
+        }
+    }
+
+    pub(crate) fn index_at(&self, word_lines: &[usize], line: usize) -> DeclarationIndexAt {
         let Some(&target) = word_lines.get(word_lines.partition_point(|&word| word < line)) else {
-            return DeclarationAt::Unnamed;
+            return DeclarationIndexAt::Unnamed;
         };
         let readable = self
             .items
             .iter()
             .zip(&self.spans)
-            .filter(|(item, _)| item.lines().contains(&target))
-            .map(|(item, span)| {
+            .enumerate()
+            .filter(|(_, (item, _))| item.lines().contains(&target))
+            .map(|(index, (item, span))| {
                 (
                     (item.first_line, Reverse(item.last_line), span.keyword),
-                    DeclarationAt::Named(item),
+                    DeclarationIndexAt::Named(index),
                 )
             });
         let others = self.others.iter().filter_map(|span| {
             let first = word_lines[span.keyword];
             let last = word_lines[span.end];
-            (first..=last)
-                .contains(&target)
-                .then_some(((first, Reverse(last), span.keyword), DeclarationAt::Unnamed))
+            (first..=last).contains(&target).then_some((
+                (first, Reverse(last), span.keyword),
+                DeclarationIndexAt::Unnamed,
+            ))
         });
         readable
             .chain(others)
             .max_by_key(|(key, _)| *key)
-            .map_or(DeclarationAt::Unnamed, |(_, item)| item)
+            .map_or(DeclarationIndexAt::Unnamed, |(_, index)| index)
     }
 
     pub(crate) fn unique(&self, item: &DeclaredItem) -> bool {

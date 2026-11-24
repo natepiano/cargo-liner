@@ -3,10 +3,6 @@
 // command
 pub(crate) const SITES_SUBCOMMAND: &str = "sites";
 
-// ledger
-/// The ledger schema that the pinned Python ledger writes; `sites` also reads schema 47.
-pub(super) const SITES_LEDGER_SCHEMA_VERSION: i64 = 51;
-
 // protocol
 pub(super) const SITES_REPLY_SCHEMA: u32 = 1;
 

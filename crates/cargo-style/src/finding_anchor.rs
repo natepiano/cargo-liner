@@ -9,8 +9,7 @@ use crate::ledger_read::AnchorEvidence;
 use crate::ledger_read::HeldAnchor;
 use crate::source_lines::LineContinuity;
 use crate::source_lines::SiteLine;
-use crate::tokenizer;
-use crate::unicode_tables::SPACE;
+use crate::source_sites;
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub(crate) enum NeedsJudgmentReason {
@@ -110,12 +109,12 @@ fn prove_legacy_anchor(
     }
 
     let mut matches = Vec::new();
-    let expected = trim_site_text(&finding.text);
+    let expected = source_sites::trim(&finding.text);
     for commit in candidates {
         if let Some(blob) = source.blob(commit, &finding.path)?.map(str::to_owned)
             && let SiteLine::Text(line) = source.line(&blob, finding.line)?
             && !expected.is_empty()
-            && trim_site_text(line) == expected
+            && source_sites::trim(line) == expected
         {
             matches.push((commit, line.to_owned()));
         }
@@ -138,8 +137,4 @@ fn prove_legacy_anchor(
             }
         },
     })
-}
-
-fn trim_site_text(text: &str) -> &str {
-    text.trim_matches(|character| tokenizer::in_table(SPACE, character))
 }

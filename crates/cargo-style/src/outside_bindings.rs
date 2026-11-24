@@ -10,7 +10,6 @@ use crate::declarations::ItemBody;
 use crate::same_declaration::Declaration;
 use crate::source_sites;
 use crate::tokenizer;
-use crate::unicode_tables::SPACE;
 use crate::word_syntax;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -192,7 +191,7 @@ fn named_child(line: &str) -> Option<(&str, &str)> {
         } else {
             rest
         };
-        let name = rest.trim_start_matches(python_space);
+        let name = rest.trim_start_matches(tokenizer::python_space);
         (name.len() < rest.len()).then_some(name)
     });
     after_visibility
@@ -210,11 +209,10 @@ fn child_name_and_tail(text: &str) -> Option<(&str, &str)> {
     let (name, tail) = text.split_at(end);
     Some((
         name,
-        tail.trim_start_matches(python_space).strip_prefix(':')?,
+        tail.trim_start_matches(tokenizer::python_space)
+            .strip_prefix(':')?,
     ))
 }
-
-fn python_space(character: char) -> bool { tokenizer::in_table(SPACE, character) }
 
 fn site_kind(file: &DeclarationFile, item: &DeclaredItem, line: usize) -> SiteKind {
     if !item.lines().contains(&line) {
