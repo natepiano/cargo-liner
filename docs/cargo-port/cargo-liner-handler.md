@@ -1254,6 +1254,26 @@ The copies are deleted. No source changes.
 - If the format changes, check that a version-4 checkpoint rebuilds and that a partial replay gives the same answers as a whole-journal replay.
 - No changed test takes one second or more.
 
+### Phase 56c — a cargo-berth edit check of an unreserved file costs under about 100 ms  · status: todo
+
+#### Work Order
+
+**Goal:** the `pre-tool-use` edit check of a file no reservation holds, and the gate, each cost under about 100 ms CPU in release. Source: the Phase 56b release measure.
+
+**Spec:**
+1. The fault (Mac sample, release, median of 3, after Phase 56b): the unreserved edit costs 4,703 ms CPU with one checkpoint decode and 267.4 MB read. The decode is about 150 ms, so about 4.5 s is elsewhere. The gate costs 173.7 ms, most of it the one decode. Report: `${SESSION_DIR}/phases/56b/measure_reply.md`.
+2. First profile the unreserved edit on the Mac release sample. Name the top costs by function, with CPU ms and read bytes. Cut the top cost at its cause. Each hook answer stays the same.
+3. Then, if the gate or the edit check still costs more than about 100 ms, apply the lazy decode in `${SESSION_DIR}/phases/56/design.md`, section 3, with the format constraints of Phase 56b.
+4. Report CPU and read bytes before and after for the gate and the unreserved edit, median of 3, Mac release, on the same sample.
+
+**Files:** `crates/cargo-berth/src/` — the profile names them.
+
+**Workers:** 1 writer.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- No changed test takes 1 s or more.
+
 ### Phase 57 — mend --fix names each fix it applies  · status: todo
 
 #### Work Order
