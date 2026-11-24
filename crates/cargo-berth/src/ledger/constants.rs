@@ -84,10 +84,9 @@ pub(crate) const HARNESS_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 pub(super) const REPLAY_CHECKPOINT_INTERVAL_BYTES: u64 = 256 * 1_024;
 /// Allow a refresh after this many journal records when the write budget covers it.
 pub(super) const REPLAY_CHECKPOINT_INTERVAL_RECORDS: u64 = 256;
-/// Write at most this many checkpoint bytes for each journal byte appended since the last
-/// refresh. On a Mac hook cycle at Hana ledger size, 8 cut the mean hook CPU by 16% and the
-/// checkpoint bytes written by 95%: each skipped full rewrite costs more CPU than the longer
-/// replay tail.
+/// Maximum checkpoint bytes per journal byte appended since the last refresh.
+/// In a 79-call Mac release cycle at ratio 8, the smaller fold reduced mean hook CPU
+/// from 276 ms to 199 ms and checkpoint bytes written from 43.4 MB to 28.7 MB.
 pub(super) const REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO: u64 = 8;
 
 // test deadlines
@@ -109,7 +108,7 @@ pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// checkpoint written by another build is ignored instead of decoded.
 ///
 /// [`JournalReplay`]: super::journal::JournalReplay
-pub(super) const FOLD_FORMAT_VERSION: u32 = 3;
+pub(super) const FOLD_FORMAT_VERSION: u32 = 4;
 
 /// Shorten a supplied duration using unsigned milliseconds from a debug-only test hook.
 pub(crate) fn shortened_by_environment(variable: &str, supplied: Duration) -> Duration {

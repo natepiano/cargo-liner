@@ -10,6 +10,8 @@ pub(crate) use approver::OverlapApprover;
 pub(crate) use conflict_authorization::ClaimSequenceBinding;
 pub(crate) use conflict_authorization::ConflictAuthorization;
 pub(crate) use conflict_authorization::ContradictedOrdering;
+pub(crate) use conflict_authorization::CoverageMatch;
+pub(crate) use conflict_authorization::OverlapCoverage;
 pub(crate) use conflict_authorization::SequencedHolder;
 pub(crate) use request::DeferAnswerRequest;
 pub(crate) use request::OrderingReplacement;

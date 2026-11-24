@@ -436,6 +436,8 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
 
+    use serde_json::Value;
+    use serde_json::json;
     use tempfile::TempDir;
     use tempfile::tempdir;
 
@@ -447,6 +449,7 @@ mod tests {
     use crate::ids::EventId;
     use crate::ids::ProjectionGeneration;
     use crate::ids::RepoInstanceId;
+    use crate::ledger::constants::FOLD_FORMAT_VERSION;
     use crate::ledger::constants::JOURNAL_FILE_NAME;
     use crate::ledger::constants::REPLAY_CHECKPOINT_FILE_NAME;
     use crate::ledger::constants::REPLAY_CHECKPOINT_INTERVAL_BYTES;
@@ -465,6 +468,13 @@ mod tests {
     const RETAINED_RECORDS: u64 =
         TEST_RECORD_INTERVAL * REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO * 3 / 2;
     const TEST_RECORD_INTERVAL: u64 = 4;
+    const PREVIOUS_FOLD_FORMAT_VERSION: u32 = 3;
+    /// A scope revision digest for the `answer` record of the previous fold checkpoint.
+    const PREVIOUS_FOLD_SCOPE_REVISION: &str =
+        "abababababababababababababababababababababababababababababababab";
+    /// The trunks of the two revalidations after the release in the previous fold checkpoint.
+    const PREVIOUS_FOLD_SECOND_TRUNK: &str = "4444444444444444444444444444444444444444";
+    const PREVIOUS_FOLD_THIRD_TRUNK: &str = "5555555555555555555555555555555555555555";
 
     thread_local! {
         static TEMPORARY_BYTES_WRITTEN: Cell<u64> = const { Cell::new(0) };
@@ -544,6 +554,136 @@ mod tests {
             fixture.assert_replays_equal_whole_journal_replays(&checkpoint)?;
         }
         Ok(())
+    }
+
+    /// Version 3 keeps the proof commits and full answer records. Replay starts at byte 0 and
+    /// replaces the checkpoint with one that matches a whole-journal replay.
+    #[test]
+    fn a_checkpoint_of_the_previous_fold_rebuilds_from_the_journal() -> Result<(), Box<dyn Error>> {
+        assert_ne!(FOLD_FORMAT_VERSION, PREVIOUS_FOLD_FORMAT_VERSION);
+        let fixture = CheckpointFixture::new()?;
+        let (events, released_id) = previous_fold_events()?;
+        fixture.journal.append_events(&events)?;
+        let current = fixture.write_checkpoint()?;
+        let previous_fold_replay = previous_fold_checkpoint(&fixture, &released_id)?;
+        assert_ne!(
+            previous_fold_replay,
+            serde_json::to_value(&current)?,
+            "the previous fold keeps content the current fold does not"
+        );
+
+        assert_eq!(fixture.load(&fixture.kept_checkpoint())?, None);
+        let rebuilt =
+            fixture.assert_replays_equal_whole_journal_replays(&fixture.rewritten_checkpoint())?;
+        assert_eq!(rebuilt, current);
+        assert_eq!(fixture.header()?.fold_format_version, FOLD_FORMAT_VERSION);
+        assert_eq!(fixture.load(&fixture.kept_checkpoint())?, Some(current));
+        Ok(())
+    }
+
+    /// The fold sequence up to its release, then two `ProtectedTipAncestor` revalidations of the
+    /// released reservation and one `answer` record. Also returns the released reservation id.
+    fn previous_fold_events() -> Result<(Vec<JournalEvent>, Value), Box<dyn Error>> {
+        let mut events = journal::fold_sequence_events()?;
+        let release_index = events
+            .iter()
+            .position(|event| matches!(event.operation, JournalOperation::Release { .. }))
+            .ok_or("the fold sequence should release a reservation")?;
+        events.truncate(release_index + 1);
+        let release = events[release_index].clone();
+        let released_id = serde_json::to_value(&release.operation)?["reservation_id"].clone();
+        let operations = [PREVIOUS_FOLD_SECOND_TRUNK, PREVIOUS_FOLD_THIRD_TRUNK]
+            .into_iter()
+            .map(|trunk_oid| {
+                json!({
+                    "op": "evidence_revalidated",
+                    "reservation_id": released_id,
+                    "status": {
+                        "status": "integrated",
+                        "trunk_oid": trunk_oid,
+                        "proof": "protected_tip_ancestor"
+                    },
+                    "edit_blocking_status": "clear",
+                })
+            })
+            .chain(std::iter::once(json!({
+                "op": "answer",
+                "scopes": [{"path": "src", "kind": "tree"}],
+                "authorizations": [previous_fold_defer(&released_id)],
+            })));
+        for (operation, projection_generation) in
+            operations.zip(u64::from(release.projection_generation) + 1..)
+        {
+            let mut event = copies_with_new_event_ids(&release, 1)
+                .pop()
+                .ok_or("one copy of the release")?;
+            event.operation = serde_json::from_value(operation)?;
+            event.projection_generation = ProjectionGeneration::from(projection_generation);
+            events.push(event);
+        }
+        Ok((events, released_id))
+    }
+
+    /// A `defer` answer to `holder` over the `src` tree.
+    fn previous_fold_defer(holder: &Value) -> Value {
+        json!({
+            "kind": "defer",
+            "overlaps": [{
+                "reservation_id": holder,
+                "scope_revision": PREVIOUS_FOLD_SCOPE_REVISION,
+                "scopes": [{"path": "src", "kind": "tree"}],
+            }],
+            "blocker": holder,
+            "reason": "decide the order later",
+        })
+    }
+
+    /// Write a version-3 checkpoint with all proof commits and full answer records.
+    /// Return its replay line.
+    fn previous_fold_checkpoint(
+        fixture: &CheckpointFixture,
+        released_id: &Value,
+    ) -> Result<Value, Box<dyn Error>> {
+        let contents = fs::read(&fixture.checkpoint_path)?;
+        let header_end = contents
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or("the checkpoint should hold a header line")?;
+        let mut header = serde_json::from_slice::<CheckpointHeader>(&contents[..header_end])?;
+        header.fold_format_version = PREVIOUS_FOLD_FORMAT_VERSION;
+        let mut replay = serde_json::from_slice::<Value>(&contents[header_end + 1..])?;
+        let retained = &mut replay["reservations"]["Ok"];
+        let released = retained["reservations"]
+            .as_array_mut()
+            .and_then(|reservations| {
+                reservations
+                    .iter_mut()
+                    .find(|reservation| reservation["id"] == *released_id)
+            })
+            .ok_or("the checkpoint should hold the released reservation")?;
+        let target_proof_commits = released["target_proof_commits"]
+            .as_array_mut()
+            .filter(|commits| !commits.is_empty())
+            .ok_or("the checkpoint should hold the proof recorded before release")?;
+        target_proof_commits.extend(
+            [PREVIOUS_FOLD_SECOND_TRUNK, PREVIOUS_FOLD_THIRD_TRUNK]
+                .map(|trunk_oid| json!(trunk_oid)),
+        );
+        for answer_record in retained["answer_records"]
+            .as_array_mut()
+            .ok_or("the checkpoint should hold answer records")?
+        {
+            *answer_record = json!({
+                "worktree": answer_record["worktree"].clone(),
+                "authorizations": [previous_fold_defer(released_id)],
+            });
+        }
+        let mut rewritten = serde_json::to_vec(&header)?;
+        rewritten.push(b'\n');
+        rewritten.extend(serde_json::to_vec(&replay)?);
+        rewritten.push(b'\n');
+        fs::write(&fixture.checkpoint_path, rewritten)?;
+        Ok(replay)
     }
 
     #[test]
