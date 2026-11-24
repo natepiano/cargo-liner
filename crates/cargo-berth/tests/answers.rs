@@ -44,10 +44,13 @@ use std::thread;
 use std::time::Duration;
 use std::time::Instant;
 
+use cargo_berth_test_support::AmbientHarnessSession;
 use cargo_berth_test_support::FixtureCommand as Command;
 use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
 use cargo_berth_test_support::berth_command;
 use cargo_berth_test_support::observes_merge_extent_of;
+use cargo_berth_test_support::reservation_row;
+use cargo_berth_test_support::spawn_hook_verb;
 use overlap_refusal::assert_one_refusal_appended;
 use tempfile::TempDir;
 use tempfile::tempdir;
@@ -814,7 +817,7 @@ fn incomplete_before_answer_prints_a_complete_executable_claim() {
     );
     let envelope = json_output(&refused);
     let command = format!(
-        "cargo-berth claim file:src/lib.rs --before {} --before {} --overlap-why='-both holders build on this director'\\''s work' --json",
+        "cargo-berth claim --path file:src/lib.rs --before {} --before {} --overlap-why='-both holders build on this director'\\''s work' --json",
         holders[0], holders[1],
     );
     let message = format!(
@@ -942,7 +945,7 @@ fn incomplete_defer_answer_prints_a_complete_executable_claim() {
     );
     let envelope = json_output(&refused);
     let command = format!(
-        "cargo-berth claim file:src/lib.rs --defer {} --defer {} --overlap-why='{reason}' --json",
+        "cargo-berth claim --path file:src/lib.rs --defer {} --defer {} --overlap-why='{reason}' --json",
         holders[0], holders[1],
     );
     let message = format!(
@@ -986,6 +989,571 @@ fn incomplete_defer_answer_prints_a_complete_executable_claim() {
     assert_eq!(blockers, holders);
 }
 
+#[test]
+fn named_claim_records_every_requested_scope_on_the_selected_reservation() {
+    let repository = initialized_repository();
+    let (_worktree_directory, root) = foreign_worktree(&repository, "named-claim");
+    fs::write(root.join("Cargo.lock"), "fixture lockfile\n").expect("write lockfile");
+    let reservation = reservation_id(&claim_explicit(
+        &root,
+        "file:Cargo.toml",
+        SECOND_RUN,
+        "hold the current phase",
+    ));
+    let demo_paths = [
+        "camera/editor_camera.rs",
+        "render/glyph_cache.rs",
+        "tests/panel.rs",
+    ];
+    let sibling = run_berth(
+        &root,
+        ["claim", "--run", SECOND_RUN, "--json"]
+            .into_iter()
+            .chain(demo_paths),
+    );
+    assert!(sibling.status.success(), "{:#}", json_output(&sibling));
+
+    let cases: &[(&[&str], serde_json::Value)] = &[
+        (
+            &[
+                "tree:crates/hana_saved",
+                "tree:crates/hana_saved_macros",
+                "Cargo.lock",
+            ],
+            serde_json::json!([
+                {"kind": "tree", "path": "crates/hana_saved"},
+                {"kind": "tree", "path": "crates/hana_saved_macros"},
+                {"kind": "file", "path": "Cargo.lock"}
+            ]),
+        ),
+        (
+            &["tree:render/panel_text", "tree:render/analytic_paths"],
+            serde_json::json!([
+                {"kind": "tree", "path": "render/panel_text"},
+                {"kind": "tree", "path": "render/analytic_paths"}
+            ]),
+        ),
+        (
+            &demo_paths,
+            serde_json::json!([
+                {"kind": "file", "path": "camera/editor_camera.rs"},
+                {"kind": "file", "path": "render/glyph_cache.rs"},
+                {"kind": "file", "path": "tests/panel.rs"}
+            ]),
+        ),
+    ];
+    for (arguments, expected) in cases {
+        let claim = berth_command(BERTH_EXECUTABLE)
+            .args(["claim", "--reservation", &reservation, "--json"])
+            .args(*arguments)
+            .current_dir(&root)
+            .env(RUN_ENVIRONMENT, SECOND_RUN)
+            .env(SESSION_ENVIRONMENT, "named-claim-director")
+            .output()
+            .expect("run named claim");
+        assert!(claim.status.success(), "{:#}", json_output(&claim));
+        let board = run_berth(&root, ["board", "--json"]);
+        let board = json_output(&board);
+        let scopes = reservation_row(&board, &reservation)["scopes"]
+            .as_array()
+            .expect("read reservation scopes from the board");
+        for scope in expected.as_array().expect("read expected scopes") {
+            assert!(scopes.contains(scope), "{scope} is missing from {scopes:?}");
+        }
+    }
+
+    let redundant = run_berth_with_session(
+        &root,
+        &[
+            "claim",
+            "--reservation",
+            &reservation,
+            "Cargo.lock",
+            "--json",
+        ],
+        "named-claim-director",
+    );
+    let refusal = json_output(&redundant);
+    assert_eq!(redundant.status.code(), Some(5), "{refusal:#}");
+    assert_eq!(refusal["status"], "scope_acquisition_refused");
+}
+
+#[test]
+fn named_claim_with_default_answer_records_absent_trees_and_lockfile() {
+    let repository = initialized_repository();
+    let (_worktree_directory, root) = foreign_worktree(&repository, "named-default");
+    dirty_source(repository.path(), "Cargo.lock");
+    let holder = reservation_id(&claim_explicit(
+        repository.path(),
+        "file:Cargo.lock",
+        FIRST_RUN,
+        "hold the lockfile",
+    ));
+    let reservation = reservation_id(&claim_explicit(
+        &root,
+        "file:Cargo.toml",
+        SECOND_RUN,
+        "hold the current phase",
+    ));
+    set_default_answer(repository.path());
+    fs::write(root.join("Cargo.lock"), "fixture lockfile").expect("write the lockfile");
+
+    let claim = berth_command(BERTH_EXECUTABLE)
+        .args([
+            "claim",
+            "--reservation",
+            &reservation,
+            "tree:crates/hana_saved",
+            "tree:crates/hana_saved_macros",
+            "Cargo.lock",
+            "--json",
+        ])
+        .current_dir(&root)
+        .env(RUN_ENVIRONMENT, SECOND_RUN)
+        .env(SESSION_ENVIRONMENT, "named-default-director")
+        .output()
+        .expect("run the named claim");
+    let envelope = json_output(&claim);
+    assert!(claim.status.success(), "{envelope:#}");
+    assert_eq!(envelope["status"], "widened", "{envelope:#}");
+    let events = journal_events(repository.path());
+    assert!(events.iter().any(|event| {
+        event["op"] == "answer"
+            && event["reservation_id"] == reservation
+            && event["authorizations"][0]["blocker"] == holder
+    }));
+    let board = json_output(&run_berth(&root, ["board", "--json"]));
+    let scopes = reservation_row(&board, &reservation)["scopes"]
+        .as_array()
+        .expect("read the reservation scopes");
+    for (kind, path) in [
+        ("tree", "crates/hana_saved"),
+        ("tree", "crates/hana_saved_macros"),
+        ("file", "Cargo.lock"),
+    ] {
+        assert!(
+            scopes.contains(&serde_json::json!({"kind": kind, "path": path})),
+            "{scopes:?}"
+        );
+    }
+}
+
+#[test]
+fn edit_hook_refuses_two_path_owners_when_session_selects_another_reservation() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let session = "unrelated-phase";
+    let selected = reservation_id(&run_berth_with_session(
+        root,
+        &["claim", "elsewhere.rs", "--run", FIRST_RUN, "--json"],
+        session,
+    ));
+    let path = "shared.rs";
+    let owners = ["phase-a", "phase-b"].map(|owner| {
+        reservation_id(&run_berth_with_session(
+            root,
+            &["claim", path, owner, "--run", FIRST_RUN, "--json"],
+            owner,
+        ))
+    });
+
+    let edit = run_edit_hook(root, path, session);
+    let refusal = String::from_utf8_lossy(&edit.stderr);
+    assert_eq!(edit.status.code(), Some(2), "{edit:?}");
+    assert!(refusal.contains("check --reservation"), "{refusal}");
+    for owner in owners {
+        assert!(refusal.contains(&owner), "{refusal}");
+    }
+    assert!(!refusal.contains(&selected), "{refusal}");
+}
+
+#[test]
+fn edit_hook_recovery_binds_the_selected_owner_without_a_run_marker() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let path = "shared draft.rs";
+    let first = reservation_id(&claim_explicit(root, path, FIRST_RUN, "hold the edit"));
+    let second = reservation_id(&run_berth(
+        root,
+        ["claim", path, "phase-b.rs", "--run", FIRST_RUN, "--json"],
+    ));
+    fs::remove_file(root.join(".git/cargo-berth-run-id")).expect("remove the run marker");
+
+    let session = "worker-without-run";
+    let edit = run_edit_hook(root, path, session);
+    assert_eq!(edit.status.code(), Some(2), "{edit:?}");
+    let refusal = String::from_utf8_lossy(&edit.stderr);
+    assert_ne!(first, second);
+    assert!(printed_check(&refusal, &second).is_some(), "{refusal}");
+    let command = printed_check(&refusal, &first).expect("find the first recovery command");
+    let check = run_printed_berth(root, command, Some(session));
+    assert!(check.status.success(), "{check:?}");
+    assert_session_maps_to_owner(root, session, &first);
+    assert!(run_edit_hook(root, path, session).status.success());
+}
+
+#[test]
+fn edit_hook_uses_the_path_owner_without_a_run_marker() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let path = "owned.rs";
+    let owner = reservation_id(&claim_explicit(root, path, FIRST_RUN, "hold the edit"));
+    claim_explicit(root, "elsewhere.rs", FIRST_RUN, "hold other work");
+    fs::remove_file(root.join(".git/cargo-berth-run-id")).expect("remove the run marker");
+
+    assert_edit_hook_maps_to_owner(root, path, &owner);
+}
+
+#[test]
+fn edit_hook_uses_the_path_owner_with_another_runs_stale_reservation() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let path = "owned.rs";
+    let owner = reservation_id(&claim_explicit(root, path, FIRST_RUN, "hold the edit"));
+    let stale = reservation_id(&claim_explicit(
+        root,
+        "elsewhere.rs",
+        FIRST_RUN,
+        "hold other work",
+    ));
+    let mut events = journal_events(root);
+    for event in &mut events {
+        if event["reservation_id"] == stale {
+            event["actor"]["run"] = serde_json::json!(SECOND_RUN);
+        }
+    }
+    let mut journal = fs::File::create(root.join(JOURNAL_PATH)).expect("open the fixture journal");
+    for event in events {
+        writeln!(journal, "{event}").expect("restore the fixture journal");
+    }
+    let ledger = root.join(".git/cargo-berth");
+    fs::remove_file(ledger.join("reservations.json")).expect("remove the previous projection");
+    let replay_checkpoint = ledger.join("replay-checkpoint.json");
+    if replay_checkpoint.exists() {
+        fs::remove_file(replay_checkpoint).expect("remove the previous replay checkpoint");
+    }
+    fs::write(root.join(".git/cargo-berth-run-id"), SECOND_RUN).expect("set the stale run marker");
+
+    assert_edit_hook_maps_to_owner(root, path, &owner);
+}
+
+fn assert_edit_hook_maps_to_owner(root: &Path, path: &str, owner: &str) {
+    let session = "worker-without-run";
+    let edit = run_edit_hook(root, path, session);
+    assert!(edit.status.success(), "{edit:?}");
+    assert_session_maps_to_owner(root, session, owner);
+}
+
+fn assert_session_maps_to_owner(root: &Path, session: &str, owner: &str) {
+    let mappings: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join(SESSION_MAPPING_PATH)).expect("read the session mappings"),
+    )
+    .expect("parse the session mappings");
+    assert_eq!(mappings["identities"][session]["reservation_id"], owner);
+}
+
+#[test]
+fn claim_and_check_accept_a_new_space_named_path() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    for verb in ["claim", "check"] {
+        let output = run_berth(root, [verb, "notes draft.rs", "--json"]);
+        assert!(output.status.success(), "{:#}", json_output(&output));
+    }
+}
+
+#[test]
+fn claim_and_check_accept_a_literal_path_with_an_existing_part() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    fs::write(root.join("Cargo.toml"), "").expect("create the existing part");
+    for verb in ["claim", "check"] {
+        let output = run_berth(root, [verb, "--path", "Cargo.toml draft.rs", "--json"]);
+        assert!(output.status.success(), "{output:?}");
+        let envelope = json_output(&output);
+        assert_eq!(
+            envelope["payload"]["data"]["scopes"],
+            serde_json::json!([{"kind": "file", "path": "Cargo.toml draft.rs"}])
+        );
+    }
+}
+
+#[test]
+fn claim_and_check_print_literal_recovery_for_a_refused_bare_path() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    fs::write(root.join("Cargo.toml"), "").expect("create the existing part");
+    for verb in ["claim", "check"] {
+        let output = run_berth(root, [verb, "Cargo.toml draft.rs", "--json"]);
+        let envelope = json_output(&output);
+        assert_eq!(output.status.code(), Some(5), "{envelope:#}");
+        let message = envelope["message"].as_str().expect("read the refusal");
+        assert!(
+            message.starts_with("path_contains_whitespace:"),
+            "{message}"
+        );
+        assert!(
+            message.contains("existing path \"Cargo.toml\""),
+            "{message}"
+        );
+        let command = message
+            .split('`')
+            .nth(1)
+            .expect("find the literal path recovery command");
+        assert!(
+            command.contains("--path 'Cargo.toml draft.rs'"),
+            "{command}"
+        );
+        let recovered = run_printed_berth(root, command, None);
+        assert!(recovered.status.success(), "{recovered:?}");
+    }
+}
+
+#[test]
+fn claim_and_check_refuse_a_joined_argument_of_seventeen_paths() {
+    let paths = [
+        "camera/editor_camera.rs",
+        "camera/input.rs",
+        "render/frame.rs",
+        "render/panel.rs",
+        "src/lib.rs",
+        "src/main.rs",
+        "src/tool.rs",
+        "src/layout.rs",
+        "src/state.rs",
+        "src/scene.rs",
+        "tests/panel.rs",
+        "tests/editor.rs",
+        "tests/frame.rs",
+        "tests/input.rs",
+        "tests/scene.rs",
+        "src/cache.rs",
+        "glyph_cache.rs",
+    ];
+    assert_scope_argument_refusal(&paths.join(" "), "path_contains_whitespace:");
+}
+
+#[test]
+fn claim_and_check_name_the_existing_part_of_a_joined_argument() {
+    assert_scope_argument_refusal("Cargo.toml Cargo.lock", "existing path \"Cargo.toml\"");
+}
+
+fn assert_scope_argument_refusal(argument: &str, reason: &str) {
+    let repository = initialized_repository();
+    let root = repository.path();
+    fs::write(root.join("Cargo.toml"), "").expect("create the first path");
+    fs::write(root.join("Cargo.lock"), "").expect("create the second path");
+    for verb in ["claim", "check"] {
+        let output = run_berth(root, [verb, argument, "--json"]);
+        let envelope = json_output(&output);
+        assert_eq!(output.status.code(), Some(5), "{envelope:#}");
+        assert_eq!(envelope["status"], "invalid_input");
+        let message = envelope["message"].as_str().expect("read the refusal");
+        assert!(
+            message.starts_with("path_contains_whitespace:"),
+            "{message}"
+        );
+        assert!(message.contains(reason), "{message}");
+    }
+}
+
+#[test]
+fn new_space_named_write_can_run_the_ambiguous_reservation_recovery() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    fs::write(root.join("Cargo.toml"), "").expect("create the existing part");
+    let selected = reservation_id(&run_berth_with_session(
+        root,
+        &["claim", "one.rs", "--run", FIRST_RUN, "--json"],
+        "one",
+    ));
+    run_berth_with_session(
+        root,
+        &["claim", "two.rs", "--run", FIRST_RUN, "--json"],
+        "two",
+    );
+    let session = "new-file-worker";
+    let path = "Cargo.toml draft.rs";
+    let write = run_file_hook(root, path, session, "Write");
+    let refusal = String::from_utf8_lossy(&write.stderr);
+    assert_eq!(write.status.code(), Some(2), "{write:?}");
+    let command = printed_check(&refusal, &selected).expect("find the selected recovery command");
+    assert!(command.contains("'file:Cargo.toml draft.rs'"), "{command}");
+    let check = run_printed_berth(root, command, Some(session));
+    assert!(check.status.success(), "{check:?}");
+    assert!(run_file_hook(root, path, session, "Write").status.success());
+}
+
+fn printed_check<'refusal>(refusal: &'refusal str, reservation: &str) -> Option<&'refusal str> {
+    refusal
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("- `")
+                .and_then(|line| line.strip_suffix('`'))
+        })
+        .find(|line| line.contains(&format!("cargo-berth check --reservation {reservation}")))
+}
+
+#[test]
+fn new_space_named_write_can_run_the_holding_worktree_recovery() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let (_worktree_directory, issuing_root) = foreign_worktree(&repository, "issuing-write");
+    let session = "holder-worker";
+    let path = "new file.rs";
+    let holder = run_berth_with_session(
+        root,
+        &["claim", "elsewhere.rs", "--run", FIRST_RUN, "--json"],
+        session,
+    );
+    assert!(holder.status.success(), "{:#}", json_output(&holder));
+    let write = run_file_hook(&issuing_root, path, session, "Write");
+    let refusal = String::from_utf8_lossy(&write.stderr);
+    assert_eq!(write.status.code(), Some(2), "{write:?}");
+    assert!(refusal.contains("session_worktree_mismatch"), "{refusal}");
+    assert!(refusal.contains("'file:new file.rs'"), "{refusal}");
+    let command = refusal
+        .split('`')
+        .find(|part| part.starts_with("cd ") && part.contains("cargo-berth check"))
+        .expect("find the holding worktree recovery command");
+    let check = run_printed_berth(&issuing_root, command, Some(session));
+    assert!(check.status.success(), "{:#}", json_output(&check));
+}
+
+#[test]
+fn named_check_binds_the_session_and_edit_hooks_choose_the_path_owner() {
+    let repository = initialized_repository();
+    let root = repository.path();
+    let director = "home-director";
+    let plan = "docs/cargo-port/cargo-liner-handler.md";
+    let p4_path = "src/fault.rs";
+    let lfo_paths = [
+        "crates/hana/src/annunciator/mod.rs",
+        "src/tool/fault_feed.rs",
+        "tests/annunciator_turned_panel/mod.rs",
+        "tests/control_tool_creation/first_frame_geometry.rs",
+        "tests/rear_jack_pixels/assembly_button_pixels.rs",
+    ];
+    let first = run_berth_with_session(
+        root,
+        &["claim", plan, "--run", FIRST_RUN, "--json"],
+        director,
+    );
+    let selected = reservation_id(&first);
+    let phase_arguments = ["claim", plan, p4_path, "--run", FIRST_RUN, "--json"]
+        .into_iter()
+        .chain(lfo_paths)
+        .collect::<Vec<_>>();
+    let second = run_berth_with_session(root, &phase_arguments, "home-director.phase-47");
+    let owner = reservation_id(&second);
+    let cleared = run_berth_with_session(root, &["identity", "clear-session", "--json"], director);
+    assert!(cleared.status.success(), "{:#}", json_output(&cleared));
+
+    let ambiguous = run_edit_hook(root, plan, director);
+    assert_eq!(ambiguous.status.code(), Some(2), "{ambiguous:?}");
+    assert!(
+        String::from_utf8_lossy(&ambiguous.stderr)
+            .contains("could not select one active reservation")
+    );
+
+    let recovered = run_berth_with_session(
+        root,
+        &["check", "--reservation", &selected, plan, "--json"],
+        director,
+    );
+    assert!(recovered.status.success(), "{:#}", json_output(&recovered));
+    let edit = run_edit_hook(root, plan, director);
+    assert!(edit.status.success(), "{edit:?}");
+
+    let p4_edit = run_edit_hook(root, p4_path, "p4-worker");
+    assert!(p4_edit.status.success(), "{p4_edit:?}");
+    let mappings: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join(SESSION_MAPPING_PATH)).expect("read session mappings"),
+    )
+    .expect("parse session mappings");
+    assert_eq!(mappings["identities"]["p4-worker"]["reservation_id"], owner);
+
+    let cleared = run_berth_with_session(root, &["identity", "clear-session", "--json"], director);
+    assert!(cleared.status.success(), "{:#}", json_output(&cleared));
+    for path in lfo_paths {
+        let check = run_berth(root, ["check", "--reservation", &selected, path, "--json"]);
+        let response = json_output(&check);
+        assert!(check.status.success(), "{response:#}");
+        assert_eq!(
+            response["payload"]["data"]["acquisition"]["kind"],
+            "widened"
+        );
+    }
+    let board = json_output(&run_berth(root, ["board", "--json"]));
+    let scopes = reservation_row(&board, &selected)["scopes"]
+        .as_array()
+        .expect("read board scopes");
+    for path in lfo_paths {
+        assert!(
+            scopes.contains(&serde_json::json!({"kind": "file", "path": path})),
+            "{scopes:?}"
+        );
+    }
+    assert!(
+        !scopes.contains(&serde_json::json!({"kind": "file", "path": p4_path})),
+        "{scopes:?}"
+    );
+}
+
+fn run_edit_hook(root: &Path, relative_path: &str, session: &str) -> Output {
+    run_file_hook(root, relative_path, session, "Edit")
+}
+
+fn run_file_hook(root: &Path, relative_path: &str, session: &str, tool_name: &str) -> Output {
+    let payload = serde_json::json!({
+        "tool_name": tool_name,
+        "cwd": root,
+        "session_id": session,
+        "tool_input": {"file_path": root.join(relative_path)},
+    });
+    spawn_hook_verb(
+        Path::new(BERTH_EXECUTABLE),
+        root,
+        "pre-tool-use",
+        &serde_json::to_vec(&payload).expect("encode edit payload"),
+        &AmbientHarnessSession::Absent,
+    )
+    .expect("run edit hook without a coordination run")
+}
+
+#[test]
+fn claim_and_check_refuse_multiple_paths_in_one_argument() {
+    let repository = initialized_repository();
+    fs::write(repository.path().join("notes"), "").expect("create an existing argument part");
+    let arguments = [
+        "camera/editor_camera.rs render/glyph_cache.rs",
+        "tree:src/panel\tsrc/layout",
+        "src/panel\u{2003}src/layout",
+        "notes not created.rs",
+    ];
+    for verb in ["claim", "check"] {
+        for argument in arguments {
+            let output = run_berth(repository.path(), [verb, argument, "--json"]);
+            let envelope = json_output(&output);
+            assert_eq!(output.status.code(), Some(5), "{envelope:#}");
+            assert_eq!(envelope["status"], "invalid_input");
+            let message = envelope["message"]
+                .as_str()
+                .expect("read the rejection reason");
+            assert!(
+                message.starts_with("path_contains_whitespace:"),
+                "{envelope:#}"
+            );
+        }
+    }
+
+    let subdirectory = repository.path().join("subdirectory");
+    fs::create_dir(&subdirectory).expect("create a nested invocation directory");
+    fs::create_dir(repository.path().join("existing folder")).expect("create a space-named folder");
+    let checked = run_berth(&subdirectory, ["check", "tree:existing folder", "--json"]);
+    assert!(checked.status.success(), "{:#}", json_output(&checked));
+}
+
 /// A phase answer keeps its explicit reservation in the command and widens that phase.
 #[test]
 fn incomplete_named_phase_answer_prints_a_complete_executable_claim() {
@@ -993,6 +1561,7 @@ fn incomplete_named_phase_answer_prints_a_complete_executable_claim() {
     let (_requester_directory, requester) = foreign_worktree(&repository, "requester");
     let (_holder_directory, holder_root) = foreign_worktree(&repository, "holder");
     let holders = two_holders_of_the_library(repository.path(), &holder_root);
+    fs::write(requester.join("-director's notes.rs"), "").expect("create the quoted path");
     let phase = run_berth_with_session(
         &requester,
         &["claim", "file:src/own.rs", "--json"],
@@ -1028,7 +1597,7 @@ fn incomplete_named_phase_answer_prints_a_complete_executable_claim() {
     );
     let envelope = json_output(&refused);
     let command = format!(
-        "cargo-berth claim --reservation {phase_id} --run {phase_run} --before {} --before {} --overlap-why='{reason}' --json -- file:src/lib.rs '-director'\\''s notes.rs'",
+        "cargo-berth claim --path file:src/lib.rs --path='-director'\\''s notes.rs' --reservation {phase_id} --run {phase_run} --before {} --before {} --overlap-why='{reason}' --json",
         holders[0], holders[1],
     );
     let message = format!(
@@ -1122,7 +1691,7 @@ fn incomplete_mixed_answer_prints_a_choice_for_the_missing_holder() {
     );
     let envelope = json_output(&refused);
     let command = format!(
-        "cargo-berth claim file:src/lib.rs --before {} --after {} --<before|after> {} --overlap-why='{reason}' --json",
+        "cargo-berth claim --path file:src/lib.rs --before {} --after {} --<before|after> {} --overlap-why='{reason}' --json",
         holders[0], holders[1], holders[2],
     );
     let message = format!(
@@ -1154,18 +1723,29 @@ fn run_printed_claim(root: &Path, envelope: &serde_json::Value) -> Output {
         .expect("complete command")
         .strip_suffix('`')
         .expect("command terminator");
-    let arguments = command.strip_prefix("cargo-berth ").expect("berth command");
-    berth_command(SHELL_BINARY)
-        .args([
-            SHELL_COMMAND_ARG,
-            &format!("exec \"$0\" {arguments}"),
-            BERTH_EXECUTABLE,
-        ])
+    run_printed_berth(root, command, None)
+}
+
+fn run_printed_berth(root: &Path, command: &str, session: Option<&str>) -> Output {
+    let berth_directory = Path::new(BERTH_EXECUTABLE)
+        .parent()
+        .expect("berth executable should have a parent directory");
+    let original_path = std::env::var_os("PATH").expect("test PATH should exist");
+    let path = std::env::join_paths(
+        std::iter::once(berth_directory.to_path_buf()).chain(std::env::split_paths(&original_path)),
+    )
+    .expect("test PATH should join");
+    let mut shell = berth_command(SHELL_BINARY);
+    shell
+        .args([SHELL_COMMAND_ARG, command])
+        .env("PATH", path)
         .current_dir(root)
         .env_remove(RUN_ENVIRONMENT)
-        .env_remove(SESSION_ENVIRONMENT)
-        .output()
-        .expect("printed claim should execute")
+        .env_remove(SESSION_ENVIRONMENT);
+    if let Some(session) = session {
+        shell.env("CLAUDE_CODE_SESSION_ID", session);
+    }
+    shell.output().expect("printed command should execute")
 }
 
 fn assert_before_edges(repository: &Path, holders: &[String], reason: &str) {
@@ -1594,7 +2174,7 @@ fn stale_override_prints_an_executable_claim_for_the_current_holder() {
         .as_str()
         .expect("override recovery message");
     let command = format!(
-        "cargo-berth claim file:src/lib.rs --override {current} --overlap-why='{reason}' --json"
+        "cargo-berth claim --path file:src/lib.rs --override {current} --overlap-why='{reason}' --json"
     );
     assert!(
         message.contains(&format!(
@@ -3143,6 +3723,39 @@ fn a_default_answer_overrides_an_overlapping_claim_for_every_holder() {
     assert_eq!(
         serde_json::json!(answered_holders),
         serde_json::json!(holders)
+    );
+
+    let selected = reservation_id(&claim_explicit(
+        &second_root,
+        "file:src/own.rs",
+        SECOND_RUN,
+        "hold the current phase",
+    ));
+    let named = run_berth(
+        &second_root,
+        [
+            "claim",
+            "--reservation",
+            &selected,
+            "file:src/lib.rs",
+            "tree:crates/new",
+            "--json",
+        ],
+    );
+    let response = json_output(&named);
+    assert!(named.status.success(), "{response:#}");
+    assert_eq!(response["status"], "widened");
+    let board = json_output(&run_berth(&second_root, ["board", "--json"]));
+    let scopes = reservation_row(&board, &selected)["scopes"]
+        .as_array()
+        .expect("read board scopes");
+    assert!(
+        scopes.contains(&serde_json::json!({"kind": "file", "path": "src/lib.rs"})),
+        "{board:#}"
+    );
+    assert!(
+        scopes.contains(&serde_json::json!({"kind": "tree", "path": "crates/new"})),
+        "{board:#}"
     );
 }
 

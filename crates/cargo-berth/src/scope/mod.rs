@@ -1,19 +1,20 @@
 //! Lexical reservation scopes and repository path comparison policy.
 
 mod antichain;
+mod path_parser;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
-use std::str::FromStr;
 
-use crate::ids::InvalidReservationScopePath;
+pub(crate) use path_parser::DeclaredReservationScopeError;
+use path_parser::ScopePathParser;
+
 use crate::ids::ReservationScopePath;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
@@ -23,9 +24,7 @@ use crate::test_work;
 #[cfg(test)]
 use crate::test_work::Work;
 
-const FILE_SCOPE_PREFIX: &str = "file:";
 const GIT_CONFIG_FILE_NAME: &str = "config";
-const TREE_SCOPE_PREFIX: &str = "tree:";
 
 /// Whether repository paths compare with their original component case.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -39,10 +38,6 @@ pub(crate) enum PathCase {
 /// A non-empty set of lexically valid scopes before antichain reduction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DeclaredReservationScopeSet(ReservationScopeSet);
-
-/// A lexical path and declared file-versus-tree meaning from the command line.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct DeclaredReservationScope(ReservationScope);
 
 impl PathCase {
     /// Read `core.ignoreCase` from the common git configuration without a subprocess.
@@ -96,14 +91,43 @@ impl DeclaredReservationScopeSet {
             .map_err(|_| DeclaredReservationScopeSetError::Empty)
     }
 
-    /// Parse path arguments and preserve their declared scope kinds.
+    /// Parse literal paths and preserve their declared scope kinds.
     pub(crate) fn parse(
         paths: Vec<PathBuf>,
         default_kind: ScopeKind,
     ) -> Result<Self, DeclaredReservationScopeSetError> {
+        Self::parse_paths(paths, default_kind, ScopePathParser::Literal)
+    }
+
+    /// Parse one scope per shell argument.
+    pub(crate) fn parse_arguments(
+        paths: Vec<PathBuf>,
+        literal_paths: Vec<PathBuf>,
+        default_kind: ScopeKind,
+    ) -> Result<Self, DeclaredReservationScopeSetError> {
+        let mut command_line = ScopePathParser::CommandLine;
         let scopes = paths
             .into_iter()
-            .map(|path| DeclaredReservationScope::parse(path, default_kind).map(|scope| scope.0))
+            .map(|path| command_line.parse(path, default_kind))
+            .chain(
+                literal_paths
+                    .into_iter()
+                    .map(|path| ScopePathParser::Literal.parse(path, default_kind)),
+            )
+            .collect::<Result<Vec<_>, _>>()?;
+        ReservationScopeSet::try_from(scopes)
+            .map(Self)
+            .map_err(|_| DeclaredReservationScopeSetError::Empty)
+    }
+
+    fn parse_paths(
+        paths: Vec<PathBuf>,
+        default_kind: ScopeKind,
+        mut parser: ScopePathParser,
+    ) -> Result<Self, DeclaredReservationScopeSetError> {
+        let scopes = paths
+            .into_iter()
+            .map(|path| parser.parse(path, default_kind))
             .collect::<Result<Vec<_>, _>>()?;
         ReservationScopeSet::try_from(scopes)
             .map(Self)
@@ -128,30 +152,6 @@ impl DeclaredReservationScopeSet {
             .collect::<Vec<_>>();
         ReservationScopeSet::try_from(scopes)
             .map_or_else(|_| self.0, |scopes| antichain::reduce(scopes, path_case))
-    }
-}
-
-impl DeclaredReservationScope {
-    fn parse(
-        path: PathBuf,
-        default_kind: ScopeKind,
-    ) -> Result<Self, DeclaredReservationScopeError> {
-        let path = path
-            .into_os_string()
-            .into_string()
-            .map_err(DeclaredReservationScopeError::NonUtf8)?;
-        let (kind, path) = path.strip_prefix(FILE_SCOPE_PREFIX).map_or_else(
-            || {
-                path.strip_prefix(TREE_SCOPE_PREFIX)
-                    .map_or((default_kind, path.as_str()), |path| {
-                        (ScopeKind::Tree, path)
-                    })
-            },
-            |path| (ScopeKind::File, path),
-        );
-        let path = ReservationScopePath::from_str(path)
-            .map_err(DeclaredReservationScopeError::InvalidPath)?;
-        Ok(Self(ReservationScope { path, kind }))
     }
 }
 
@@ -246,33 +246,6 @@ impl std::error::Error for PathCaseError {}
 impl From<std::io::Error> for PathCaseError {
     fn from(error: std::io::Error) -> Self { Self::Io(error) }
 }
-
-/// A failure while parsing one declared command-line scope.
-#[derive(Debug)]
-pub(crate) enum DeclaredReservationScopeError {
-    /// The operating-system path was not UTF-8.
-    NonUtf8(OsString),
-    /// The UTF-8 spelling was not a lexical repository path.
-    InvalidPath(InvalidReservationScopePath),
-}
-
-impl Display for DeclaredReservationScopeError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NonUtf8(path) => write!(
-                formatter,
-                "reservation paths must be UTF-8; correct this path and retry: {}",
-                path.to_string_lossy()
-            ),
-            Self::InvalidPath(error) => write!(
-                formatter,
-                "{error}; use a normalized repository-relative path and retry"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for DeclaredReservationScopeError {}
 
 /// A failure while constructing a non-empty declared scope set.
 #[derive(Debug)]

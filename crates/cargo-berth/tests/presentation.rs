@@ -87,7 +87,11 @@ fn blocked_claim_renders_every_holder_fact_and_first_touch_dispositions() -> Tes
     assert_first_touch_holder_is_rendered(conflicts, rendered_block.detail)?;
     assert_explicit_holder_is_rendered(conflicts, rendered_block.detail)?;
     assert_work_plan_holder_is_rendered(conflicts, rendered_block.detail)?;
-    assert!(rendered_block.detail.contains("1. Land before the holder:"));
+    assert!(
+        rendered_block.detail.contains(
+            "1. Land before the holder. Run `cargo-berth claim --path '<path>' --before "
+        )
+    );
     assert!(rendered_block.detail.contains("5. Leave it alone:"));
     Ok(())
 }
