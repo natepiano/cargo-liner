@@ -7,10 +7,10 @@ pub(super) const COORDINATION_RUN_MARKER_FILE_NAME: &str = "cargo-berth-run-id";
 pub(super) const COORDINATION_RUN_MARKER_RETIREMENT_SUFFIX: &str = "retiring";
 pub(crate) const GATE_TARGETS_FILE_NAME: &str = "gate-targets";
 pub(super) const GATE_TARGETS_TEMPORARY_FILE_NAME: &str = "gate-targets.tmp";
+pub(super) const HISTORY_COMPACTION_CHECK_FILE_NAME: &str = "history-compaction-checked";
 pub(super) const JOURNAL_COMPACTION_REFUSAL_FILE_NAME: &str = "journal-compaction-refused.json";
 pub(super) const JOURNAL_COMPACTION_TEMPORARY_FILE_NAME: &str = "journal.ndjson.compact.tmp";
 pub(super) const JOURNAL_FILE_NAME: &str = "journal.ndjson";
-pub(super) const HISTORY_COMPACTION_CHECK_FILE_NAME: &str = "history-compaction-checked";
 pub(super) const LOCK_FILE_NAME: &str = "mutation.lock";
 pub(super) const PROJECTION_FILE_NAME: &str = "reservations.json";
 pub(super) const PROJECTION_TEMPORARY_FILE_NAME: &str = "reservations.json.tmp";
@@ -22,12 +22,16 @@ pub(super) const WORKTREE_ID_FILE_NAME: &str = "cargo-berth-worktree-id";
 pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
 
 // journal compaction
-/// The superseded record bytes a transaction's replay holds before the journal compacts after it.
-///
-/// A refused automatic compaction also holds the next one back until the journal grows this much.
-pub(super) const JOURNAL_COMPACTION_THRESHOLD_BYTES: u64 = 16 * 1_024 * 1_024;
-/// Reconsider old history retained by dependencies at most once per minute.
+/// Start at most one maintenance check per interval. A check removes abandoned temporary files and
+/// compacts expired history, also when superseded bytes make compaction due at the same time.
 pub(super) const HISTORY_COMPACTION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+/// Recheck an unchanged history plan as records age, even when the journal grows slowly.
+pub(super) const HISTORY_COMPACTION_NO_PROGRESS_INTERVAL: Duration = Duration::from_mins(15);
+/// Allow time for writers to create and lock their temporary files.
+pub(super) const JOURNAL_COMPACTION_TEMPORARY_GRACE: Duration = Duration::from_hours(24);
+/// Start compaction when the replay has this many superseded bytes.
+/// After a refusal, retry when the journal grows by this many bytes.
+pub(super) const JOURNAL_COMPACTION_THRESHOLD_BYTES: u64 = 16 * 1_024 * 1_024;
 
 // journal limits
 /// Maximum encoded caller-input bytes, excluding the evidence accompanying a declaration.
@@ -76,10 +80,14 @@ pub(super) const GIT_DIRECTORY_ENVIRONMENT: &str = "GIT_DIR";
 pub(crate) const HARNESS_SESSION_ENVIRONMENT: &str = "CARGO_BERTH_SESSION_ID";
 
 // replay checkpoint
-/// A replay that folds at least this many journal bytes past its start rewrites the checkpoint.
+/// Allow a refresh after this many journal bytes when the write budget covers it.
 pub(super) const REPLAY_CHECKPOINT_INTERVAL_BYTES: u64 = 256 * 1_024;
-/// A replay that folds at least this many journal records past its start rewrites the checkpoint.
+/// Allow a refresh after this many journal records when the write budget covers it.
 pub(super) const REPLAY_CHECKPOINT_INTERVAL_RECORDS: u64 = 256;
+/// Maximum checkpoint bytes per journal byte appended since the last refresh.
+/// In a 79-call Mac release cycle at ratio 8, the smaller fold reduced mean hook CPU
+/// from 276 ms to 199 ms and checkpoint bytes written from 43.4 MB to 28.7 MB.
+pub(super) const REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO: u64 = 8;
 
 // test deadlines
 /// Test-only milliseconds that replace the total gate deadline in debug builds. The shorter
@@ -100,7 +108,7 @@ pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// checkpoint written by another build is ignored instead of decoded.
 ///
 /// [`JournalReplay`]: super::journal::JournalReplay
-pub(super) const FOLD_FORMAT_VERSION: u32 = 3;
+pub(super) const FOLD_FORMAT_VERSION: u32 = 4;
 
 /// Shorten a supplied duration using unsigned milliseconds from a debug-only test hook.
 pub(crate) fn shortened_by_environment(variable: &str, supplied: Duration) -> Duration {
