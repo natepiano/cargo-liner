@@ -1165,34 +1165,16 @@ The copies are deleted. No source changes.
 
 **Ruled out:** "any glob blocks the import" — it dropped the finding in 1032 of 2344 hana files; a whole-file word scan for the `inline_path_qualified_type` footprint — it blocks `crate::a::Foo::new()` beside an inline `crate::a::Foo`.
 
-### Phase 55 — a cargo-berth hold answer names only paths in the holder's scope  · status: todo
+### Phase 55 — a cargo-berth hold answer names only paths in the holder's scope  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** when cargo-berth refuses a write because another reservation holds a path, it names a holder only for paths in that holder's scope. Source: the style unit via the showrunner, 2026-11-23.
+- No cargo-berth change. cargo-berth's edit check matches a foreign holder by its merge extent (`Reservation::protection_in_worktree`, `reservation/record.rs`). That extent held no coverage path.
+- The fault is in the mac_test write-back filter under `~/.claude`. `scripts/lib/berth_board.py` reads only the declared `scopes` and drops the merge extent. `scripts/mac_test/fix_return.py` `hold_filter` then matched the holder's declared `tree:crates/cargo-style` against the coverage files.
+- A read-only probe reproduced the exact message. With the recorded merge scopes, the filter kept all four files.
+- Routed to the showrunner on 2026-11-25 for the `~/.claude` owner: read the board's merge extent, match foreign holders by it, and add a regression in `scripts/mac_test/test_fix_return.py`.
 
-**Spec:**
-1. The fault: a mac_test write-back step in worktree `style/s4-sites-regex` or `s4-coverage` said: "not written: crates/cargo-style/src/coverage/{comparison,ledger,lint,mod}.rs is held by reservation 01a1f42e-39a1-7450-a4f3-3f4f92384784 (refs/heads/style-s3-footprint)".
-2. That reservation was outstanding and merge-protected at tip c2000830d. None of its 25 merge scopes holds a coverage path (`cargo-berth board --reservation 01a1f42e-39a1-7450-a4f3-3f4f92384784 --json`).
-3. Find the cause in cargo-berth: which hold rule matched these paths, and why. Fix it so the hold answer, and the hold itself, follow the holder's scope. If the hold is correct by design, make the answer name the rule that holds the path.
-4. Add a test with a merge-protected reservation and a path outside its scopes. The write is not refused for that holder.
-
-**Constraints from prior phases:**
-- `AnswerRecord` authorizes edits through `OverlapCoverage`. The reservation holds the scopes. `JournalReplay::coordination_events` keeps the full `ConflictAuthorization` for each answer.
-- In Phase 56b, `check::decide` reads the current reservation view through `Ledger::with_validated_reservations`. Keep holder selection on that view and pass the same ledger to `refusal::record`.
-
-**Files:**
-- `crates/cargo-berth/src/` — the hold check and its answer, found in step 3
-
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- The new test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Binds later work:** A tool that reads `cargo-berth board` matches a foreign holder by its merge extent, not by its declared scopes.
 
 ### Phase 56 — a cargo-berth hook call no longer decodes the whole replay checkpoint  · status: done
 
