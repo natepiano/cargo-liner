@@ -270,7 +270,7 @@ fn build_language_stats(
 }
 
 /// Collect language stats for a single project path (watcher discovery).
-pub(crate) fn language_measurement_job(
+fn language_measurement_job(
     root: AbsolutePath,
     measurements: &SourceMeasurements,
 ) -> impl FnOnce() -> LanguageStats + use<> {
@@ -297,6 +297,32 @@ pub(crate) fn language_measurement_job(
                 &mut cache.rust_breakdown,
             )
         })
+    }
+}
+
+pub(crate) fn spawn_language_scan(
+    path: AbsolutePath,
+    sender: Sender<BackgroundMsg>,
+    measurements: &SourceMeasurements,
+) {
+    language_enrichment_job(path, sender, measurements)();
+}
+
+pub(crate) fn language_enrichment_job(
+    path: AbsolutePath,
+    sender: Sender<BackgroundMsg>,
+    measurements: &SourceMeasurements,
+) -> impl FnOnce() + Send + use<> {
+    let job = language_measurement_job(path.clone(), measurements);
+    move || {
+        rayon::spawn(move || {
+            let stats = job();
+            if !stats.entries.is_empty() {
+                let _ = sender.send(BackgroundMsg::LanguageStatsBatch {
+                    entries: vec![(path, stats)],
+                });
+            }
+        });
     }
 }
 
@@ -343,8 +369,7 @@ mod measurement_tests {
             assert_eq!(cache.reports.reads, index + 2);
         }
         let (sender, receiver) = crate::channel::unbounded();
-        let late_job =
-            crate::enrichment::language_enrichment_job(root.clone(), sender, &measurements);
+        let late_job = language_enrichment_job(root.clone(), sender, &measurements);
         measurements.retain_projects(|_| false);
         late_job();
         let message = receiver

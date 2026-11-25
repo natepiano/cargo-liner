@@ -11,7 +11,6 @@ use crate::config::NonRustInclusion;
 use crate::config::WatcherConfig;
 use crate::constants::CARGO_TOML;
 use crate::constants::GIT_DIR;
-use crate::enrichment;
 use crate::http::HttpClient;
 use crate::project;
 use crate::project::AbsolutePath;
@@ -167,11 +166,7 @@ pub(super) fn probe_new_projects(
                 source_measurements: std::sync::Arc::clone(source_measurements),
                 client:              client.clone(),
             };
-            enrichment::spawn_language_scan(
-                abs_path.clone(),
-                background_tx.clone(),
-                source_measurements,
-            );
+            scan::spawn_language_scan(abs_path.clone(), background_tx.clone(), source_measurements);
             let request = ProjectDetailRequest {
                 sender: &sender,
                 fetch_context: &fetch_context,
