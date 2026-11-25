@@ -74,6 +74,7 @@ use crate::ledger::ReservationScopeAdditionSet;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::ResolvedJournalMutationActor;
+use crate::ledger::ScopeKind;
 use crate::ledger::TargetSelectionRequest;
 use crate::ledger::TransactionValidation;
 use crate::ledger::TrunkObservationAtClaim;
@@ -85,6 +86,7 @@ use crate::output::CoordinationRunMarkerPublication;
 use crate::output::OutputEnvelope;
 use crate::output::TargetView;
 use crate::reconcile;
+use crate::reconcile::DisjointEditProof;
 use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ActingHeadContainment;
@@ -93,6 +95,7 @@ use crate::reservation::RecordedTarget;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
+use crate::reservation::ReservationFacts;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -442,7 +445,7 @@ pub(in crate::verb) enum CheckAcquisitionDecision {
 
 /// Reuse the locked path's coverage and acquisition rules without publishing any state.
 pub(in crate::verb) fn selected_reservation_check_acquisition(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
     scopes: ReservationScopeSet,
     selection: CheckReservationSelection,
@@ -594,7 +597,7 @@ enum FirstTouchReservationSelection<'reservation> {
 impl<'reservation> FirstTouchReservationSelection<'reservation> {
     /// Resolve an explicit id only within the acting coordination run and worktree.
     fn from_explicit_selection(
-        reservations: &'reservation RetainedReservationSet,
+        reservations: &'reservation ReservationFacts,
         reservation_id: ReservationId,
         coordination_run_id: CoordinationRunId,
         worktree_id: WorktreeId,
@@ -707,6 +710,13 @@ struct CommittedReservationAcquisition {
     additional_acquisitions: Vec<ExactPathAcquisition>,
 }
 
+/// Choose the observation that can authorize this first-touch validation.
+#[derive(Clone, Copy)]
+pub(in crate::verb) enum FirstTouchObservation {
+    Retained,
+    EditedPath,
+}
+
 struct FirstTouchValidationContext {
     repository:            Arc<RepositorySnapshot>,
     run_validation:        ClaimRunValidation,
@@ -722,6 +732,7 @@ struct FirstTouchValidationContext {
     reservation_selection: CheckReservationSelection,
     maximum_reservations:  u32,
     repository_trunk:      IntegrationTarget,
+    scoped_proof:          Option<DisjointEditProof>,
 }
 
 #[derive(Clone, Copy)]
@@ -735,6 +746,7 @@ struct FirstTouchReservationReuseContext<'ledger> {
 }
 
 enum FirstTouchClaimRejection {
+    FullReconciliationRequired,
     Blocked {
         scopes:    ReservationScopeSet,
         conflicts: Vec<ReservationConflict>,
@@ -986,12 +998,59 @@ fn normalized_claim_scopes(
 enum FirstTouchRepositoryObservation<'check> {
     NewOperation,
     WithinCheck {
-        repository: &'check RepositorySnapshot,
-        ledger:     &'check Ledger,
+        repository:  &'check RepositorySnapshot,
+        ledger:      &'check Ledger,
+        observation: FirstTouchObservation,
     },
 }
 
 impl FirstTouchRepositoryObservation<'_> {
+    fn prove_edit_path(
+        &self,
+        repository_trunk: &IntegrationTarget,
+        edit_scopes: &ReservationScopeSet,
+        path_case: PathCase,
+        maximum_reservations: u32,
+    ) -> Result<Option<DisjointEditProof>, ClaimError> {
+        let Self::WithinCheck {
+            repository,
+            ledger,
+            observation: FirstTouchObservation::EditedPath,
+        } = self
+        else {
+            return Ok(None);
+        };
+        let [scope] = edit_scopes.as_slice() else {
+            return Err(ClaimError::FullReconciliationRequired);
+        };
+        if scope.kind != ScopeKind::File {
+            return Err(ClaimError::FullReconciliationRequired);
+        }
+        let acting_worktree = ledger::resolve_identity(repository.context())?.worktree_id;
+        let proof = ledger.with_validated_reservation_facts(|reservations, position| {
+            let reservations = reservations.ok()?;
+            // Full reconciliation can give an ended holder a new extent.
+            if authorization::count_reaches_limit(
+                reservations.unreleased_count(),
+                maximum_reservations,
+            ) {
+                return None;
+            }
+            reconcile::observe_edit_path(
+                repository,
+                reservations,
+                acting_worktree,
+                repository_trunk,
+                scope,
+                path_case,
+                position,
+            )
+        })?;
+        proof
+            .map(Some)
+            .ok_or(ClaimError::FullReconciliationRequired)
+    }
+
     fn read_facts(
         &self,
         worktree_context: &WorktreeContext,
@@ -1028,13 +1087,18 @@ pub(in crate::verb) fn acquire_first_touch_for_check(
     reservation_selection: CheckReservationSelection,
     repository: &RepositorySnapshot,
     ledger: &Ledger,
+    observation: FirstTouchObservation,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
     acquire_first_touch_with_reservation_selection(
         request,
         reservation_selection,
-        &FirstTouchRepositoryObservation::WithinCheck { repository, ledger },
+        &FirstTouchRepositoryObservation::WithinCheck {
+            repository,
+            ledger,
+            observation,
+        },
         recovery_command_line,
         capacity_recovery,
     )
@@ -1056,9 +1120,9 @@ fn acquire_first_touch_with_reservation_selection(
             WorktreeContext::discover(&session::command_directory()?)?,
             None,
         ),
-        FirstTouchRepositoryObservation::WithinCheck { repository, ledger } => {
-            (repository.context().clone(), Some(*ledger))
-        },
+        FirstTouchRepositoryObservation::WithinCheck {
+            repository, ledger, ..
+        } => (repository.context().clone(), Some(*ledger)),
     };
     let berth_config = match BerthConfig::read(&worktree_context.configuration_lookup())? {
         Enrollment::Enrolled(berth_config) => berth_config,
@@ -1080,6 +1144,15 @@ fn acquire_first_touch_with_reservation_selection(
     let path_case = PathCase::read(worktree_context.common_git_directory())?;
     let edit_scopes = declared_scopes.clone().into_minimal_antichain(path_case);
     let scopes = declared_scopes.into_exact_file_antichain(path_case);
+    let repository_trunk = berth_config
+        .repository_trunk()
+        .map_err(ClaimError::InvalidRepositoryTrunk)?;
+    let scoped_proof = repository_observation.prove_edit_path(
+        &repository_trunk,
+        &edit_scopes,
+        path_case,
+        berth_config.maximum_reservations,
+    )?;
     let edit_identity = first_touch_edit_identity(
         ledger,
         &worktree_context,
@@ -1110,9 +1183,6 @@ fn acquire_first_touch_with_reservation_selection(
         worktree_administrative_locator: worktree_context.administrative_locator().clone(),
         coordination_identity_provenance: run_validation.coordination_identity_provenance(),
     };
-    let repository_trunk = berth_config
-        .repository_trunk()
-        .map_err(ClaimError::InvalidRepositoryTrunk)?;
     let mut validation_context = FirstTouchValidationContext {
         repository: repository_facts.repository,
         run_validation,
@@ -1127,6 +1197,7 @@ fn acquire_first_touch_with_reservation_selection(
         reservation_selection,
         maximum_reservations: berth_config.maximum_reservations,
         repository_trunk,
+        scoped_proof,
     };
     execute_prepared_first_touch(
         ledger,
@@ -1197,10 +1268,9 @@ fn first_touch_edit_identity(
 ) -> Result<FirstTouchEditIdentity, ClaimError> {
     let caller = ledger::resolve_identity(worktree)?;
     let selected = if matches!(selection, CheckReservationSelection::EditHook) {
-        ledger.with_validated_reservations(|reservations| {
-            let reservations = reservations
-                .as_ref()
-                .map_err(|error| ClaimError::ReservationReplay(error.clone()))?;
+        ledger.with_validated_reservation_facts(|reservations, _| {
+            let reservations =
+                reservations.map_err(|error| ClaimError::ReservationReplay(error.clone()))?;
             edit_hook_authorization(
                 reservations,
                 caller,
@@ -1404,6 +1474,9 @@ fn first_touch_execution_from_outcome(
         LedgerCommittedActionOutcome::Rejected(
             FirstTouchClaimRejection::AmbiguousActiveRunReservations { candidates },
         ) => Err(ClaimError::AmbiguousActiveRunReservations { candidates }),
+        LedgerCommittedActionOutcome::Rejected(
+            FirstTouchClaimRejection::FullReconciliationRequired,
+        ) => Err(ClaimError::FullReconciliationRequired),
         LedgerCommittedActionOutcome::Rejected(FirstTouchClaimRejection::Replay(error)) => {
             Err(ClaimError::ReservationReplay(error))
         },
@@ -1769,11 +1842,19 @@ fn validate_first_touch_transaction(
         ..
     } = *context;
     let reservations = match state.reservations() {
-        Ok(reservations) => reservations.clone(),
+        Ok(reservations) => reservations,
         Err(error) => {
             return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
         },
     };
+    if let Some(proof) = context.scoped_proof
+        && (!proof.matches_replay(state.replay_position()) || state.ordering_graph().is_err())
+    {
+        return CommittedActionValidation::Reject(
+            FirstTouchClaimRejection::FullReconciliationRequired,
+        );
+    }
+    let reservations = reservations.clone();
     let acting_head_containment = ActingHeadContainment::observe_for_claim(
         &reservations,
         repository,
@@ -1959,7 +2040,7 @@ fn acquire_first_touch_phase(
 
 /// Resolve a hook's declared path before an overlap check can use the wrong run.
 pub(in crate::verb) fn edit_hook_authorization(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     caller: ResolvedEditAuthorization,
     scopes: &ReservationScopeSet,
     path_case: PathCase,
@@ -2017,7 +2098,7 @@ pub(in crate::verb) fn edit_hook_authorization(
 }
 
 fn unclaimed_edit_hook_authorization(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     identity: ResolvedEditAuthorization,
 ) -> ResolvedEditAuthorization {
     if !matches!(
@@ -2105,7 +2186,7 @@ fn is_checkpoint_gap(reservations: &RetainedReservationSet, worktree_id: Worktre
 }
 
 fn local_plan_holds(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     worktree_id: WorktreeId,
 ) -> impl Iterator<Item = &Reservation> {
     reservations.iter().filter(move |reservation| {
@@ -2642,7 +2723,7 @@ fn declares_scope(
 /// inside any of their scopes is covered; checking the selected reservation alone widened
 /// it onto a path a sibling declared, and two siblings then declared the same path.
 fn partition_first_touch_protected_scopes<'reservation>(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     protected_scopes: &ReservationScopeSet,
     reservation: &'reservation Reservation,
     path_case: PathCase,

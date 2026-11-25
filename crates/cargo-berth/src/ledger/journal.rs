@@ -2211,7 +2211,7 @@ pub(super) struct JournalReplay {
 }
 
 /// The position and repository identities represented by a replay.
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(super) struct ReplayCore {
     pub(super) repositories: BTreeSet<RepoInstanceId>,
     pub(super) record_count: u64,
@@ -2233,6 +2233,7 @@ impl From<&JournalReplay> for ReplayCore {
 }
 
 /// The reservation fold and its position. Other checkpoint parts are separate.
+#[derive(Clone)]
 pub(super) struct ReservationReplay {
     pub(super) core:         ReplayCore,
     pub(super) reservations: Result<ReservationFacts, ReservationReplayError>,

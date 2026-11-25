@@ -8,6 +8,7 @@
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::ops::Deref;
 
 use serde::Deserialize;
 use serde::Serialize;
@@ -104,8 +105,17 @@ struct AnswerRecord {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct RetainedReservationSet {
     #[serde(flatten)]
-    facts:                   ReservationFacts,
-    incursion_incidents:     Vec<IncursionIncident>,
+    facts:               ReservationFacts,
+    incursion_incidents: Vec<IncursionIncident>,
+}
+
+/// The reservation fold without incident facts.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ReservationFacts {
+    reservations:            Vec<Reservation>,
+    /// Answers recorded by `--defer` claims.
+    #[serde(default)]
+    answer_records:          Vec<AnswerRecord>,
     /// Whether foreign protection excludes work already present in the acting HEAD.
     ///
     /// Never serialized: a replayed set always holds [`ForeignProtectionPolicy::FullProtection`],
@@ -114,17 +124,8 @@ pub(crate) struct RetainedReservationSet {
     acting_head_containment: ForeignProtectionPolicy,
 }
 
-/// The reservation fold without incident facts.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct ReservationFacts {
-    reservations:   Vec<Reservation>,
-    /// Answers recorded by `--defer` claims.
-    #[serde(default)]
-    answer_records: Vec<AnswerRecord>,
-}
-
 /// One holder's representative `Reservation` and its complete `ConflictProtection` scopes, as
-/// `RetainedReservationSet::protected_conflict_holders` selects them in replay order.
+/// `ReservationFacts::protected_conflict_holders` selects them in replay order.
 struct ProtectedConflictHolder<'reservations> {
     representative: &'reservations Reservation,
     scopes:         ReservationScopeSet,
@@ -411,6 +412,12 @@ impl From<&ReservationSnapshot> for PhaseStartHeadUpdate {
     }
 }
 
+impl Deref for RetainedReservationSet {
+    type Target = ReservationFacts;
+
+    fn deref(&self) -> &Self::Target { &self.facts }
+}
+
 impl RetainedReservationSet {
     pub(crate) const fn checkpoint(&self) -> &ReservationFacts { &self.facts }
 
@@ -421,7 +428,6 @@ impl RetainedReservationSet {
         Self {
             facts,
             incursion_incidents,
-            acting_head_containment: ForeignProtectionPolicy::FullProtection,
         }
     }
 
@@ -455,8 +461,9 @@ impl RetainedReservationSet {
         mut self,
         acting_head_containment: ActingHeadContainment,
     ) -> Self {
-        self.acting_head_containment =
-            ForeignProtectionPolicy::ExcludeContainedWork(acting_head_containment);
+        self.facts = self
+            .facts
+            .with_acting_head_containment(acting_head_containment);
         self
     }
 
@@ -526,6 +533,18 @@ impl RetainedReservationSet {
             }
         }
         Ok(projected)
+    }
+}
+
+impl ReservationFacts {
+    /// Narrow foreign protection to work the acting HEAD does not already contain.
+    pub(crate) fn with_acting_head_containment(
+        mut self,
+        acting_head_containment: ActingHeadContainment,
+    ) -> Self {
+        self.acting_head_containment =
+            ForeignProtectionPolicy::ExcludeContainedWork(acting_head_containment);
+        self
     }
 
     /// Evaluate claim acquisition for one acting worktree.
@@ -674,6 +693,26 @@ impl RetainedReservationSet {
         )
     }
 
+    /// Check for an overlap that could need a complete counterpart scope revision.
+    pub(crate) fn foreign_protection_overlaps(
+        &self,
+        scope: &ReservationScope,
+        acting_worktree: WorktreeId,
+        path_case: PathCase,
+    ) -> bool {
+        self.iter()
+            .filter(|reservation| reservation.actor().worktree != acting_worktree)
+            .any(
+                |reservation| match reservation.protection_in_worktree(acting_worktree) {
+                    ReservationProtection::Clear => false,
+                    ReservationProtection::Protected(protection) => protection
+                        .as_slice()
+                        .iter()
+                        .any(|held| held.overlaps(scope, path_case)),
+                },
+            )
+    }
+
     /// Evaluate an edit check using only authorization resolved by the process.
     pub(crate) fn conflicts_for_edit(
         &self,
@@ -747,7 +786,7 @@ impl RetainedReservationSet {
                 coordination_run_id,
                 reservation_id,
                 worktree_id,
-            } => self.facts.reservations.iter().any(|reservation| {
+            } => self.reservations.iter().any(|reservation| {
                 reservation.id == reservation_id
                     && reservation.is_active_for_coordination_run_and_worktree(
                         coordination_run_id,
@@ -768,7 +807,7 @@ impl RetainedReservationSet {
                 coordination_run_id,
                 worktree_id,
                 ..
-            } => self.facts.reservations.iter().any(|reservation| {
+            } => self.reservations.iter().any(|reservation| {
                 reservation
                     .is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
             }),
@@ -815,9 +854,7 @@ impl RetainedReservationSet {
     }
 
     /// Iterate over every reservation retained for constraints or audit history.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Reservation> {
-        self.facts.reservations.iter()
-    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Reservation> { self.reservations.iter() }
 
     /// Return the only active ordinary reservation in this worktree.
     pub(crate) fn sole_active_phase(&self, worktree_id: WorktreeId) -> Option<&Reservation> {
@@ -843,8 +880,7 @@ impl RetainedReservationSet {
         &self,
         reservation_id: ReservationId,
     ) -> Result<&Reservation, ReservationReplayError> {
-        self.facts
-            .reservations
+        self.reservations
             .iter()
             .find(|reservation| reservation.id == reservation_id)
             .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
@@ -857,24 +893,19 @@ impl RetainedReservationSet {
         repository_trunk: &IntegrationTarget,
     ) -> Result<IntegrationTarget, ReservationReplayError> {
         self.reservation(reservation_id)
-            .map(|reservation| match reservation.target() {
-                RecordedTarget::Recorded { target, .. } => target.clone(),
-                RecordedTarget::Unrecorded => repository_trunk.clone(),
-            })
+            .map(|reservation| reservation.target().or_trunk(repository_trunk).clone())
     }
 
     /// Whether any legacy claim still lacks a durable integration branch.
     pub(crate) fn has_unrecorded_targets(&self) -> bool {
-        self.facts
-            .reservations
+        self.reservations
             .iter()
             .any(|reservation| matches!(reservation.target(), RecordedTarget::Unrecorded))
     }
 
     /// Identities that initialization will pin in its next journal operation.
     pub(crate) fn unrecorded_target_ids(&self) -> Vec<ReservationId> {
-        self.facts
-            .reservations
+        self.reservations
             .iter()
             .filter_map(|reservation| {
                 matches!(reservation.target(), RecordedTarget::Unrecorded)
@@ -882,7 +913,9 @@ impl RetainedReservationSet {
             })
             .collect()
     }
+}
 
+impl RetainedReservationSet {
     /// Find one retained incursion by its durable identity.
     pub(crate) fn incursion_incident(
         &self,
@@ -1066,55 +1099,6 @@ impl RetainedReservationSet {
         self.incursion_incidents.iter()
     }
 
-    /// Answer whether another coordination run occupies this worktree against `acting_run`.
-    ///
-    /// The worktree is the coordination unit, so one run holds it at a time. Two terms narrow
-    /// which holder counts as the incumbent, and both live in
-    /// [`Reservation::occupies_worktree_for_another_coordination_run`] rather than here.
-    /// `Active` only: an `Outstanding` holder has released and is awaiting integration, and
-    /// blocking on it would lock a worktree out of paths its own previous session released.
-    /// [`Presented`](crate::coordination_identity::CoordinationIdentityProvenance::Presented)
-    /// only: occupancy is a rule between two
-    /// coordination identities a caller presented, so a holder claimed under an identity this
-    /// engine created for itself, and one predating the record, both decline to occupy.
-    ///
-    /// `acting_run` is the other term of that same rule, and it arrives as a
-    /// [`PresentedCoordinationRun`] for the reason the holder's provenance is read at all: a
-    /// caller with only a bare [`CoordinationRunId`] has not shown that anyone presented it,
-    /// so it may not ask this question.
-    pub(crate) fn worktree_occupancy(
-        &self,
-        worktree_id: WorktreeId,
-        acting_run: PresentedCoordinationRun,
-    ) -> WorktreeOccupancy<'_> {
-        self.facts
-            .reservations
-            .iter()
-            .find(|reservation| {
-                reservation.occupies_worktree_for_another_coordination_run(
-                    acting_run.coordination_run_id(),
-                    worktree_id,
-                )
-            })
-            .map_or(WorktreeOccupancy::NoIncumbent, WorktreeOccupancy::Incumbent)
-    }
-
-    /// Return whether the run still has another reservation in `Active`, in any worktree.
-    ///
-    /// The run, not the run and the worktree: this deliberately calls
-    /// [`Reservation::is_active_for_coordination_run`] rather than the two-field eligibility
-    /// predicate, because the caller is asking whether the run itself still owns live work.
-    pub(crate) fn has_other_active_reservation(
-        &self,
-        coordination_run_id: CoordinationRunId,
-        excluded_reservation_id: ReservationId,
-    ) -> bool {
-        self.facts.reservations.iter().any(|reservation| {
-            reservation.id != excluded_reservation_id
-                && reservation.is_active_for_coordination_run(coordination_run_id)
-        })
-    }
-
     fn apply_incursion_journal_event(
         &mut self,
         event: &JournalEvent,
@@ -1189,6 +1173,54 @@ impl RetainedReservationSet {
 }
 
 impl ReservationFacts {
+    /// Answer whether another coordination run occupies this worktree against `acting_run`.
+    ///
+    /// The worktree is the coordination unit, so one run holds it at a time. Two terms narrow
+    /// which holder counts as the incumbent, and both live in
+    /// [`Reservation::occupies_worktree_for_another_coordination_run`] rather than here.
+    /// `Active` only: an `Outstanding` holder has released and is awaiting integration, and
+    /// blocking on it would lock a worktree out of paths its own previous session released.
+    /// [`Presented`](crate::coordination_identity::CoordinationIdentityProvenance::Presented)
+    /// only: occupancy is a rule between two
+    /// coordination identities a caller presented, so a holder claimed under an identity this
+    /// engine created for itself, and one predating the record, both decline to occupy.
+    ///
+    /// `acting_run` is the other term of that same rule, and it arrives as a
+    /// [`PresentedCoordinationRun`] for the reason the holder's provenance is read at all: a
+    /// caller with only a bare [`CoordinationRunId`] has not shown that anyone presented it,
+    /// so it may not ask this question.
+    pub(crate) fn worktree_occupancy(
+        &self,
+        worktree_id: WorktreeId,
+        acting_run: PresentedCoordinationRun,
+    ) -> WorktreeOccupancy<'_> {
+        self.reservations
+            .iter()
+            .find(|reservation| {
+                reservation.occupies_worktree_for_another_coordination_run(
+                    acting_run.coordination_run_id(),
+                    worktree_id,
+                )
+            })
+            .map_or(WorktreeOccupancy::NoIncumbent, WorktreeOccupancy::Incumbent)
+    }
+
+    /// Return whether the run still has another reservation in `Active`, in any worktree.
+    ///
+    /// The run, not the run and the worktree: this deliberately calls
+    /// [`Reservation::is_active_for_coordination_run`] rather than the two-field eligibility
+    /// predicate, because the caller is asking whether the run itself still owns live work.
+    pub(crate) fn has_other_active_reservation(
+        &self,
+        coordination_run_id: CoordinationRunId,
+        excluded_reservation_id: ReservationId,
+    ) -> bool {
+        self.reservations.iter().any(|reservation| {
+            reservation.id != excluded_reservation_id
+                && reservation.is_active_for_coordination_run(coordination_run_id)
+        })
+    }
+
     pub(crate) fn into_reservations(self) -> Vec<Reservation> { self.reservations }
 
     /// Dispatch one journal operation to the replay step that owns it.
@@ -1969,7 +2001,7 @@ impl ReservationFacts {
     }
 }
 
-impl RetainedReservationSet {
+impl ReservationFacts {
     fn conflicts(
         &self,
         candidate: &ReservationScopeSet,
@@ -2018,8 +2050,7 @@ impl RetainedReservationSet {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
-        self.facts
-            .answer_records
+        self.answer_records
             .iter()
             .filter(|answer_record| answer_record.worktree == worktree)
             .flat_map(|answer_record| &answer_record.overlap_coverage)
@@ -2057,7 +2088,7 @@ impl RetainedReservationSet {
                 },
             };
         }
-        let mut protected_holders = self.facts.reservations.iter().filter_map(|reservation| {
+        let mut protected_holders = self.reservations.iter().filter_map(|reservation| {
             if reservation.actor.worktree != holder.actor.worktree
                 || reservation.edit_blocking_status() != EditBlockingStatus::Blocking
             {
@@ -2117,8 +2148,7 @@ impl RetainedReservationSet {
         holder_is_foreign: impl Fn(&Reservation) -> bool,
     ) -> Vec<ProtectedConflictHolder<'_>> {
         let mut represented_merge_worktrees = HashSet::new();
-        self.facts
-            .reservations
+        self.reservations
             .iter()
             .filter(|holder| holder.edit_blocking_status() == EditBlockingStatus::Blocking)
             .filter(|holder| holder_is_foreign(holder))
@@ -2145,10 +2175,16 @@ impl RetainedReservationSet {
             .collect()
     }
 
+    /// Count holders whose scope full reconciliation could still update.
+    pub(crate) fn unreleased_count(&self) -> usize {
+        self.iter()
+            .filter(|holder| !matches!(holder.lifecycle(), ReservationLifecycle::Released { .. }))
+            .count()
+    }
+
     /// Count reservations that have not received a terminal disposition.
     pub(crate) fn nonterminal_count(&self) -> usize {
-        self.facts
-            .reservations
+        self.reservations
             .iter()
             .filter(|reservation| !reservation.is_terminal())
             .count()

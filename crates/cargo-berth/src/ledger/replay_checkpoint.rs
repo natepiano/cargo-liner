@@ -147,9 +147,14 @@ struct CheckpointBody {
 
 /// The edit facts and the unread transaction parts from their open checkpoint.
 pub(super) struct DeferredReplay {
-    pub(super) core:         ReplayCore,
-    pub(super) reservations: Result<RetainedReservationSet, ReservationReplayError>,
-    body:                    CheckpointBody,
+    checkpoint: ReservationReplay,
+    appended:   Option<DeferredTail>,
+    body:       CheckpointBody,
+}
+
+struct DeferredTail {
+    replay: ReservationReplay,
+    bytes:  Vec<u8>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -182,28 +187,49 @@ impl CheckpointBody {
     }
 
     fn defer(mut self, end_offset: JournalByteOffset) -> Option<DeferredReplay> {
-        let ReservationReplay { core, reservations } = self.decode_reservations(end_offset)?;
-        let incidents: Vec<IncursionIncident> = self.read_part(self.lengths[2])?;
+        let checkpoint = self.decode_reservations(end_offset)?;
         Some(DeferredReplay {
-            core,
-            reservations: reservations
-                .map(|facts| RetainedReservationSet::from_checkpoint(facts, incidents)),
+            checkpoint,
+            appended: None,
             body: self,
         })
     }
 }
 
 impl DeferredReplay {
+    pub(super) fn reservation_replay(&self) -> &ReservationReplay {
+        self.appended
+            .as_ref()
+            .map_or(&self.checkpoint, |tail| &tail.replay)
+    }
+
+    fn extend(mut self, bytes: Vec<u8>) -> Result<Option<Self>, JournalError> {
+        if bytes.is_empty() {
+            return Ok(Some(self));
+        }
+        let Some(replay) = self.checkpoint.clone().extended_over(&bytes)? else {
+            return Ok(None);
+        };
+        self.appended = Some(DeferredTail { replay, bytes });
+        Ok(Some(self))
+    }
+
     pub(super) fn complete(mut self) -> Option<JournalReplay> {
-        let [_, _, _, coordination_length, maintenance_length] = self.body.lengths;
+        let [
+            _,
+            _,
+            incidents_length,
+            coordination_length,
+            maintenance_length,
+        ] = self.body.lengths;
+        let incidents: Vec<IncursionIncident> = self.body.read_part(incidents_length)?;
         let coordination_events: Vec<JournalEvent> = self.body.read_part(coordination_length)?;
         let maintenance: Maintenance<SupersededExtents, FinishedHistory> =
             self.body.read_part(maintenance_length)?;
-        let Self {
-            core, reservations, ..
-        } = self;
-        Some(JournalReplay {
-            reservations,
+        let ReservationReplay { core, reservations } = self.checkpoint;
+        let replay = JournalReplay {
+            reservations: reservations
+                .map(|facts| RetainedReservationSet::from_checkpoint(facts, incidents)),
             coordination_events,
             repositories: core.repositories,
             record_count: core.record_count,
@@ -212,7 +238,14 @@ impl DeferredReplay {
             generation: core.generation,
             superseded: maintenance.superseded,
             finished_history: maintenance.finished_history,
-        })
+        };
+        match self.appended {
+            Some(tail) => replay
+                .extended_over(&tail.bytes)
+                .ok()
+                .map(|(replay, _)| replay),
+            None => Some(replay),
+        }
     }
 }
 
@@ -291,21 +324,7 @@ impl<'a> ReplayCheckpoint<'a> {
             file.seek(SeekFrom::Start(u64::from(header.end_offset)))?;
             let mut appended = Vec::new();
             file.read_to_end(&mut appended)?;
-            let complete_end = appended
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map_or(0, |index| index + 1);
-            let growth = u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?;
-            let refresh = !matches!(
-                start.write_budget(growth, self.interval.maximum_write_ratio),
-                WriteBudget::Exceeded
-            ) && (growth >= self.interval.bytes
-                || appended[..complete_end]
-                    .split_inclusive(|byte| *byte == b'\n')
-                    .take(usize::try_from(self.interval.records).unwrap_or(usize::MAX))
-                    .count()
-                    >= usize::try_from(self.interval.records).unwrap_or(usize::MAX));
-            if !refresh
+            if !start.should_refresh(&appended, self.interval)?
                 && let Some(decoded) = body.decode_reservations(header.end_offset)
                 && let Some(replay) = decoded.extended_over(&appended)?
             {
@@ -325,14 +344,22 @@ impl<'a> ReplayCheckpoint<'a> {
         let metadata = file.metadata()?;
         let identity = JournalFileIdentity::from(&metadata);
         let (body, start) = self.open_parts(&mut file, identity, metadata.len());
-        let (Some(body), ReplayStart::Checkpoint { header, .. }) = (body, start) else {
+        let (Some(body), ReplayStart::Checkpoint { header, .. }) = (body, &start) else {
             return Ok(None);
         };
-        if metadata.len() != u64::from(header.end_offset) {
-            return Ok(None);
+        let mut appended = Vec::new();
+        if metadata.len() > u64::from(header.end_offset) {
+            file.seek(SeekFrom::Start(u64::from(header.end_offset)))?;
+            file.read_to_end(&mut appended)?;
+            if appended.last() != Some(&b'\n') || start.should_refresh(&appended, self.interval)? {
+                return Ok(None);
+            }
         }
-        Ok(body
-            .defer(header.end_offset)
+        let Some(replay) = body.defer(header.end_offset) else {
+            return Ok(None);
+        };
+        Ok(replay
+            .extend(appended)?
             .map(|replay| (replay, JournalReplaySource::new(file, identity))))
     }
 
@@ -587,6 +614,28 @@ pub(crate) fn count_checkpoint_decodes<Output>(action: impl FnOnce() -> Output) 
 }
 
 impl ReplayStart {
+    fn should_refresh(
+        &self,
+        appended: &[u8],
+        interval: CheckpointInterval,
+    ) -> Result<bool, JournalError> {
+        let complete_end = appended
+            .iter()
+            .rposition(|byte| *byte == b'\n')
+            .map_or(0, |index| index + 1);
+        let growth = u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?;
+        let records = usize::try_from(interval.records).unwrap_or(usize::MAX);
+        Ok(!matches!(
+            self.write_budget(growth, interval.maximum_write_ratio),
+            WriteBudget::Exceeded
+        ) && (growth >= interval.bytes
+            || appended[..complete_end]
+                .split_inclusive(|byte| *byte == b'\n')
+                .take(records)
+                .count()
+                >= records))
+    }
+
     /// The bytes a refresh can write after the replay folds `growth` journal bytes past this start.
     const fn write_budget(&self, growth: u64, maximum_write_ratio: u64) -> WriteBudget {
         match self {
@@ -648,6 +697,7 @@ mod tests {
     use tempfile::TempDir;
     use tempfile::tempdir;
 
+    use super::CHECKPOINT_PART_DECODES;
     use super::CheckpointHeader;
     use super::CheckpointInterval;
     use super::JournalFileIdentity;
@@ -668,6 +718,7 @@ mod tests {
     use crate::ledger::journal::JournalEvent;
     use crate::ledger::journal::JournalOperation;
     use crate::ledger::journal::JournalReplay;
+    use crate::reservation::RetainedReservationSet;
 
     /// The audit records in the large checkpoint. The first refresh skips while the checkpoint
     /// is larger than `TEST_RECORD_INTERVAL * (ratio - 1)` appended records, and each record
@@ -719,7 +770,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_preparation_reads_incidents_and_completes_from_its_open_checkpoint()
+    fn edit_preparation_defers_incidents_and_completes_from_its_open_checkpoint()
     -> Result<(), Box<dyn Error>> {
         let fixture = CheckpointFixture::new()?;
         let (events, rejected) = journal::round_trip_sequence_events()?;
@@ -735,11 +786,19 @@ mod tests {
                 .is_some()
         );
 
+        let decodes_before = CHECKPOINT_PART_DECODES.get();
         let (deferred, _) = fixture
             .checkpoint()
             .deferred_edit_start(&fixture.journal_path)?
             .ok_or("expected a deferred replay")?;
-        assert_eq!(deferred.reservations, whole.reservations);
+        assert_eq!(
+            deferred.reservation_replay().reservations.as_ref(),
+            whole
+                .reservations
+                .as_ref()
+                .map(RetainedReservationSet::checkpoint)
+        );
+        assert_eq!(CHECKPOINT_PART_DECODES.get() - decodes_before, 2);
 
         let bypass = events[..rejected]
             .iter()
@@ -778,6 +837,26 @@ mod tests {
         fixture.write_checkpoint()?;
         fixture.journal.append(&events[release])?;
         fixture.assert_reservation_replay_parts(2)?;
+        let decodes_before = CHECKPOINT_PART_DECODES.get();
+        let (deferred, _) = fixture
+            .checkpoint()
+            .deferred_edit_start(&fixture.journal_path)?
+            .ok_or("an ordinary tail can defer the other checkpoint parts")?;
+        assert_eq!(CHECKPOINT_PART_DECODES.get() - decodes_before, 2);
+        let whole = Journal::replay_read_only(&fixture.journal_path)?;
+        assert_eq!(
+            deferred.reservation_replay().core,
+            super::ReplayCore::from(&whole)
+        );
+        assert_eq!(
+            deferred.reservation_replay().reservations.as_ref(),
+            whole
+                .reservations
+                .as_ref()
+                .map(RetainedReservationSet::checkpoint),
+            "deferred facts must include the release before completion"
+        );
+        assert_eq!(deferred.complete(), Some(whole));
 
         fixture
             .journal

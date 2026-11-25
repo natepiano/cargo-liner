@@ -696,10 +696,10 @@ pub(super) enum RefusedRunPathEntry {
 ///
 /// The refusal withholds acquisition, so this asks the acquisition question's *other* half
 /// without taking anything: which holders would have blocked a first touch of these paths.
-/// The predicate is [`RetainedReservationSet::conflicts_for_first_touch`], the same one
-/// [`crate::verb::claim::acquire_first_touch`] asks under its own lock, so the reported shape
-/// matches an unrefused post-write detection exactly — minus the reservation, which is what
-/// was refused.
+/// The predicate is [`crate::reservation::ReservationFacts::conflicts_for_first_touch`], the
+/// same one [`crate::verb::claim::acquire_first_touch`] asks under its own lock, so the
+/// reported shape matches an unrefused post-write detection exactly — minus the reservation,
+/// which is what was refused.
 ///
 /// The incumbent occupying this worktree is a holder like any other here. Subject
 /// classification cannot report that entry: the incumbent is its own subject, and a

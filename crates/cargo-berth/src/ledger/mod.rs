@@ -113,6 +113,7 @@ pub(crate) use path::AncestorCanonicalizationError;
 pub(crate) use path::canonicalize_through_nearest_existing_ancestor;
 pub(crate) use path::normalize_absolute_path;
 pub(crate) use projection::JournalPosition;
+pub(crate) use projection::ReplayPosition;
 #[cfg(test)]
 pub(crate) use replay_checkpoint::count_checkpoint_decodes;
 pub(crate) use target::ClaimTarget;

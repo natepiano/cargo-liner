@@ -343,8 +343,16 @@ fn status_configuration(config: &File) -> RepositoryRead<()> {
     RepositoryRead::InProcess(())
 }
 
-/// Produce the same no-renames porcelain columns consumed by drift's partitioner.
-pub(super) fn status(root: &Path) -> Result<RepositoryRead<Vec<u8>>, GitError> {
+#[cfg(test)]
+fn status(root: &Path) -> Result<RepositoryRead<Vec<u8>>, GitError> {
+    status_for_pathspecs(root, &[])
+}
+
+/// Read the no-renames porcelain columns that drift uses.
+pub(super) fn status_for_pathspecs(
+    root: &Path,
+    pathspecs: &[String],
+) -> Result<RepositoryRead<Vec<u8>>, GitError> {
     let repository = match open(root)? {
         RepositoryRead::InProcess(repository) => repository,
         RepositoryRead::GitRequired(reason) => return Ok(RepositoryRead::GitRequired(reason)),
@@ -380,7 +388,11 @@ pub(super) fn status(root: &Path) -> Result<RepositoryRead<Vec<u8>>, GitError> {
         .untracked_files(UntrackedFiles::Files)
         .index_worktree_rewrites(None)
         .tree_index_track_renames(TrackRenames::Disabled)
-        .into_iter(std::iter::empty::<gix::bstr::BString>())
+        .into_iter(
+            pathspecs
+                .iter()
+                .map(|pathspec| gix::bstr::BString::from(pathspec.as_bytes())),
+        )
         .map_err(|error| failure("read status", error))?;
     let mut paths: BTreeMap<Vec<u8>, [u8; 2]> = BTreeMap::new();
     let mut untracked = std::collections::BTreeSet::new();

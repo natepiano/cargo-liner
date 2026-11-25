@@ -20,7 +20,7 @@ use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::EditAuthorization;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
-use crate::reservation::RetainedReservationSet;
+use crate::reservation::ReservationFacts;
 use crate::reservation::WorktreeOccupancy;
 
 /// Whether a caller presented the coordination identity a claim was recorded under.
@@ -777,11 +777,11 @@ impl Error for CoordinationIdentityValidationError {}
 /// second foreignness answer of its own.
 ///
 /// Both terms of the rule arrive here in the types: the holder's provenance on the record
-/// [`RetainedReservationSet::worktree_occupancy`] reads, and the acting side as
+/// [`ReservationFacts::worktree_occupancy`] reads, and the acting side as
 /// [`PresentedCoordinationRun`], which a caller holding only a bare [`CoordinationRunId`]
 /// cannot produce.
 pub(crate) fn validate_worktree_occupancy(
-    retained_reservation_set: &RetainedReservationSet,
+    retained_reservation_set: &ReservationFacts,
     worktree_context: &WorktreeContext,
     worktree_id: WorktreeId,
     acting_run: PresentedCoordinationRun,
@@ -814,7 +814,7 @@ pub(crate) fn validate_worktree_occupancy(
 
 /// Validate one coherently resolved authorization against retained reservations.
 pub(crate) fn validate_coordination_identity(
-    retained_reservation_set: &RetainedReservationSet,
+    retained_reservation_set: &ReservationFacts,
     coordination_identity_validation_context: &CoordinationIdentityValidationContext,
 ) -> Result<(), CoordinationIdentityValidationError> {
     let resolved_edit_authorization =
@@ -853,7 +853,7 @@ pub(crate) fn validate_coordination_identity(
 }
 
 fn validate_session_mapping(
-    retained_reservation_set: &RetainedReservationSet,
+    retained_reservation_set: &ReservationFacts,
     coordination_run_id: CoordinationRunId,
     reservation_id: ReservationId,
     issuing_worktree_id: WorktreeId,
@@ -972,7 +972,7 @@ fn build_stale_session_mapping(
 }
 
 fn validate_marker(
-    retained_reservation_set: &RetainedReservationSet,
+    retained_reservation_set: &ReservationFacts,
     coordination_run_id: CoordinationRunId,
     issuing_worktree_id: WorktreeId,
     worktree_context: &WorktreeContext,

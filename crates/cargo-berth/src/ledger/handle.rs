@@ -77,6 +77,7 @@ use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
 use crate::reservation::RecordedTarget;
 use crate::reservation::Reservation;
+use crate::reservation::ReservationFacts;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
@@ -117,14 +118,21 @@ impl RetainedPreparation {
     fn reservation_state(
         &self,
     ) -> (
-        &Result<RetainedReservationSet, ReservationReplayError>,
+        Result<&ReservationFacts, &ReservationReplayError>,
         ReplayPosition,
     ) {
         match self {
-            Self::Complete(prepared) => (&prepared.replay.reservations, (&prepared.replay).into()),
+            Self::Complete(prepared) => (
+                prepared
+                    .replay
+                    .reservations
+                    .as_ref()
+                    .map(RetainedReservationSet::checkpoint),
+                (&prepared.replay).into(),
+            ),
             Self::Deferred(prepared) => {
-                let replay = &prepared.deferred;
-                (&replay.reservations, (&replay.core).into())
+                let replay = prepared.deferred.reservation_replay();
+                (replay.reservations.as_ref(), (&replay.core).into())
             },
         }
     }
@@ -184,8 +192,7 @@ pub(crate) struct ReplayedLedgerState<'replay> {
     coordination_events: &'replay [JournalEvent],
     ordering_graph:      &'replay OnceCell<Result<OrderingGraph, EdgeReplayError>>,
     reservations:        &'replay Result<RetainedReservationSet, ReservationReplayError>,
-    generation:          ProjectionGeneration,
-    journal_end_offset:  JournalByteOffset,
+    position:            ReplayPosition,
 }
 
 impl<'replay> ReplayedLedgerState<'replay> {
@@ -214,10 +221,13 @@ impl<'replay> ReplayedLedgerState<'replay> {
     }
 
     /// Return the projection generation represented by the replay.
-    pub(crate) const fn generation(&self) -> ProjectionGeneration { self.generation }
+    pub(crate) const fn generation(&self) -> ProjectionGeneration { self.position.generation }
 
     /// Return the journal byte offset represented by the replay.
-    pub(crate) const fn journal_end_offset(&self) -> JournalByteOffset { self.journal_end_offset }
+    pub(crate) const fn journal_end_offset(&self) -> JournalByteOffset { self.position.end_offset }
+
+    /// Identify the exact journal bytes represented by this replay.
+    pub(crate) const fn replay_position(&self) -> ReplayPosition { self.position }
 }
 
 /// A transaction either rejects its input or appends raw or already-admitted facts.
@@ -478,8 +488,7 @@ impl PreparedReconciliationAppend {
             coordination_events: &replay.coordination_events,
             ordering_graph:      &ordering_graph,
             reservations:        &replay.reservations,
-            generation:          replay.generation,
-            journal_end_offset:  replay.end_offset,
+            position:            replay.into(),
         };
         let operations = CycleFreeOrderingOperation::check_sequence(&state, operations)
             .map_err(ordering_declaration_transaction_error)?;
@@ -683,10 +692,10 @@ impl Ledger {
         ledger
     }
 
-    /// Observe folded reservations after validating the journal and its projection.
-    pub(crate) fn with_validated_reservations<Output>(
+    /// Read reservation facts after validating the journal and projection.
+    pub(crate) fn with_validated_reservation_facts<Output>(
         &self,
-        observe: impl Fn(&Result<RetainedReservationSet, ReservationReplayError>) -> Output,
+        observe: impl Fn(Result<&ReservationFacts, &ReservationReplayError>, ReplayPosition) -> Output,
     ) -> Result<Output, LedgerError> {
         self.require_existing()?;
         let repo_instance_id = self.repository_identity()?;
@@ -695,7 +704,7 @@ impl Ledger {
             let (reservations, position) = preparation.reservation_state();
             let result =
                 projection::read_validated_at(&self.paths.projection, repo_instance_id, position)
-                    .map(|_| observe(reservations));
+                    .map(|_| observe(reservations, position));
             self.retain_preparation(preparation);
             result.map_err(LedgerError::from)
         })
@@ -757,7 +766,7 @@ impl Ledger {
                 Ok(RetainedPreparation::Complete(prepared))
             },
             Some(RetainedPreparation::Deferred(prepared)) => {
-                let offset = prepared.deferred.core.end_offset;
+                let offset = prepared.deferred.reservation_replay().core.end_offset;
                 let metadata = fs::metadata(&self.paths.journal)?;
                 if prepared.repo_instance_id == repo_instance_id
                     && metadata.len() == u64::from(offset)
@@ -777,7 +786,7 @@ impl Ledger {
                 if let Some((deferred, source)) =
                     checkpoint.deferred_edit_start(&self.paths.journal)?
                 {
-                    let core = &deferred.core;
+                    let core = &deferred.reservation_replay().core;
                     let metadata = fs::metadata(&self.paths.journal)?;
                     if metadata.len() == u64::from(core.end_offset)
                         && source.status(&metadata, core.end_offset)
@@ -810,7 +819,7 @@ impl Ledger {
         if prepared_id == repo_instance_id
             && source.status(
                 &fs::metadata(&self.paths.journal)?,
-                deferred.core.end_offset,
+                deferred.reservation_replay().core.end_offset,
             ) == JournalReplaySourceStatus::Current
             && let Some(replay) = deferred.complete()
         {
@@ -1047,8 +1056,7 @@ impl Ledger {
                             coordination_events: &replay.coordination_events,
                             ordering_graph:      &OnceCell::new(),
                             reservations:        &replay.reservations,
-                            generation:          replay.generation,
-                            journal_end_offset:  replay.end_offset,
+                            position:            replay.into(),
                         }),
                         replay,
                         &JournalActor {
@@ -1088,8 +1096,7 @@ impl Ledger {
                         coordination_events: &transaction.replay.coordination_events,
                         ordering_graph:      &OnceCell::new(),
                         reservations:        &transaction.replay.reservations,
-                        generation:          transaction.replay.generation,
-                        journal_end_offset:  transaction.replay.end_offset,
+                        position:            (&transaction.replay).into(),
                     };
                     let action_output =
                         commit_action(action, &committed_state, &recoverable_failures);
@@ -1385,8 +1392,7 @@ impl Ledger {
                 coordination_events: &replay.coordination_events,
                 ordering_graph:      &OnceCell::new(),
                 reservations:        &replay.reservations,
-                generation:          replay.generation,
-                journal_end_offset:  replay.end_offset,
+                position:            (&replay).into(),
             },
         );
         if matches!(
@@ -1416,8 +1422,7 @@ impl Ledger {
                 coordination_events: &replay.coordination_events,
                 ordering_graph:      &OnceCell::new(),
                 reservations:        &replay.reservations,
-                generation:          replay.generation,
-                journal_end_offset:  replay.end_offset,
+                position:            replay.into(),
             })
         })
     }
@@ -1591,8 +1596,7 @@ impl LedgerTransaction {
             coordination_events: &self.replay.coordination_events,
             ordering_graph:      &OnceCell::new(),
             reservations:        &self.replay.reservations,
-            generation:          self.replay.generation,
-            journal_end_offset:  self.replay.end_offset,
+            position:            (&self.replay).into(),
         };
         let operation = CycleFreeOrderingOperation::check(&state, prepared.operation)
             .map_err(ordering_declaration_transaction_error)?;
@@ -1990,6 +1994,7 @@ mod tests {
     use crate::reservation::MergeExtentKey;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationRunStatus;
+    use crate::reservation::RetainedReservationSet;
 
     #[test]
     fn retained_edit_replay_reloads_a_longer_compacted_replacement()
@@ -2017,8 +2022,15 @@ mod tests {
         Projection::from_replay(repo_instance_id, &original)
             .publish(&ledger.paths.directory, &ledger.paths.projection)?;
         ledger.write_replay_checkpoint_for_test()?;
-        let retained = ledger.with_validated_reservations(Clone::clone)?;
-        assert_eq!(retained, original.reservations);
+        let retained = ledger
+            .with_validated_reservation_facts(|facts, _| facts.cloned().map_err(Clone::clone))?;
+        assert_eq!(
+            retained,
+            original
+                .reservations
+                .clone()
+                .map(RetainedReservationSet::into_facts)
+        );
         let preparation = ledger
             .take_retained_preparation()
             .ok_or("the edit check did not retain the original replay")?;
@@ -2041,8 +2053,13 @@ mod tests {
         fs::rename(&replacement_path, &ledger.paths.journal)?;
 
         assert_eq!(
-            ledger.with_validated_reservations(Clone::clone)?,
-            expected.reservations,
+            ledger.with_validated_reservation_facts(|facts, _| facts
+                .cloned()
+                .map_err(Clone::clone))?,
+            expected
+                .reservations
+                .clone()
+                .map(RetainedReservationSet::into_facts),
         );
         assert!(matches!(
             ledger.take_retained_preparation(),
