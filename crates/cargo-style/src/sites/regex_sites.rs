@@ -7,7 +7,6 @@ use std::fs;
 use std::io;
 use std::io::ErrorKind;
 use std::io::Seek as _;
-use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Component;
 use std::path::Path;
@@ -15,7 +14,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
 use std::process::Stdio;
-use std::rc::Rc;
 use std::string::FromUtf8Error;
 
 use toml::Table;
@@ -26,7 +24,7 @@ use super::catalog::Reach;
 use super::catalog::RegexSpec;
 use super::catalog::Rule;
 use super::constants::CLAUDE_PYTHON;
-use super::constants::DISPLAY_LIMIT;
+use super::constants::MATCH_EXCLUSIONS;
 use super::constants::PACKAGE_PYTHONS;
 use super::constants::PER_USER_PROFILES;
 use super::constants::PROFILE_PYTHON;
@@ -35,19 +33,17 @@ use super::constants::PYTHON_VERSION_CHECK;
 use super::constants::SYSTEM_PYTHON;
 use super::frontmatter;
 use super::ledger::ListedCoordinate;
+use super::mask;
 use super::path_match::PathPattern;
+use super::source_tree::SourceReadFailure;
+use super::source_tree::SourceTree;
 use crate::constants::IGNORE_FILES;
-use crate::finding_source::EntryKind;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
 use crate::finding_source::SourceText;
-use crate::finding_source::TreeBlobs;
-use crate::finding_source::TreeEntries;
 use crate::source_lines;
 use crate::tip_view;
 use crate::tip_view::RepositoryTip;
-use crate::tokenizer;
-use crate::unicode_tables::SPACE;
 
 pub(super) struct RegexTool {
     executable:        PathBuf,
@@ -81,12 +77,8 @@ pub(crate) enum RegexFailure {
         rule:       String,
         diagnostic: String,
     },
-    #[error("candidate input object is unavailable: {0}")]
-    MissingObject(String),
-    #[error("cannot verify candidate input objects: {0}")]
-    Verify(String),
-    #[error("cannot read the candidate tree {0}")]
-    Tree(String),
+    #[error(transparent)]
+    SourceTree(#[from] SourceReadFailure),
     #[error("invalid committed ignore pattern {pattern:?}")]
     IgnorePattern {
         pattern: String,
@@ -218,20 +210,14 @@ pub(super) fn enumerate(
     spec: &RegexSpec,
     tool: &RegexTool,
 ) -> Result<Vec<ListedCoordinate>, RegexFailure> {
-    let TreeBlobs::Listed(entries) = source.tree(commit)? else {
-        return Err(RegexFailure::Tree(commit.to_owned()));
-    };
-    let entries = Rc::clone(entries);
-    verify_blobs(repo, &entries)?;
+    let tree = SourceTree::read(repo, source, commit)?;
     let ignored = ignored_paths(source, tip)?;
     if spec.pattern.is_empty() {
         return Err(RegexFailure::EmptyPattern(spec.origin.clone()));
     }
     let temporary = tempfile::Builder::new().prefix("style-regex-").tempdir()?;
     let root = temporary.path();
-    let blobs = entries
-        .iter()
-        .filter(|(_, entry)| entry.kind == EntryKind::Blob);
+    let blobs = tree.blobs();
     for (path, entry) in blobs.clone() {
         let target = root.join(relative(path)?);
         if let Some(parent) = target.parent() {
@@ -271,44 +257,6 @@ fn relative(path: &str) -> Result<PathBuf, RegexFailure> {
     Ok(result)
 }
 
-fn verify_blobs(repo: &Path, entries: &TreeEntries) -> Result<(), RegexFailure> {
-    // The inventory already opens the root tree and all traversed tree objects.
-    let blobs = entries
-        .values()
-        .filter(|entry| entry.kind == EntryKind::Blob)
-        .map(|entry| entry.object.as_str())
-        .collect::<BTreeSet<_>>();
-    let mut input = tempfile::tempfile()?;
-    for blob in &blobs {
-        writeln!(input, "{blob}")?;
-    }
-    input.rewind()?;
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
-        .stdin(input)
-        .output()?;
-    if !output.status.success() {
-        return Err(RegexFailure::Verify(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        ));
-    }
-    let response = String::from_utf8(output.stdout)?;
-    let mut lines = response.lines();
-    for blob in blobs {
-        if lines.next().and_then(|line| line.strip_suffix(" blob")) != Some(blob) {
-            return Err(RegexFailure::MissingObject(blob.to_owned()));
-        }
-    }
-    if lines.next().is_some() {
-        return Err(RegexFailure::Verify(
-            "unexpected Git object response".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
 fn write_blob(
     repo: &Path,
     source: &mut FindingSource<'_>,
@@ -325,7 +273,7 @@ fn write_blob(
                 .args(["cat-file", "blob", blob])
                 .output()?;
             if !output.status.success() {
-                return Err(RegexFailure::MissingObject(blob.to_owned()));
+                return Err(SourceReadFailure::MissingObject(blob.to_owned()).into());
             }
             fs::write(path, output.stdout)?;
         },
@@ -368,12 +316,10 @@ fn listed_coordinates(
         {
             continue;
         }
-        // Python `str.strip` removes each `str.isspace` character, which `SPACE` lists.
-        let text = text.trim_matches(|character| tokenizer::in_table(SPACE, character));
         let _ = sites.insert(ListedCoordinate {
             path,
             line,
-            text: text.chars().take(DISPLAY_LIMIT).collect(),
+            text: mask::display_line(text, 1),
         });
     }
     Ok(sites.into_iter().collect())
@@ -397,21 +343,17 @@ fn python_excludes(
     pattern: &str,
     matches: &[(&str, usize, &str)],
 ) -> Result<Vec<bool>, RegexFailure> {
-    // Python re defines the exclusion dialect. Use one isolated process for all matched lines.
-    const MATCH_EXCLUSIONS: &str = r"
-import json
-import re
-import sys
-pattern, lines = json.load(sys.stdin)
-try:
-    matcher = re.compile(pattern)
-except re.error as error:
-    print(error, file=sys.stderr)
-    sys.exit(1)
-json.dump([matcher.search(line) is not None for line in lines], sys.stdout)
-";
-    let mut input = tempfile::tempfile()?;
     let lines = matches.iter().map(|(_, _, text)| *text).collect::<Vec<_>>();
+    python_matches(rule, pattern, &lines)
+}
+
+pub(super) fn python_matches(
+    rule: &str,
+    pattern: &str,
+    lines: &[&str],
+) -> Result<Vec<bool>, RegexFailure> {
+    // Use Python re for rule patterns. Search all supplied strings in one process.
+    let mut input = tempfile::tempfile()?;
     serde_json::to_writer(&mut input, &(pattern, lines))?;
     input.rewind()?;
     let output = Command::new(exclusion_python()?)
@@ -425,7 +367,7 @@ json.dump([matcher.search(line) is not None for line in lines], sys.stdout)
         });
     }
     let result: Vec<bool> = serde_json::from_slice(&output.stdout)?;
-    if result.len() != matches.len() {
+    if result.len() != lines.len() {
         return Err(RegexFailure::Exclusion {
             rule:       rule.to_owned(),
             diagnostic: "exclusion reply has the wrong number of rows".to_owned(),
