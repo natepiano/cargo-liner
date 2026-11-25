@@ -1293,31 +1293,32 @@ The copies are deleted. No source changes.
 
 **Gotchas:** Nextest flagged a process leak in the unchanged gate test `rewrite_marker_progress_preserves_completed_subjects_across_stale_preflights`. Review found no cause in Phase 56d.
 
-### Phase 56e — a cargo-berth edit check of an unreserved file costs under about 150 ms  · status: todo
+### Phase 56e — a cargo-berth edit check and the gate read only live reservations  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the `pre-tool-use` edit check of a file no reservation holds costs under 150 ms CPU on the Mac release, median of 3, with the same hook answers. Source: the Phase 56d seeded measure (showrunner ruling, 2026-11-24).
-
-**Spec:**
-1. The baseline is the Phase 56d final seeded Mac release measure: 41 live worktrees, 123 reservations. Its report is `${SESSION_DIR}/phases/56d/impl_report.md`, section "Seeded Mac release measurements".
-2. In Phase 56d, a scoped edit cost about 290 ms: `acquire_first_touch` about 177 ms (it decodes incidents and coordination, about 61 ms and 14.9 MB), the first `decide` about 85 ms (reservation decode about 71 ms and 12.2 MB), and two `observe_edit_path` calls about 58 ms and 35 ms.
-3. The append transaction loads incidents and coordination only when the tail or the observation needs them. Use types, so that an unread part cannot be queried.
-4. Cut the other top costs at their cause: the second `observe_edit_path` call, and the reservation decode if it is still the largest cost. A checkpoint format change needs a design to the showrunner first.
-5. Report median CPU and read bytes for the scoped edit, the full-observation edit and the gate. Use three Mac release runs in alternating pairs on the seeded sample, before and after.
-
-**Constraints from prior phases:**
-- Keep the Phase 56b, 56c and 56d constraints. The Phase 56d As-built names them.
-- One reconciliation path. A path-limited observation never settles a holder. The allow or refuse answer equals the full-status answer.
+- Replay checkpoint format 6 has seven parts: core, live reservations and answers, settled reservations, incidents, ordering, other coordination and maintenance. A version 5 file, or a version 6 file without `claim_ids`, rebuilds through normal publication.
+- The core holds the required `claim_ids` in claim order. Each claim id is stored once. Ordering records take the next core id, and a missing or unused id is refused.
+- The edit check and the gate decode only the core and the live part, also with a claim in the journal tail. A tail claim that reuses a checkpoint id goes to complete replay, which refuses it with `DuplicateClaim`.
+- The scoped append reads no incidents or maintenance. The scoped validator gets `LiveReservationFacts`, which has only live queries. Planned settlements go to the complete transaction.
+- Only the checkpoint decoder builds `CheckpointReservationParts`. It owns the live, settled and incident parts of one checkpoint. Completion consumes it, then replays the tail.
+- Trust assumption: a decoded checkpoint holds every settled reservation and incident. A corrupted checkpoint file is out of scope.
+- Mac release, seeded sample (41 worktrees, 123 reservations), median of 3 alternating pairs:
+  - At load about 18: scoped edit 208.2 → 117.8 ms CPU, gate 76.1 → 37.5 ms. The full edit rose 444.4 → 477.5 ms.
+  - At load 21.9–24.2: scoped edit 307.3 → 205.9 ms, gate with a tail claim 105.0 → 59.6 ms.
+- Part sizes on that sample: live 3.9 MB, settled 8.3 MB, incidents 7.9 MB, ordering 5.1 MB, other coordination 2.0 MB.
 
 **Files:**
-- `crates/cargo-berth/src/` — files the profile identifies.
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — format 6 parts, `claim_ids`, `CheckpointReservationParts`, the gate and migration tests.
+- `crates/cargo-berth/src/ledger/journal/checkpoint_coordination.rs` — ordering records without claim ids, and their restore from the core ids. `ledger/journal.rs` moved to `ledger/journal/mod.rs`.
+- `crates/cargo-berth/src/ledger/handle.rs` — the scoped append and the deferred replay.
+- `crates/cargo-berth/src/reservation/retention.rs` — `LiveReservationFacts` and its tail fold.
+- `crates/cargo-berth/src/verb/claim/acquisition.rs` — the scoped validator on live facts.
+- `crates/cargo-berth/src/edge/graph.rs` — the edge graph from the split coordination parts.
 
-**Workers:** 1 writer.
+**Binds later work:** A query that needs settled reservations or incidents uses complete replay. Never add a settled query to `LiveReservationFacts`. A new checkpoint fact goes into one part only.
 
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- No changed test takes 1 s or more.
+**Gotchas:** The full edit costs about 33 ms more, because it rebuilds the reservation and coordination vectors from the parts. Nextest marked `foreign_active_reservation_cannot_checkpoint_the_invoking_head` leaky in the final suite.
 
 ### Phase 57 — mend --fix names each fix it applies  · status: todo
 
