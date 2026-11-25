@@ -10,6 +10,8 @@ use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::sync::PoisonError;
 use std::time::Duration;
 
 use super::compaction;
@@ -30,6 +32,8 @@ use super::error::LedgerCommittedActionError;
 use super::error::LedgerError;
 use super::error::LedgerTransactionError;
 use super::identity;
+#[cfg(test)]
+use super::journal;
 use super::journal::ClaimSource;
 use super::journal::Journal;
 use super::journal::JournalActor;
@@ -38,6 +42,7 @@ use super::journal::JournalEvent;
 use super::journal::JournalOperation;
 use super::journal::JournalReplay;
 use super::journal::JournalReplaySource;
+use super::journal::JournalReplaySourceStatus;
 use super::journal::PreparedJournalAppend;
 use super::journal::RecordCeiling;
 use super::lock::MutationLock;
@@ -65,7 +70,6 @@ use crate::git;
 use crate::ids::CoordinationRunId;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
-use crate::ids::RecordedAt;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
@@ -81,18 +85,9 @@ use crate::session::SessionMappingVersion;
 
 /// Journal truth and file identity used for one preparation pass.
 struct JournalPreparation {
-    replay: JournalReplay,
-    device: u64,
-    inode:  u64,
-}
-
-impl JournalPreparation {
-    fn still_current(&self, path: &Path) -> Result<bool, LedgerError> {
-        let metadata = fs::metadata(path)?;
-        Ok(metadata.dev() == self.device
-            && metadata.ino() == self.inode
-            && metadata.len() >= u64::from(self.replay.end_offset))
-    }
+    replay:           JournalReplay,
+    source:           JournalReplaySource,
+    repo_instance_id: RepoInstanceId,
 }
 
 /// The shared ledger for one git common directory.
@@ -101,18 +96,23 @@ pub(crate) struct Ledger {
     /// The superseded record bytes past which a transaction compacts the journal after it.
     pub(super) compaction_threshold_bytes: u64,
     automatic_compaction:                  AutomaticCompaction,
+    replay_retention:                      ReplayRetention,
+}
+
+enum ReplayRetention {
+    PerRead,
+    EditCheck(Box<Mutex<Option<JournalPreparation>>>),
+}
+
+#[derive(Clone, Copy)]
+enum ValidatedJournalRead {
+    Fresh,
+    ReuseRetained,
 }
 
 enum AutomaticCompaction {
     AfterTransaction,
     Deferred,
-}
-
-/// Validated journal truth for a mutation-free edit check.
-pub(crate) struct EditCheckLedgerSnapshot {
-    reservations:     Result<RetainedReservationSet, ReservationReplayError>,
-    worktree_context: WorktreeContext,
-    configuration:    BerthConfig,
 }
 
 /// Validated journal truth read without holding the mutation lock.
@@ -151,20 +151,6 @@ pub(crate) struct LedgerReinitialization {
     pub(crate) discarded_bytes:            u64,
     /// The number of newline-terminated records that were present, valid or corrupt.
     pub(crate) discarded_complete_records: u64,
-}
-
-impl EditCheckLedgerSnapshot {
-    /// Split this read into its folded reservation set, the filesystem-discovered worktree
-    /// context, and the configuration that governs the check.
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        Result<RetainedReservationSet, ReservationReplayError>,
-        WorktreeContext,
-        BerthConfig,
-    ) {
-        (self.reservations, self.worktree_context, self.configuration)
-    }
 }
 
 /// The replayed journal facts visible to a transaction's validation step.
@@ -655,31 +641,25 @@ impl Ledger {
         result
     }
 
-    /// Read validated journal truth without git, locking, repair, or publication.
-    pub(crate) fn read_for_edit_check(
-        invocation_directory: &Path,
-    ) -> Result<Enrollment<EditCheckLedgerSnapshot>, LedgerError> {
-        let worktree_context = WorktreeContext::discover(invocation_directory)?;
-        let configuration = match BerthConfig::read(&worktree_context.configuration_lookup())? {
-            Enrollment::Enrolled(berth_config) => berth_config,
-            Enrollment::Unconfigured {
-                expected_configuration_path,
-            } => {
-                return Ok(Enrollment::Unconfigured {
-                    expected_configuration_path,
-                });
-            },
-        };
-        let ledger = Self::at_common_git_directory(
+    /// Keep one journal replay across the decisions and transactions of this edit check.
+    pub(crate) fn for_edit_check(worktree_context: &WorktreeContext) -> Self {
+        let mut ledger = Self::at_common_git_directory(
             worktree_context.common_git_directory(),
             worktree_context.repository_root(),
         );
-        let reservations = ledger.read_validated_journal()?.into_reservations();
-        Ok(Enrollment::Enrolled(EditCheckLedgerSnapshot {
-            reservations,
-            worktree_context,
-            configuration,
-        }))
+        ledger.replay_retention = ReplayRetention::EditCheck(Box::default());
+        ledger
+    }
+
+    /// Observe folded reservations after validating the journal and its projection.
+    pub(crate) fn with_validated_reservations<Output>(
+        &self,
+        observe: impl Fn(&Result<RetainedReservationSet, ReservationReplayError>) -> Output,
+    ) -> Result<Output, LedgerError> {
+        let preparation = self.read_validated_preparation(ValidatedJournalRead::ReuseRetained)?;
+        let output = observe(&preparation.replay.reservations);
+        self.retain_preparation(preparation);
+        Ok(output)
     }
 
     /// Read a movement stamp with one journal metadata lookup and one small projection read.
@@ -696,19 +676,44 @@ impl Ledger {
 
     /// Read validated journal truth without holding the mutation lock.
     pub(crate) fn read_validated_journal(&self) -> Result<ValidatedJournal, LedgerError> {
+        let replay = self
+            .read_validated_preparation(ValidatedJournalRead::Fresh)?
+            .replay;
+        Ok(ValidatedJournal {
+            coordination_events: replay.coordination_events,
+            reservations:        replay.reservations,
+        })
+    }
+
+    fn read_validated_preparation(
+        &self,
+        read: ValidatedJournalRead,
+    ) -> Result<JournalPreparation, LedgerError> {
         self.require_existing()?;
-        let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
+        let repo_instance_id = self.repository_identity()?;
         retry_concurrent_projection_publication(|| {
-            let replay = Journal::replay_read_only_from_checkpoint(
-                &self.paths.journal,
-                &ReplayCheckpoint::new(&self.paths.replay_checkpoint, repo_instance_id),
-            )?;
-            identity::validate_journal_repository(repo_instance_id, &replay)?;
-            projection::read_validated(&self.paths.projection, repo_instance_id, &replay)?;
-            Ok(ValidatedJournal {
-                coordination_events: replay.coordination_events,
-                reservations:        replay.reservations,
-            })
+            let preparation = match read {
+                ValidatedJournalRead::Fresh => self.prepare_journal(repo_instance_id)?,
+                ValidatedJournalRead::ReuseRetained => match self.take_retained_preparation() {
+                    Some(mut preparation) => {
+                        self.refresh_preparation(repo_instance_id, &mut preparation)?;
+                        preparation
+                    },
+                    None => self.prepare_journal(repo_instance_id)?,
+                },
+            };
+            let projection_result = projection::read_validated(
+                &self.paths.projection,
+                repo_instance_id,
+                &preparation.replay,
+            );
+            if let Err(error) = projection_result {
+                if matches!(read, ValidatedJournalRead::ReuseRetained) {
+                    self.retain_preparation(preparation);
+                }
+                return Err(error.into());
+            }
+            Ok(preparation)
         })
     }
 
@@ -1021,21 +1026,25 @@ impl Ledger {
             MUTATING_VERB_CONTENTION_TOLERANCE,
             (),
             |()| {
-                let before = fs::metadata(&ledger.paths.journal)?;
-                let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+                let (replay, source, length) =
+                    Journal::replay_read_only_with_source(&ledger.paths.journal)?;
                 identity::validate_journal_repository(repo_instance_id, &replay)?;
                 Ok::<_, LedgerError>((
                     JournalPreparation {
                         replay,
-                        device: before.dev(),
-                        inode: before.ino(),
+                        source,
+                        repo_instance_id,
                     },
-                    before.len(),
+                    length,
                 ))
             },
             |(), (prepared, length)| {
-                Ok(prepared.still_current(&ledger.paths.journal)?
-                    && fs::metadata(&ledger.paths.journal)?.len() == *length)
+                let metadata = fs::metadata(&ledger.paths.journal)?;
+                Ok(prepared
+                    .source
+                    .status(&metadata, prepared.replay.end_offset)
+                    == JournalReplaySourceStatus::Current
+                    && metadata.len() == *length)
             },
         )?;
         let (prepared, _) = prepared;
@@ -1151,6 +1160,7 @@ impl Ledger {
             },
             compaction_threshold_bytes: JOURNAL_COMPACTION_THRESHOLD_BYTES,
             automatic_compaction:       AutomaticCompaction::AfterTransaction,
+            replay_retention:           ReplayRetention::PerRead,
         }
     }
 
@@ -1237,6 +1247,8 @@ impl Ledger {
         let LedgerTransaction {
             _lock: lock,
             replay,
+            journal_source,
+            repo_instance_id,
             retired_replays,
             ..
         } = transaction;
@@ -1256,12 +1268,13 @@ impl Ledger {
             self.automatic_compaction,
             AutomaticCompaction::AfterTransaction
         ) {
-            if replay.finished_history.is_due(&RecordedAt::now()) {
-                self.compact_expired_history();
-            } else {
-                self.compact_if_due(replay.superseded.droppable_bytes);
-            }
+            self.maintain_compaction(&replay);
         }
+        self.retain_preparation(JournalPreparation {
+            replay,
+            source: journal_source,
+            repo_instance_id,
+        });
         output
     }
 
@@ -1292,30 +1305,28 @@ impl Ledger {
         self.require_existing()?;
         let repo_instance_id = self.repository_identity()?;
         let gate_policy = GateTargetPolicy::read(&self.paths.repository_root)?;
-        let journal_preparation = self.prepare_journal(repo_instance_id)?;
+        let journal_preparation = match self.take_retained_preparation() {
+            Some(preparation) => preparation,
+            None => self.prepare_journal(repo_instance_id)?,
+        };
         let journal = Journal::open_existing(&self.paths.journal)?;
         let (lock, journal_preparation, (_, decision)) = preparation::prepare_with_lock(
             &self.paths.lock,
             contention_tolerance,
             journal_preparation,
             |preparation| {
-                // Keep tails already read so unrelated writers cannot force a whole replay.
-                if preparation.still_current(&self.paths.journal)? {
-                    Journal::advance_read_only_tail(
-                        &self.paths.journal,
-                        &mut preparation.replay,
-                        JournalReplaySource::new(preparation.device, preparation.inode),
-                    )?;
-                }
-                if !preparation.still_current(&self.paths.journal)? {
-                    *preparation = self.prepare_journal(repo_instance_id)?;
-                }
+                self.refresh_preparation(repo_instance_id, preparation)?;
                 let mappings = SessionMappingVersion::read(&self.paths.directory)?;
                 let decision = validate(&preparation.replay, repo_instance_id);
                 Ok::<_, LedgerError>((mappings, decision))
             },
             |preparation, (mappings, _)| {
-                if !preparation.still_current(&self.paths.journal)? {
+                let metadata = fs::metadata(&self.paths.journal)?;
+                if preparation
+                    .source
+                    .status(&metadata, preparation.replay.end_offset)
+                    != JournalReplaySourceStatus::Current
+                {
                     return Ok(false);
                 }
                 let generation = preparation.replay.generation;
@@ -1333,6 +1344,7 @@ impl Ledger {
             LedgerTransaction {
                 _lock: lock,
                 journal,
+                journal_source: journal_preparation.source,
                 journal_initialization: InitializationState::Existing,
                 ledger_directory: self.paths.directory.clone(),
                 gate_policy,
@@ -1345,25 +1357,64 @@ impl Ledger {
         ))
     }
 
+    fn take_retained_preparation(&self) -> Option<JournalPreparation> {
+        match &self.replay_retention {
+            ReplayRetention::PerRead => None,
+            ReplayRetention::EditCheck(retained) => retained
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take(),
+        }
+    }
+
+    fn retain_preparation(&self, preparation: JournalPreparation) {
+        if let ReplayRetention::EditCheck(retained) = &self.replay_retention {
+            *retained.lock().unwrap_or_else(PoisonError::into_inner) = Some(preparation);
+        }
+    }
+
+    /// Reuse the `JournalReplay` only if the journal still has the same prefix through
+    /// `end_offset`.
+    fn refresh_preparation(
+        &self,
+        repo_instance_id: RepoInstanceId,
+        preparation: &mut JournalPreparation,
+    ) -> Result<(), LedgerError> {
+        if preparation.repo_instance_id == repo_instance_id
+            && Journal::advance_read_only_tail(
+                &self.paths.journal,
+                &mut preparation.replay,
+                &preparation.source,
+            )? == JournalReplaySourceStatus::Current
+            && preparation.source.status(
+                &fs::metadata(&self.paths.journal)?,
+                preparation.replay.end_offset,
+            ) == JournalReplaySourceStatus::Current
+        {
+            identity::validate_journal_repository(repo_instance_id, &preparation.replay)?;
+        } else {
+            *preparation = self.prepare_journal(repo_instance_id)?;
+        }
+        Ok(())
+    }
+
     fn prepare_journal(
         &self,
         repo_instance_id: RepoInstanceId,
     ) -> Result<JournalPreparation, LedgerError> {
         retry_concurrent_projection_publication(|| {
-            let before = fs::metadata(&self.paths.journal)?;
-            let replay = Journal::replay_read_only_from_checkpoint(
-                &self.paths.journal,
-                &ReplayCheckpoint::new(&self.paths.replay_checkpoint, repo_instance_id),
-            )?;
-            let after = fs::metadata(&self.paths.journal)?;
-            if before.dev() != after.dev() || before.ino() != after.ino() {
+            let checkpoint = ReplayCheckpoint::new(&self.paths.replay_checkpoint, repo_instance_id);
+            let (replay, source) = checkpoint.replay_journal(&self.paths.journal)?;
+            if source.status(&fs::metadata(&self.paths.journal)?, replay.end_offset)
+                != JournalReplaySourceStatus::Current
+            {
                 return Err(LedgerError::Projection(ProjectionError::CacheAhead));
             }
             identity::validate_journal_repository(repo_instance_id, &replay)?;
             Ok(JournalPreparation {
                 replay,
-                device: after.dev(),
-                inode: after.ino(),
+                source,
+                repo_instance_id,
             })
         })
     }
@@ -1383,6 +1434,7 @@ impl Ledger {
         Ok(LedgerTransaction {
             _lock: lock,
             journal,
+            journal_source: JournalReplaySource::open(&self.paths.journal)?,
             journal_initialization,
             ledger_directory: self.paths.directory.clone(),
             gate_policy,
@@ -1647,6 +1699,7 @@ struct LedgerTransaction {
     retired_replays:            Vec<JournalReplay>,
     _lock:                      MutationLock,
     journal:                    Journal,
+    journal_source:             JournalReplaySource,
     journal_initialization:     InitializationState,
     ledger_directory:           PathBuf,
     gate_policy:                GateTargetPolicy,
@@ -1700,6 +1753,21 @@ pub(super) fn next_projection_generation(
 
 #[cfg(test)]
 impl Ledger {
+    pub(crate) fn journal_events_for_test(&self) -> Result<Vec<JournalEvent>, LedgerError> {
+        Ok(journal::complete_record_events(&fs::read(
+            &self.paths.journal,
+        )?)?)
+    }
+
+    pub(crate) fn write_replay_checkpoint_for_test(&self) -> Result<(), LedgerError> {
+        let replay = Journal::replay_read_only(&self.paths.journal)?;
+        let metadata = fs::metadata(&self.paths.journal)?;
+        let records = fs::read(&self.paths.journal)?;
+        ReplayCheckpoint::new(&self.paths.replay_checkpoint, self.repository_identity()?)
+            .store_for_journal_file(&replay, &metadata, &records)?;
+        Ok(())
+    }
+
     /// Append historical facts an older cargo-berth accepted, without current declaration checks.
     pub(crate) fn append_legacy_journal_operation(
         &self,
@@ -1745,6 +1813,7 @@ mod tests {
 
     use super::CommittedActionValidation;
     use super::CorrectableTransactionInput;
+    use super::Journal;
     use super::JournalEvent;
     use super::JournalOperation;
     use super::Ledger;
@@ -1755,6 +1824,7 @@ mod tests {
     use super::LedgerTransactionOutcome;
     use super::MAXIMUM_JOURNAL_RECORD_BYTES;
     use super::TransactionValidation;
+    use super::ValidatedJournalRead;
     use crate::drift::WorkingTreeFingerprint;
     use crate::ids::CoordinationRunId;
     use crate::ids::GitObjectId;
@@ -1770,13 +1840,69 @@ mod tests {
     use crate::ledger::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
     use crate::ledger::journal;
     use crate::ledger::journal::SkippedIntegrationHoldSet;
+    use crate::ledger::projection::Projection;
     use crate::ledger::projection::ProjectionError;
     use crate::ledger::test_support;
+    use crate::ledger::worktree_context::WorktreeContext;
     use crate::reservation::HolderMergeExtentCoverage;
     use crate::reservation::MergeExtent;
     use crate::reservation::MergeExtentKey;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationRunStatus;
+
+    #[test]
+    fn retained_edit_replay_reloads_a_longer_compacted_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const SUPERSEDED_OBSERVATION_INDEX: usize = 10;
+        let repository = test_support::scratch_repository();
+        Ledger::initialize(repository.path())?;
+        let context = WorktreeContext::discover(repository.path())?;
+        let ledger = Ledger::for_edit_check(&context);
+        let repo_instance_id = ledger.repository_identity()?;
+        let (mut events, failing_record_index) = journal::round_trip_sequence_events()?;
+        for event in &mut events {
+            event.actor.repository = repo_instance_id;
+        }
+        let (before_observation, remaining) =
+            events[..failing_record_index].split_at(SUPERSEDED_OBSERVATION_INDEX);
+        let (observation, later_records) = remaining
+            .split_first()
+            .ok_or("missing superseded observation")?;
+        let journal = Journal::open_existing(&ledger.paths.journal)?;
+        journal.append_events(before_observation)?;
+        journal.append(observation)?;
+        let original = Journal::replay_read_only(&ledger.paths.journal)?;
+        assert!(original.reservations.is_ok());
+        Projection::from_replay(repo_instance_id, &original)
+            .publish(&ledger.paths.directory, &ledger.paths.projection)?;
+        ledger.write_replay_checkpoint_for_test()?;
+        let retained = ledger.with_validated_reservations(Clone::clone)?;
+        assert_eq!(retained, original.reservations);
+        let preparation = ledger
+            .take_retained_preparation()
+            .ok_or("the edit check did not retain the original replay")?;
+        assert_eq!(preparation.replay, original);
+        ledger.retain_preparation(preparation);
+        journal.append_events(later_records)?;
+
+        let replacement_path = ledger.paths.directory.join("compacted.ndjson");
+        let (replacement, _) = Journal::open_or_create(&replacement_path)?;
+        replacement.append_events(before_observation)?;
+        replacement.append_events(later_records)?;
+        let expected = Journal::replay_read_only(&replacement_path)?;
+        assert!(expected.reservations.is_ok());
+        let replacement_bytes = fs::read(&replacement_path)?;
+        let old_offset = usize::try_from(u64::from(original.end_offset))?;
+        assert!(replacement_bytes.len() > old_offset);
+        assert_ne!(replacement_bytes[old_offset - 1], b'\n');
+        Projection::from_replay(repo_instance_id, &expected)
+            .publish(&ledger.paths.directory, &ledger.paths.projection)?;
+        fs::rename(&replacement_path, &ledger.paths.journal)?;
+
+        let refreshed = ledger.read_validated_preparation(ValidatedJournalRead::ReuseRetained)?;
+        assert_eq!(refreshed.replay, expected);
+        Ok(())
+    }
 
     #[test]
     fn mutation_preparation_proceeds_while_another_process_holds_the_lock()

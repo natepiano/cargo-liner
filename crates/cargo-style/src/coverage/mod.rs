@@ -44,6 +44,7 @@ use reply::HeldCoverage;
 use reply::Observation;
 use reply::Prerequisite;
 use reply::RuleTally;
+use rusqlite::Connection;
 
 use crate::constants::FINDING_RULES_FLAG;
 use crate::error::ReaderError;
@@ -56,8 +57,8 @@ use crate::ledger_read::LedgerRevision;
 use crate::rule_snapshot::PinComparison;
 use crate::rule_snapshot::RuleSnapshot;
 use crate::rule_snapshot::RuleSnapshotFailure;
+use crate::tip_view;
 use crate::tip_view::RepositoryTip;
-use crate::tip_view::under;
 
 enum RuleFilter {
     All,
@@ -371,7 +372,7 @@ fn rule_files<'f, 'a>(
     };
     rust_files.iter().filter(move |file| match &rule.reach {
         RuleReach::Repository => true,
-        RuleReach::Member(directory) => under(file.path, directory),
+        RuleReach::Member(directory) => tip_view::under(file.path, directory),
     })
 }
 
@@ -385,7 +386,7 @@ fn read_text_argument(argument: Option<OsString>) -> Result<String, CoverageErro
 fn read_cell_evidence<'a>(
     lints: &'a mut BTreeMap<LintTool, LintCoverage>,
     source: &mut FindingSource<'_>,
-    connection: &rusqlite::Connection,
+    connection: &Connection,
     entries: &TreeEntries,
     tree: &str,
     (identity, rule): (&str, &CoverageRule),

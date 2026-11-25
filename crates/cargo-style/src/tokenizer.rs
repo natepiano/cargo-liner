@@ -485,7 +485,10 @@ pub(crate) fn normalized_tokens(
     reader.run()
 }
 
-/// Whether character falls in one of the sorted inclusive ranges of table.
+/// Whether Python `str.isspace` and the `\s` class accept the character.
+pub(crate) fn python_space(character: char) -> bool { in_table(SPACE, character) }
+
+/// Whether `character` falls in a sorted inclusive range of `table`.
 pub(crate) fn in_table(table: &[(u32, u32)], character: char) -> bool {
     let code_point = u32::from(character);
     let index = table.partition_point(|&(_, end)| end < code_point);

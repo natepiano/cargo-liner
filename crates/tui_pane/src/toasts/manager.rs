@@ -3,6 +3,7 @@ use std::time::Instant;
 
 use super::ToastActivation;
 use super::body::ToastRenderBody;
+use super::render::GridToastStack;
 use super::settings::ToastSettings;
 use super::toast::Toast;
 use super::toast::ToastLifetime;
@@ -97,13 +98,15 @@ pub enum ReactivateOutcome {
 
 /// Framework-owned toast manager.
 pub struct Toasts<Ctx: AppContext> {
-    pub(super) next_id:  u64,
-    pub(super) entries:  Vec<Toast<Ctx>>,
+    pub(super) next_id:    u64,
+    pub(super) entries:    Vec<Toast<Ctx>>,
     /// Viewport used when focus is on the Toasts framework pane.
-    pub viewport:        Viewport,
-    pub(super) hits:     Vec<ToastHitbox>,
-    pub(super) settings: ToastSettings,
-    draw_area_width:     ToastDrawAreaWidth,
+    pub viewport:          Viewport,
+    pub(super) hits:       Vec<ToastHitbox>,
+    pub(super) settings:   ToastSettings,
+    draw_area_width:       ToastDrawAreaWidth,
+    /// The rows that toasts keep over a tile grid; see [`GridToastStack`].
+    pub(super) grid_stack: GridToastStack,
 }
 
 impl<Ctx: AppContext> Default for Toasts<Ctx> {
@@ -125,6 +128,7 @@ impl<Ctx: AppContext> Toasts<Ctx> {
             hits: Vec::new(),
             settings,
             draw_area_width: ToastDrawAreaWidth::Unconstrained,
+            grid_stack: GridToastStack::Unplaced,
         }
     }
 
@@ -153,14 +157,15 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     ///
     /// This scans the stored toasts without building `ToastView`s.
     /// Each toast combines its line-height, countdown, tracked-item, and
-    /// lifetime deadlines.
+    /// lifetime deadlines. A `GridToastStack` that waits for the grid to
+    /// settle adds the next frame poll.
     #[must_use]
     pub fn next_visual_change_deadline(&self, now: Instant) -> ToastVisualDeadline {
         if !self.settings.toasts_enabled() {
             return ToastVisualDeadline::NoVisualChangeScheduled;
         }
         let earliest_deadline = self.entries.iter().fold(
-            ToastVisualDeadline::NoVisualChangeScheduled,
+            self.grid_stack.next_visual_change_deadline(now),
             |deadline, toast| {
                 deadline.earlier(toast.next_visual_change_deadline(
                     now,

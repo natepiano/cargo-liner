@@ -15,9 +15,9 @@ use crate::rule_snapshot::Family;
 use crate::rule_snapshot::RuleFamily;
 use crate::site_ledger::InputScope;
 use crate::site_ledger::ReadScope;
+use crate::tip_view;
 use crate::tip_view::FingerprintSource;
 use crate::tip_view::RepositoryTip;
-use crate::tip_view::is_rust_path;
 
 type Inputs<'a> = BTreeMap<&'a str, &'a TreeEntry>;
 
@@ -151,7 +151,7 @@ impl InputComparison {
             return Ok(false);
         }
         for ((path, before), after) in changed {
-            if !is_rust_path(path)
+            if !tip_view::is_rust_path(path)
                 || before.mode != after.mode
                 || !matches!(before.mode.as_str(), "100644" | "100755")
             {

@@ -68,6 +68,7 @@ class SiteCase:
     read_files: tuple[str, ...] = ()
     directory: str = SOURCE_DIR
     holder_paths: tuple[str, ...] = ()
+    has_build_ticket: bool = False
 
 
 def git(repo: Path, *arguments: str) -> str:
@@ -208,6 +209,8 @@ def site_cases() -> tuple[SiteCase, ...]:
                  rule="crate", directory=f"{UNCHANGED_CRATE}/src/", holder_paths=(UNCHANGED_CRATE, ".")),
         SiteCase("unchanged crate inputs", "lib.rs", 2, rule="crate",
                  directory=f"{UNCHANGED_CRATE}/src/", holder_paths=(UNCHANGED_CRATE,)),
+        SiteCase("unchanged crate inputs with build history", "lib.rs", 2, rule="crate",
+                 directory=f"{UNCHANGED_CRATE}/src/", holder_paths=(UNCHANGED_CRATE,), has_build_ticket=True),
         SiteCase("invalid UTF-8 patch from another glob match", "a*.rs", "source or input proof unreadable"),
     )
 
@@ -265,6 +268,15 @@ def insert_finding(
         insert_holder(db, repo, site, path, rule, current, ticket, original)
     if site.rule in {"types", "modules", "inactive", "crate", "partial#uncovered", "departed"}:
         insert_holder(db, repo, site, path, rule, pin, ticket, original)
+    if site.has_build_ticket:
+        build_ticket = f"build-{identity}"
+        db.execute(
+            "INSERT INTO tickets (id,unit,kind,family,rule,crate,files,sites,rules,rule_blobs,state,branch,"
+            "checkpoint,base,created_at,updated_at,finding_ids) "
+            "VALUES (?,?,'build','names',?,'unchanged','[]','[]','[]','{}','merged','main',?,?,?,?,?)",
+            (build_ticket, build_ticket, rule, tip, base, STAMP, STAMP, json.dumps([identity])),
+        )
+        db.execute("UPDATE held_findings SET build_ticket=? WHERE finding_id=?", (build_ticket, identity))
     if site.history == "removed-follow":
         db.execute(
             'INSERT INTO judgments (rule,rule_blob,input_scope,input_fingerprint,path,"commit",verdict,verdict_detail,'

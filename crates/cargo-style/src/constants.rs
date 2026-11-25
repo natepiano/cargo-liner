@@ -13,11 +13,24 @@ pub(crate) const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 // command arguments
 pub(crate) const COVERAGE_SUBCOMMAND: &str = "coverage";
+/// The flag that names the user's answers on decision files for the declaration reading.
+pub(crate) const FINDING_APPROVALS_FLAG: &str = "--approvals";
+/// The flag that selects a base commit for finding footprint searches.
+pub(crate) const FINDING_BASE_FLAG: &str = "--base";
+pub(crate) const FINDING_RENAME_POLICY_FLAG: &str = "--rename-policy";
 pub(crate) const FINDING_RULES_FLAG: &str = "--rules";
 /// The subcommand argument that Cargo inserts.
 pub(crate) const STYLE_SUBCOMMAND: &str = "style";
 /// The flag that requests the binary and protocol versions.
 pub(crate) const VERSION_FLAG: &str = "--version";
+
+// declaration reading
+/// The keywords that a type finding's item head can start with.
+pub(crate) const ITEM_HEAD_KEYWORDS: [&str; 9] = [
+    "fn", "struct", "enum", "union", "trait", "type", "const", "static", "mod",
+];
+/// The keywords of a module item that can own an impl or trait member.
+pub(crate) const OWNER_KEYWORDS: [&str; 5] = ["struct", "enum", "union", "trait", "type"];
 
 // enclosing items
 pub(crate) const ITEMS: &[&str] = &[
@@ -40,7 +53,7 @@ pub(crate) const ITEMS: &[&str] = &[
 pub(crate) const IMPORT_EXPANSION_LIMIT: usize = 32;
 
 // ledger
-pub(crate) const LEDGER_SCHEMA_VERSION: i64 = 47;
+pub(crate) const LEDGER_SCHEMA_VERSIONS: [i64; 2] = [47, 51];
 
 // lines
 /// The line end that Python reads as one boundary, though both characters are boundaries.
@@ -55,8 +68,8 @@ pub(crate) const AUTOJUNK_POPULARITY_DIVISOR: usize = 100;
 pub(crate) const MODULE_SITES_FACT: &str = "module_sites";
 
 // protocol
-pub(crate) const FINDING_PROOF_REPLY_SCHEMA: u32 = 4;
-pub(crate) const FINDING_REPLY_SCHEMA: u32 = 1;
+pub(crate) const FINDING_PROOF_REPLY_SCHEMA: u32 = 7;
+pub(crate) const FINDING_REPLY_SCHEMA: u32 = 5;
 /// The version of the request and reply shapes.
 pub(crate) const PROTOCOL_VERSION: u32 = 1;
 

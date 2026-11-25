@@ -38,6 +38,7 @@ pub(super) use manager::ToastSpec;
 pub use manager::ToastVisualDeadline;
 pub use manager::Toasts;
 pub use navigation::ToastFocus;
+pub(crate) use render::GridStability;
 pub use render::ToastsRenderCtx;
 pub use running_sync::RunningToastSlot;
 pub use running_sync::sync_running_task;

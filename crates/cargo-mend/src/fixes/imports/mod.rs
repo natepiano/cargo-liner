@@ -34,6 +34,7 @@ pub(super) use module_imports::ImportProposal;
 pub(super) use module_imports::ImportReservation;
 pub(super) use module_imports::ModuleContext;
 pub(super) use module_imports::ModuleImports;
+pub(super) use module_imports::RewrittenPaths;
 pub(super) use module_imports::plan_module_imports;
 pub(super) use path::ImportSource;
 pub(super) use scan::scan_selection;

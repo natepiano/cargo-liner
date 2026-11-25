@@ -18,6 +18,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::LazyLock;
@@ -172,6 +173,7 @@ use std::collections::HashSet;
 use std::mem::Discriminant;
 use std::ops::Index;
 use std::ops::IndexMut;
+use std::ops::Range;
 use std::sync::Arc;
 
 use cell_paint::InkSource;
@@ -413,11 +415,13 @@ pub(crate) fn draw(frame: &mut Frame, app: &mut App, keymap: &Keymap<App>) {
     #[cfg(not(feature = "attract"))]
     let summary_frames = draw_visible_panes(frame, app, body, TileGridContents::Shown, prepared);
     draw_status_line(frame, app, keymap, status);
-    let toast_area = app
-        .framework
-        .toasts
-        .area_avoiding_frames(tui_pane::frame_inner(body), &summary_frames.0);
-    tui_pane::render_toasts(frame, &mut app.framework, toast_area);
+    tui_pane::render_toasts_over_grid(
+        frame,
+        &mut app.framework,
+        &app.tiles,
+        tui_pane::frame_inner(body),
+        &summary_frames.0,
+    );
     #[cfg(feature = "attract")]
     tui_pane::draw_favorites_overlay(frame, app);
     tui_pane::draw_framework_overlay(frame, app, keymap, settings::rows);
@@ -5782,8 +5786,7 @@ fn frame_draw_grouped_process_table(
     let PreparedTableViewport {
         mut drawn_groups,
         mut plan,
-        hidden,
-        count_row,
+        hidden_process_count,
     } = prepare_table_viewport(groups, available_height, &ink_layouts, grid);
     let headings = TableAccountHeadings::for_table(groups, pinned, plan.visible_group_count, area);
     if layout.columns.is_empty() {
@@ -5799,9 +5802,11 @@ fn frame_draw_grouped_process_table(
     }
     let resources = planned_resource_readings(&plan, grid);
     apply_planned_row_readings(&mut drawn_groups, &mut plan, &ink_layouts, &resources);
-    let show_count = hidden > 0 && count_row == HiddenProcessCountRow::Reserved;
     let table_area = Rect {
-        height: area.height.saturating_sub(u16::from(show_count)),
+        height: area.height.saturating_sub(u16::from(matches!(
+            hidden_process_count,
+            HiddenProcessCount::Shown(_)
+        ))),
         ..area
     };
     drop(preparation);
@@ -5815,7 +5820,7 @@ fn frame_draw_grouped_process_table(
         &headings,
         &plan,
     );
-    if show_count {
+    if let HiddenProcessCount::Shown(hidden) = hidden_process_count {
         paint_table_continuation(
             buffer,
             table_area,
@@ -5883,12 +5888,17 @@ enum HiddenProcessCountRow {
     Reserved,
 }
 
+/// The hidden process count that the viewport paints.
+enum HiddenProcessCount {
+    Absent,
+    Shown(NonZeroUsize),
+}
+
 /// `PreparedTableViewport` retains process rows and their count row before painting.
 struct PreparedTableViewport<'row> {
-    drawn_groups: Vec<Vec<LaidOutProcessRow<'row>>>,
-    plan:         ProcessTablePlan<'row>,
-    hidden:       usize,
-    count_row:    HiddenProcessCountRow,
+    drawn_groups:         Vec<Vec<LaidOutProcessRow<'row>>>,
+    plan:                 ProcessTablePlan<'row>,
+    hidden_process_count: HiddenProcessCount,
 }
 
 /// Reserve command rows before selecting directories and continuation labels.
@@ -5899,12 +5909,14 @@ fn prepare_table_viewport<'row>(
     grid: &FrameTableColumnGrid,
 ) -> PreparedTableViewport<'row> {
     let mut drawn_groups = prepared_table_groups(groups, layouts);
-    let hidden =
-        frame_preparation::reserve_command_rows(&mut drawn_groups, groups, available_height);
-    let first_heading = groups.first().map_or(0, |group| group.heading.rows());
-    let count_has_row = available_height > first_heading.saturating_add(1);
-    let reserved_count = hidden > 0 && count_has_row;
-    let planned_height = available_height.saturating_sub(u16::from(reserved_count));
+    let count_row = frame_preparation::reserve_command_rows(
+        &mut drawn_groups,
+        groups,
+        available_height,
+        grid.kind,
+    );
+    let planned_height =
+        available_height.saturating_sub(u16::from(count_row == HiddenProcessCountRow::Reserved));
     let plan = planned_table_rows(
         &drawn_groups,
         groups,
@@ -5917,19 +5929,21 @@ fn prepare_table_viewport<'row>(
         PlannedVisibleRows::NoProcessRows => process_count,
         PlannedVisibleRows::ProcessRows(visible) => process_count.saturating_sub(visible.len()),
     };
-    let count_row = if plan.visible_group_count > 0
-        && plan.body_rows_drawn < available_height
-        && (reserved_count || grid.kind == TableKind::Summary)
-    {
-        HiddenProcessCountRow::Reserved
+    let show_count = match grid.kind {
+        TableKind::Command => count_row == HiddenProcessCountRow::Reserved,
+        TableKind::Summary => {
+            plan.visible_group_count > 0 && plan.body_rows_drawn < available_height
+        },
+    };
+    let hidden_process_count = if show_count {
+        NonZeroUsize::new(hidden).map_or(HiddenProcessCount::Absent, HiddenProcessCount::Shown)
     } else {
-        HiddenProcessCountRow::Absent
+        HiddenProcessCount::Absent
     };
     PreparedTableViewport {
         drawn_groups,
         plan,
-        hidden,
-        count_row,
+        hidden_process_count,
     }
 }
 
@@ -5988,7 +6002,7 @@ fn table_draw_reach(
 }
 
 /// A separate row names every process that cannot fit in the table.
-fn draw_hidden_process_count(buffer: &mut Buffer, area: Rect, hidden: usize) {
+fn draw_hidden_process_count(buffer: &mut Buffer, area: Rect, hidden: NonZeroUsize) {
     let area = area.intersection(buffer.area);
     if area.is_empty() {
         return;
@@ -6002,11 +6016,7 @@ fn draw_hidden_process_count(buffer: &mut Buffer, area: Rect, hidden: usize) {
         return;
     }
     let width = usize::from(last.width);
-    let mut label = format!("+{hidden} more");
-    if label.len() > width {
-        label.truncate(width - 1);
-        label.push_str(ELISION);
-    }
+    let label = hidden_process_count_label(hidden, width);
     for x in last.left()..last.right() {
         buffer[(x, last.y)].set_symbol(" ");
     }
@@ -6017,6 +6027,18 @@ fn draw_hidden_process_count(buffer: &mut Buffer, area: Rect, hidden: usize) {
         width,
         Style::default().fg(text_default()),
     );
+}
+
+fn hidden_process_count_label(hidden: NonZeroUsize, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    let mut label = format!("+{hidden} more");
+    if label.len() > width {
+        label.truncate(width - 1);
+        label.push_str(ELISION);
+    }
+    label
 }
 
 /// Prepare the shared table cells before assigning their row budgets.
@@ -6111,38 +6133,72 @@ enum DirectorySeparation {
 
 /// Retained directory separators, with the earliest ones yielded first.
 #[derive(Clone, Copy)]
-struct TableSeparators {
-    first:  usize,
-    groups: usize,
+enum TableSeparators {
+    All { groups: usize },
+    Omitted { groups: usize },
+    Restored { first: usize, groups: usize },
 }
 
 impl TableSeparators {
-    const fn before(&self, group: usize) -> bool {
-        group > 0 && group >= self.first && group < self.groups
+    const fn for_table(groups: usize, retained_gaps: u16) -> Self {
+        if retained_gaps > 0 {
+            Self::All { groups }
+        } else {
+            Self::Omitted { groups }
+        }
     }
 
-    /// Retain every visible gap only when no process row must move.
-    fn for_visible_groups(mut self, visible: usize, remaining: &mut u16) -> Self {
-        if visible < self.groups && visible > 1 {
-            let gaps = u16::try_from(visible.saturating_sub(1))
-                .unwrap_or(u16::MAX)
-                .saturating_mul(GROUP_GAP_HEIGHT);
-            if gaps <= *remaining {
-                self = Self {
-                    first:  1,
+    fn before(self, group: usize) -> bool { self.gaps().contains(&group) }
+
+    const fn gaps(self) -> Range<usize> {
+        match self {
+            Self::All { groups } => 1..groups,
+            Self::Omitted { .. } => 0..0,
+            Self::Restored { first, groups } => first..groups,
+        }
+    }
+
+    /// Use spare command rows for the last visible gaps.
+    fn for_visible_groups(self, visible: usize, remaining: &mut u16, kind: TableKind) -> Self {
+        if let Self::Omitted { groups } = self
+            && visible < groups
+        {
+            let visible_gaps = visible.saturating_sub(1);
+            let gaps = visible_gaps.min(usize::from(*remaining / GROUP_GAP_HEIGHT));
+            if gaps > 0 && (kind == TableKind::Command || gaps == visible_gaps) {
+                let separators = Self::Restored {
+                    first:  visible - gaps,
                     groups: visible,
                 };
-                *remaining = remaining.saturating_sub(gaps);
+                *remaining = remaining.saturating_sub(separators.rows(visible));
+                return separators;
             }
         }
         self
     }
 
     /// Count only gaps that the selected viewport paints.
-    fn rows(&self, visible: usize) -> u16 {
-        u16::try_from((0..visible).filter(|&group| self.before(group)).count())
+    fn rows(self, visible: usize) -> u16 {
+        let gaps = self.gaps();
+        u16::try_from(visible.min(gaps.end).saturating_sub(gaps.start))
             .unwrap_or(u16::MAX)
             .saturating_mul(GROUP_GAP_HEIGHT)
+    }
+
+    /// A restored command gap can still go to a cell that needs a process row.
+    fn lendable_rows(
+        self,
+        visible: usize,
+        separation: DirectorySeparation,
+        kind: TableKind,
+    ) -> u16 {
+        if separation == DirectorySeparation::YieldEarliest
+            || (kind == TableKind::Command && matches!(self, Self::Restored { .. }))
+        {
+            self.rows(visible)
+        } else {
+            0
+        }
     }
 }
 
@@ -6274,7 +6330,7 @@ fn planned_table_rows<'a>(
             header_and_value_visibility: cached.labels,
         };
     }
-    let plan = process_table_plan(groups, directories, height, separation);
+    let plan = process_table_plan(groups, directories, height, separation, layout.kind);
     let visible = match &plan.visible_rows {
         PlannedVisibleRows::NoProcessRows => Vec::new(),
         PlannedVisibleRows::ProcessRows(rows) => groups
@@ -6308,6 +6364,7 @@ fn process_table_plan<'a>(
     directories: &[PathGroup<'_>],
     available_height: u16,
     separation: DirectorySeparation,
+    kind: TableKind,
 ) -> ProcessTablePlan<'a> {
     let all_groups_height = groups
         .iter()
@@ -6323,15 +6380,12 @@ fn process_table_plan<'a>(
     let all_gaps_height = u16::try_from(groups.len().saturating_sub(1))
         .unwrap_or(u16::MAX)
         .saturating_mul(GROUP_GAP_HEIGHT);
-    let retained = if all_groups_height.saturating_add(all_gaps_height) <= available_height {
-        groups.len().saturating_sub(1)
+    let retained_gaps = if all_groups_height.saturating_add(all_gaps_height) <= available_height {
+        all_gaps_height
     } else {
         0
     };
-    let mut separators = TableSeparators {
-        first:  groups.len().saturating_sub(retained),
-        groups: groups.len(),
-    };
+    let separators = TableSeparators::for_table(groups.len(), retained_gaps);
     let mut remaining = available_height;
     let mut visible_group_count = 0;
     let mut visible_rows = Vec::new();
@@ -6363,7 +6417,7 @@ fn process_table_plan<'a>(
             remaining = remaining.saturating_sub(row.lines);
         }
     }
-    separators = separators.for_visible_groups(visible_group_count, &mut remaining);
+    let separators = separators.for_visible_groups(visible_group_count, &mut remaining, kind);
     ProcessTablePlan {
         separators,
         visible_group_count,
@@ -6373,13 +6427,9 @@ fn process_table_plan<'a>(
             PlannedVisibleRows::ProcessRows(visible_rows)
         },
         body_rows_drawn: available_height.saturating_sub(remaining),
-        body_rows_required: available_height.saturating_sub(remaining).saturating_sub(
-            if matches!(separation, DirectorySeparation::YieldEarliest) {
-                separators.rows(visible_group_count)
-            } else {
-                0
-            },
-        ),
+        body_rows_required: available_height
+            .saturating_sub(remaining)
+            .saturating_sub(separators.lendable_rows(visible_group_count, separation, kind)),
         header_and_value_visibility,
     }
 }
@@ -9331,7 +9381,11 @@ mod tests {
             let area = Rect::new(0, 0, width, 24);
             let drawn = [8, 18].map(|hidden| {
                 let mut buffer = Buffer::empty(area);
-                draw_hidden_process_count(&mut buffer, area, hidden);
+                draw_hidden_process_count(
+                    &mut buffer,
+                    area,
+                    NonZeroUsize::new(hidden).expect("hidden processes"),
+                );
                 buffer_line(&buffer, 23).trim().to_owned()
             });
             assert_eq!(drawn, expected);
@@ -9349,7 +9403,11 @@ mod tests {
             for background in [cell_background, Color::Reset] {
                 let mut buffer = Buffer::empty(area);
                 buffer.set_style(area, Style::default().bg(background));
-                draw_hidden_process_count(&mut buffer, area, 18);
+                draw_hidden_process_count(
+                    &mut buffer,
+                    area,
+                    NonZeroUsize::new(18).expect("hidden processes"),
+                );
                 assert_eq!(buffer[(x, 23)].bg, background);
                 assert_eq!(buffer[(x, 23)].fg, foreground);
                 assert_eq!(buffer[(indented(area).right() - 1, 23)].symbol(), " ");
@@ -9938,6 +9996,60 @@ mod tests {
             assert_eq!(count.trim(), format!("+{hidden} more"));
             assert_eq!(actual[(right, changed_y)].symbol(), ELISION);
         }
+    }
+
+    /// Check the count and last pid in a framed cell with single-line processes.
+    fn assert_single_line_cell_counts_hidden_processes(width: u16) {
+        let first_pid = 4100;
+        let last_pid = 4160;
+        let mut group = cargo_group(invocation(first_pid, &["clippy", "--workspace"]));
+        group.rest = (first_pid + 1..=last_pid)
+            .map(|pid| invocation(pid, &["clippy", "-p", "member"]))
+            .collect();
+        let mut roster = Roster::default();
+        roster.observe(vec![group], Instant::now());
+        let content = TileContent::Group(InvocationId::for_test(first_pid));
+        let stats = SccacheStats::default();
+        let area = Rect::new(0, 0, width, 22);
+        let cells = Cells::new(&roster, &[], CommandView::short(), &stats);
+        let inner = tui_pane::frame_inner(area);
+        let mut buffer = Buffer::empty(area);
+        tui_pane::draw_tile_cell(
+            &mut buffer,
+            &content,
+            inner,
+            63,
+            inner.width,
+            |buffer, body| {
+                cells.prepare_frame(|| vec![(content.clone(), body)]);
+                cells.draw(buffer, &content, body, Color::Reset);
+            },
+        );
+
+        let foot_y = inner.bottom() - 1;
+        let count_y = foot_y - 1;
+        let headings = TABLE_HEADER_HEIGHT + GROUP_HEADER_HEIGHT;
+        let visible = u32::from(count_y - inner.top() - headings);
+        let hidden = last_pid - first_pid + 1 - visible;
+        let last_visible_pid = first_pid + visible - 1;
+        let last_body = buffer_line(&buffer, count_y);
+        assert_eq!(last_body.trim(), format!("+{hidden} more"), "width={width}");
+        let last_process = buffer_line(&buffer, count_y - 1);
+        assert_eq!(
+            painted_process_pids(&last_process),
+            [last_visible_pid],
+            "width={width}: {last_process}"
+        );
+    }
+
+    #[test]
+    fn a_full_width_command_cell_counts_its_hidden_processes() {
+        assert_single_line_cell_counts_hidden_processes(160);
+    }
+
+    #[test]
+    fn a_narrow_command_cell_counts_its_hidden_single_line_processes() {
+        assert_single_line_cell_counts_hidden_processes(80);
     }
 
     #[test]
@@ -12495,12 +12607,13 @@ mod tests {
         );
         let mut body_from_bottom = texts[0].lines().rev().skip(1);
         let last_row = body_from_bottom.next().expect("row above foot");
-        let last_process_row = if view.arguments == ArgumentDetail::All {
-            assert_eq!(last_row.trim(), "+29 more");
-            body_from_bottom.next().expect("process row above count")
+        let hidden = if view.arguments == ArgumentDetail::All {
+            29
         } else {
-            last_row
+            30
         };
+        assert_eq!(last_row.trim(), format!("+{hidden} more"), "{texts:#?}");
+        let last_process_row = body_from_bottom.next().expect("process row above count");
         assert_eq!(
             last_process_row.chars().rev().nth(1),
             ELISION.chars().next(),
@@ -13407,6 +13520,10 @@ mod tests {
             .draw(|frame| draw(frame, &mut app, &keymap))
             .expect("settled frame");
         let actual = app.framework.toasts.hits()[0].card_rect;
+        assert_eq!(
+            terminal.backend().buffer()[(actual.x, actual.y)].symbol(),
+            "┌"
+        );
         terminal
             .draw(|frame| {
                 tui_pane::render_toasts(
@@ -13418,10 +13535,6 @@ mod tests {
             .expect("toast alone");
         let expected = app.framework.toasts.hits()[0].card_rect;
         assert_eq!(actual, expected);
-        assert_eq!(
-            terminal.backend().buffer()[(actual.x, actual.y)].symbol(),
-            "┌"
-        );
     }
 
     #[test]
@@ -14589,8 +14702,11 @@ mod tests {
             id:  child.invocation_id.clone(),
             pid: child.pid,
         };
-        let roster = roster_of(parent, vec![child, nested]);
-        let area = Rect::new(0, 0, 200, 4);
+        let mut second_nested = invocation(503, &["check"]);
+        second_nested.resource_use.cpu = Measurement::Reading(40.0);
+        second_nested.parent = nested.parent.clone();
+        let roster = roster_of(parent, vec![child, nested, second_nested]);
+        let area = Rect::new(0, 0, 200, 5);
         let mut buffer = Buffer::empty(area);
         let rows: Vec<_> = roster.groups()[0].rows().collect();
         draw_process_table(
@@ -14602,9 +14718,15 @@ mod tests {
             PinnedGroup::Unpinned,
             CommandView::short(),
         );
-        assert!(buffer_line(&buffer, 2).contains("10%"));
-        assert!(
-            buffer_line(&buffer, 3).contains("50%"),
+        let parent_y = measurement_row_y(TableKind::Command);
+        let child_y = parent_y + 1;
+        assert_eq!(painted_process_pids(&buffer_line(&buffer, parent_y)), [500]);
+        assert_eq!(painted_process_pids(&buffer_line(&buffer, child_y)), [501]);
+        assert_eq!(cpu_cell_text(&buffer, parent_y), "10%", "PID 500 CPU");
+        assert_eq!(cpu_cell_text(&buffer, child_y), "90%", "PID 501 CPU");
+        assert_eq!(
+            buffer_line(&buffer, 4).trim(),
+            "+2 more",
             "{:?}",
             buffer_rows(&buffer)
         );
@@ -14764,8 +14886,10 @@ mod tests {
             id:  parent.invocation_id.clone(),
             pid: parent.pid,
         };
-        let roster = roster_with_ancestry(driver, vec![child, parent], vec![]);
-        for height in [4, 13] {
+        let mut sibling = invocation(4301, &["check"]);
+        sibling.parent = child.parent.clone();
+        let roster = roster_with_ancestry(driver, vec![child, sibling, parent], vec![]);
+        for height in [5, 13] {
             let area = Rect::new(0, 0, 160, height);
             let mut buffer = Buffer::empty(area);
             draw_group(
@@ -14781,8 +14905,9 @@ mod tests {
             let parent_row = lines.iter().position(|line| line.contains("4200"));
             let child_row = lines.iter().position(|line| line.contains("cargo check"));
             assert!(parent_row.is_some(), "{height}: {lines:#?}");
-            if height == 4 {
+            if height == 5 {
                 assert!(child_row.is_none(), "{lines:#?}");
+                assert_eq!(lines[4].trim(), "+2 more", "{lines:#?}");
                 let y = u16::try_from(parent_row.unwrap()).unwrap();
                 assert_eq!(
                     buffer[(cell_width(SECTION_ITEM_INDENT), y)].fg,
@@ -20479,37 +20604,51 @@ mod tests {
         buffer
     }
 
+    const SETTLED_TEST_GROWTH: TileGrowth = TileGrowth {
+        initial_rows:  12,
+        fill:          TileFill::Redistribute,
+        widen_summary: false,
+    };
+
+    fn test_cell_grid() -> TileGrid<InvocationId> {
+        let mut grid = tui_pane::TileGrid::new();
+        grid.set_min_tile_width(MIN_CELL_WIDTH);
+        grid.set_min_tile_height(MIN_CELL_HEIGHT);
+        grid.set_view(TileView::Cells);
+        grid
+    }
+
     /// Draw a settled grid using one cell-content implementation.
     pub(super) fn settled_buffer_with_cells(
         cells: &impl TileCells<InvocationId>,
         area: Rect,
     ) -> (TileGrid<InvocationId>, Buffer) {
-        let growth = TileGrowth {
-            initial_rows:  12,
-            fill:          TileFill::Redistribute,
-            widen_summary: false,
-        };
-        let mut grid = tui_pane::TileGrid::new();
-        grid.set_min_tile_width(MIN_CELL_WIDTH);
-        grid.set_min_tile_height(MIN_CELL_HEIGHT);
-        grid.set_view(TileView::Cells);
+        let mut grid = test_cell_grid();
         let mut buffer = Buffer::empty(area);
         tui_pane::draw_tile_grid(
             &mut buffer,
             &mut grid,
             area,
-            growth,
+            SETTLED_TEST_GROWTH,
             TileGridContents::Shown,
             cells,
             ColorMode::Colored,
         );
+        paint_settled_test_grid(grid, cells, area)
+    }
+
+    fn paint_settled_test_grid(
+        mut grid: TileGrid<InvocationId>,
+        cells: &impl TileCells<InvocationId>,
+        area: Rect,
+    ) -> (TileGrid<InvocationId>, Buffer) {
         grid.settle_for_test();
-        buffer = Buffer::empty(area);
+        let mut buffer = Buffer::empty(area);
         tui_pane::draw_tile_grid(
             &mut buffer,
             &mut grid,
             area,
-            growth,
+            SETTLED_TEST_GROWTH,
             TileGridContents::Shown,
             cells,
             ColorMode::Colored,
@@ -20967,14 +21106,35 @@ mod tests {
         placement.frame.inner().height.saturating_sub(1)
     }
 
-    /// Whether the row immediately above a placement's readout has no text.
+    /// Whether the last content row of a placement has no text. That row is above the readout,
+    /// or above the `draw_hidden_process_count` row of a cell that hides processes.
     fn has_blank_row_above_foot(buffer: &Buffer, placement: &TilePlacement<InvocationId>) -> bool {
         let inner = placement.frame.inner();
         if inner.height < 2 {
             return false;
         }
-        let y = inner.bottom().saturating_sub(2);
-        (inner.left()..inner.right()).all(|x| buffer[(x, y)].symbol().trim().is_empty())
+        let mut y = inner.bottom().saturating_sub(2);
+        let width = usize::from(indented(inner).width);
+        let text = rectangle_row_text(buffer, inner, y);
+        if is_hidden_process_count_label(&text, width) {
+            if y == inner.top() {
+                return false;
+            }
+            y -= 1;
+        }
+        rectangle_row_text(buffer, inner, y).trim().is_empty()
+    }
+
+    fn is_hidden_process_count_label(text: &str, width: usize) -> bool {
+        let text = text.trim();
+        let digits = text
+            .strip_prefix('+')
+            .unwrap_or_default()
+            .split(|character: char| !character.is_ascii_digit())
+            .next()
+            .unwrap_or_default();
+        let hidden = digits.parse().unwrap_or(NonZeroUsize::MIN);
+        !text.is_empty() && text == hidden_process_count_label(hidden, width)
     }
 
     /// Blank content rows inside one placement, excluding its readout.
@@ -21002,13 +21162,15 @@ mod tests {
 
     fn rectangle_text(buffer: &Buffer, area: Rect) -> String {
         (area.top()..area.bottom())
-            .map(|y| {
-                (area.left()..area.right())
-                    .map(|x| buffer[(x, y)].symbol())
-                    .collect::<String>()
-            })
+            .map(|y| rectangle_row_text(buffer, area, y))
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    fn rectangle_row_text(buffer: &Buffer, area: Rect, y: u16) -> String {
+        (area.left()..area.right())
+            .map(|x| buffer[(x, y)].symbol())
+            .collect()
     }
 
     /// Placements that retain a blank row while a column mate is short.
@@ -21017,6 +21179,17 @@ mod tests {
         grid: &TileGrid<InvocationId>,
         buffer: &Buffer,
         area: Rect,
+    ) -> Vec<TileContent> {
+        blank_rows_with_demands(grid, buffer, area, |widths| {
+            tile_demands(roster, widths, &hidden_commands(), CommandView::long())
+        })
+    }
+
+    fn blank_rows_with_demands(
+        grid: &TileGrid<InvocationId>,
+        buffer: &Buffer,
+        area: Rect,
+        measure: impl FnOnce(&[(TileContent, u16)]) -> TileDemands,
     ) -> Vec<TileContent> {
         let growth = TileGrowth {
             initial_rows:  12,
@@ -21028,20 +21201,20 @@ mod tests {
             .iter()
             .map(|placement| (placement.content.clone(), placement.frame.inner().width))
             .collect();
-        let demands = tile_demands(roster, &widths, &hidden_commands(), CommandView::long());
+        let demands = measure(&widths);
         placements
             .iter()
+            .filter(|placement| has_blank_row_above_foot(buffer, placement))
             .filter(|placement| {
                 let frame = placement.frame.rect();
-                let has_short_mate = placements.iter().any(|mate| {
+                placements.iter().any(|mate| {
                     let mate_frame = mate.frame.rect();
                     mate.content != placement.content
                         && mate_frame.x == frame.x
                         && mate_frame.width == frame.width
                         && placement_demand(&demands, &mate.content)
                             > usize::from(placement_content_rows(mate))
-                });
-                has_short_mate && has_blank_row_above_foot(buffer, placement)
+                })
             })
             .map(|placement| placement.content.clone())
             .collect()
@@ -21050,45 +21223,64 @@ mod tests {
     #[test]
     fn a_separator_loan_paints_the_recipients_new_process_rows() {
         let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
-        let area = Rect::new(0, 0, 200, 57);
-        let sccache = SccacheStats::new();
-        let hidden = hidden_commands();
-        let cells = Cells::new(&roster, &hidden, CommandView::short(), &sccache);
-        let (grid, buffer) = settled_buffer_with_cells(&cells, area);
-        let placements = grid.placements(
-            area,
-            TileGrowth {
-                initial_rows:  12,
-                fill:          TileFill::Redistribute,
-                widen_summary: false,
-            },
-        );
-        for (lead, child) in [(4200, 4201), (4400, 4402), (4600, 4602)] {
-            let group = roster
-                .groups()
-                .iter()
-                .find(|group| group.lead.process.pid == lead)
-                .expect("recipient group");
-            let placement = placements
-                .iter()
-                .find(|placement| placement.content == TileContent::Group(group.id.clone()))
-                .expect("recipient frame");
-            let rect = placement.frame.inner();
-            let text: String = (rect.top()..rect.bottom())
-                .flat_map(|y| (rect.left()..rect.right()).map(move |x| (x, y)))
-                .map(|position| buffer[position].symbol())
-                .collect();
-            assert!(text.contains(&child.to_string()), "{lead}: {text}");
+        let growth = TileGrowth {
+            initial_rows:  12,
+            fill:          TileFill::Redistribute,
+            widen_summary: false,
+        };
+        for height in [58, 59] {
+            let area = Rect::new(0, 0, 200, height);
+            let ((grid, buffer), (former_grid, former_buffer)) =
+                row_report_comparison_with_view(&roster, area, CommandView::short());
+            let placements = grid.placements(area, growth);
+            let former_placements = former_grid.placements(area, growth);
+            for lead in [4200, 4400, 4600] {
+                let group = roster
+                    .groups()
+                    .iter()
+                    .find(|group| group.lead.process.pid == lead)
+                    .expect("recipient group");
+                let content = TileContent::Group(group.id.clone());
+                let text = |buffer, placements: &[TilePlacement<InvocationId>]| {
+                    let placement = placements
+                        .iter()
+                        .find(|placement| placement.content == content)
+                        .expect("recipient frame");
+                    placement_text(buffer, placement)
+                };
+                let current = text(&buffer, &placements);
+                let former = text(&former_buffer, &former_placements);
+                let former_pids = painted_process_pids(&former);
+                assert!(
+                    painted_process_pids(&current)
+                        .into_iter()
+                        .any(|pid| pid != lead && !former_pids.contains(&pid)),
+                    "height={height}, pid={lead}\nFormer:\n{former}\nCurrent:\n{current}"
+                );
+            }
         }
+    }
+
+    fn painted_process_pids(text: &str) -> Vec<u32> {
+        text.lines()
+            .filter_map(|line| {
+                let first = line.split_whitespace().next()?;
+                if first.bytes().all(|byte| byte.is_ascii_digit()) {
+                    first.parse().ok()
+                } else {
+                    None
+                }
+            })
+            .collect()
     }
 
     #[test]
     fn a_near_full_summary_yields_separators_for_hidden_process_rows() {
         let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
-        let area = Rect::new(0, 0, 200, 63);
         let sccache = SccacheStats::new();
         let hidden = hidden_commands();
         let cells = Cells::new(&roster, &hidden, CommandView::short(), &sccache);
+        let area = Rect::new(0, 0, 200, 64);
         let (grid, buffer) = settled_buffer_with_cells(&cells, area);
         let placements = grid.placements(
             area,
@@ -21146,18 +21338,40 @@ mod tests {
                 )
             })
             .collect();
+        // `measured_table_row_use` excludes an empty row from the used row count.
         assert_eq!(
             visible,
             vec![
-                vec![4100, 4101],
+                vec![4100],
                 vec![4200, 4201],
-                vec![4300, 4301],
+                vec![4300],
                 vec![4400, 4401, 4402],
                 vec![4500, 4501],
                 vec![4600, 4601, 4602]
             ]
         );
-        assert!(!has_blank_row_above_foot(&buffer, summary));
+    }
+
+    #[test]
+    fn near_full_summary_and_command_cells_leave_no_blank_rows_above_the_foot() {
+        let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
+        let sccache = SccacheStats::new();
+        let hidden = hidden_commands();
+        let cells = Cells::new(&roster, &hidden, CommandView::short(), &sccache);
+        for height in [63, 64] {
+            let area = Rect::new(0, 0, 200, height);
+            let (grid, buffer) = settled_buffer_with_cells(&cells, area);
+            for placement in grid.placements(area, SETTLED_TEST_GROWTH) {
+                if placement.content == TileContent::Summary && height == 63 {
+                    continue;
+                }
+                assert!(
+                    !has_blank_row_above_foot(&buffer, &placement),
+                    "height={height}\n{}",
+                    placement_text(&buffer, &placement)
+                );
+            }
+        }
     }
 
     #[test]
@@ -21204,17 +21418,91 @@ mod tests {
     #[test]
     fn a_command_cell_leaves_no_spare_row_while_a_column_mate_is_short() {
         let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
-        let area = Rect::new(0, 0, 200, 53);
+        let area = Rect::new(0, 0, 200, 58);
         let target = TileContent::Group(roster.groups()[0].id.clone());
-        let (production, without_report) =
-            row_report_comparison_with_view(&roster, area, CommandView::short());
-        let former =
-            blank_rows_beside_hidden_content(&roster, &without_report.0, &without_report.1, area);
-        let repaired =
-            blank_rows_beside_hidden_content(&roster, &production.0, &production.1, area);
-
+        let sccache = SccacheStats::new();
+        let hidden = hidden_commands();
+        let view = CommandView::short();
+        let mut former_cells = Cells::new(&roster, &hidden, view, &sccache);
+        former_cells.grids.summary.0.separation = DirectorySeparation::KeepTogether;
+        let (former_grid, former_buffer) =
+            settled_buffer_with_cells(&CellsWithoutRowReport(former_cells), area);
+        let former = blank_rows_beside_hidden_content(&roster, &former_grid, &former_buffer, area);
         assert!(former.contains(&target));
-        assert!(!repaired.contains(&target));
+
+        let cells = Cells::new(&roster, &hidden, view, &sccache);
+        for height in 53..=67 {
+            let area = Rect { height, ..area };
+            let mut grid = test_cell_grid();
+            grid.prepare_covered(area, SETTLED_TEST_GROWTH, &cells);
+            let (grid, buffer) = paint_settled_test_grid(grid, &cells, area);
+            assert_no_command_cell_keeps_a_row_beside_hidden_content(&cells, &grid, &buffer, area);
+        }
+    }
+
+    fn assert_no_command_cell_keeps_a_row_beside_hidden_content(
+        cells: &Cells<'_>,
+        grid: &TileGrid<InvocationId>,
+        buffer: &Buffer,
+        area: Rect,
+    ) {
+        let repaired = blank_rows_with_demands(grid, buffer, area, |widths| cells.demands(widths));
+        assert!(
+            repaired
+                .iter()
+                .all(|content| !matches!(content, TileContent::Group(_))),
+            "height={}: {repaired:?}",
+            area.height
+        );
+    }
+
+    #[test]
+    fn a_command_cell_uses_its_spare_row_between_the_last_two_directory_groups() {
+        let roster = directory_rich_roster(&[4, 5, 4, 5, 4, 5]);
+        let sccache = SccacheStats::new();
+        let hidden = hidden_commands();
+        let cells = Cells::new(&roster, &hidden, CommandView::short(), &sccache);
+        for height in (57..=67).step_by(2) {
+            let area = Rect::new(0, 0, 200, height);
+            let (grid, buffer) = settled_buffer_with_cells(&cells, area);
+            let placements = grid.placements(area, SETTLED_TEST_GROWTH);
+            let mut last_group_gaps = 0;
+            for placement in placements
+                .iter()
+                .filter(|placement| matches!(placement.content, TileContent::Group(_)))
+            {
+                let inner = placement.frame.inner();
+                let count_y = inner.bottom() - 2;
+                let label = rectangle_row_text(&buffer, inner, count_y);
+                if !is_hidden_process_count_label(&label, usize::from(indented(inner).width)) {
+                    continue;
+                }
+                let text = placement_text(&buffer, placement);
+                assert!(
+                    !has_blank_row_above_foot(&buffer, placement),
+                    "height={height}\n{text}"
+                );
+                let lines: Vec<_> = text.lines().collect();
+                let Some(last_heading) = lines.iter().rposition(|line| line.contains("/dir-"))
+                else {
+                    continue;
+                };
+                if last_heading >= 2 && lines[last_heading - 1].trim().is_empty() {
+                    assert_eq!(
+                        painted_process_pids(lines[last_heading - 2]).len(),
+                        1,
+                        "{text}"
+                    );
+                    assert_eq!(
+                        painted_process_pids(lines[last_heading + 1]).len(),
+                        1,
+                        "{text}"
+                    );
+                    last_group_gaps += 1;
+                }
+            }
+            assert!(last_group_gaps > 0, "height={height}");
+        }
     }
 
     #[test]
@@ -21364,8 +21652,8 @@ mod tests {
     #[test]
     fn a_short_command_cell_takes_the_row_its_column_mate_cannot_use() {
         let roster = directory_rich_roster(&[2, 4, 6, 3, 5, 4]);
-        // Add six heading rows to keep the original process budget.
-        let area = Rect::new(0, 0, 126, 60);
+        // At this height the former grid leaves a blank row in the target cell.
+        let area = Rect::new(0, 0, 126, 61);
         let target = TileContent::Group(roster.groups()[3].id.clone());
         let (production, without_report) =
             row_report_comparison_with_view(&roster, area, CommandView::short());
@@ -22188,7 +22476,7 @@ mod tests {
 
     #[test]
     fn phase_32g_cut_crate_and_hidden_rows_keep_both_marks() {
-        let area = Rect::new(0, 0, 98, 5);
+        let area = Rect::new(0, 0, 98, 6);
         let mut buffer = Buffer::empty(area);
         let mut lead = same_second("/workspace/project", 1_881_177);
         lead.process.resource_use.compiler = CompilerObservation::Running(Compiler {
@@ -22236,12 +22524,13 @@ mod tests {
             buffer_rows(&buffer)
         );
         assert_eq!(buffer[(indented(area).right() - 1, 4)].symbol(), ELISION);
+        assert_eq!(buffer_line(&buffer, 5).trim(), "+1 more");
         assert!(!buffer_rows(&buffer).join("\n").contains("1881400"));
     }
 
     #[test]
     fn a_whole_command_keeps_its_free_cells_before_a_table_continuation_mark() {
-        let area = Rect::new(0, 0, 198, 5);
+        let area = Rect::new(0, 0, 198, 6);
         let mut buffer = Buffer::empty(area);
         let mut lead = same_second("/workspace/project", 1_881_177);
         lead.process.command = CommandText::of("cargo", &["nextest", "run"]);
@@ -22288,6 +22577,7 @@ mod tests {
         );
         assert!(buffer_line(&buffer, 3).contains("/workspace/later"));
         assert_ne!(buffer_line(&buffer, 4), "");
+        assert_eq!(buffer_line(&buffer, 5).trim(), "+1 more");
     }
 
     #[test]
@@ -22580,7 +22870,7 @@ mod tests {
             })
             .collect();
         let rows: Vec<&TrackedRow> = rows.iter().collect();
-        let area = Rect::new(0, 0, 80, 8);
+        let area = Rect::new(0, 0, 80, 9);
         let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
@@ -22613,6 +22903,7 @@ mod tests {
             buffer[(area.right() - CONTENT_RIGHT_INSET - 1, 7)].symbol(),
             ELISION
         );
+        assert_eq!(buffer_line(&buffer, 8).trim(), "+1 more", "{drawn}");
         assert!(!drawn.contains("project-3"), "{drawn}");
     }
 
@@ -22630,7 +22921,7 @@ mod tests {
             })
             .collect();
         let rows: Vec<&TrackedRow> = rows.iter().collect();
-        let area = Rect::new(0, 0, 80, 7);
+        let area = Rect::new(0, 0, 80, 8);
         let layout = CellTableLayout::of(
             &rows,
             TableKind::Command,
@@ -22662,6 +22953,7 @@ mod tests {
             buffer[(area.right() - CONTENT_RIGHT_INSET - 1, 6)].symbol(),
             ELISION
         );
+        assert_eq!(buffer_line(&buffer, 7).trim(), "+1 more", "{drawn}");
         assert!(!drawn.contains("project-3"), "{drawn}");
     }
 

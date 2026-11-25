@@ -17,6 +17,7 @@ use support::output_with_input;
 use support::parity_checkout;
 
 const ORACLE_SOURCE: &[u8] = include_bytes!("oracle/original_site.py");
+const BUILD_CASE: &str = "unchanged crate inputs with build history";
 
 #[derive(Deserialize)]
 struct SiteCase {
@@ -65,6 +66,7 @@ fn original_site_matches_python_in_request_order() -> TestResult<()> {
     let before = std::fs::read(&ledger)?;
 
     assert_site_reply(root, &oracle)?;
+    assert_site_reply_with_policy(root, &oracle)?;
     assert_missing_pin_error(root, &oracle)?;
     for failure in &oracle.failures {
         assert_request_error(root, failure)?;
@@ -104,21 +106,23 @@ fn finding(root: &Path, rules: &str, ids: &[&str]) -> TestResult<Output> {
 }
 
 fn finding_in_ledger(root: &Path, ledger: &str, rules: &str, ids: &[&str]) -> TestResult<Output> {
-    output_with_input(
-        FixtureCommand::new(env!("CARGO_BIN_EXE_cargo-style"))
-            .env("HOME", root.join("home"))
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .arg("finding")
-            .arg("--repo")
-            .arg(root.join("repo"))
-            .arg("--ledger")
-            .arg(root.join(ledger))
-            .arg("--rules")
-            .arg(root.join(rules))
-            .args(ids),
-        &[],
-    )
+    output_with_input(finding_command(root, ledger, rules).args(ids), &[])
+}
+
+fn finding_command(root: &Path, ledger: &str, rules: &str) -> FixtureCommand {
+    let mut command = FixtureCommand::new(env!("CARGO_BIN_EXE_cargo-style"));
+    command
+        .env("HOME", root.join("home"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .arg("finding")
+        .arg("--repo")
+        .arg(root.join("repo"))
+        .arg("--ledger")
+        .arg(root.join(ledger))
+        .arg("--rules")
+        .arg(root.join(rules));
+    command
 }
 
 fn assert_site_reply(root: &Path, oracle: &OracleAnswers) -> TestResult<()> {
@@ -131,39 +135,92 @@ fn assert_site_reply(root: &Path, oracle: &OracleAnswers) -> TestResult<()> {
                 .ok_or("missing oracle finding id")
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let output = finding(root, "rules.json", &ids)?;
+    let mut reply = site_reply(&finding(root, "rules.json", &ids)?, oracle)?;
+    let findings = reply["findings"]
+        .as_array_mut()
+        .ok_or("missing finding replies")?;
+    assert_eq!(findings.len(), ids.len());
+    for (actual, expected) in findings.iter_mut().zip(&oracle.cases) {
+        if matches!(
+            expected.name.as_str(),
+            "unchanged crate inputs" | BUILD_CASE
+        ) {
+            let refusal = json!({
+                "status": "unproved",
+                "reason": "rename admission requires --rename-policy <rename_policy.toml>",
+                "line": 0,
+                "text": ""
+            });
+            assert_eq!(actual["rename_admission"], refusal, "{}", expected.name);
+            if expected.name == BUILD_CASE {
+                assert_eq!(actual["rename_applied"], refusal, "{}", expected.name);
+            }
+        }
+        assert_site_fields(actual, expected)?;
+    }
+    Ok(())
+}
+
+fn assert_site_reply_with_policy(root: &Path, oracle: &OracleAnswers) -> TestResult<()> {
+    let expected = oracle
+        .cases
+        .iter()
+        .find(|case| case.name == BUILD_CASE)
+        .ok_or("missing build case")?;
+    let id = expected.answer["id"]
+        .as_str()
+        .ok_or("missing build finding id")?;
+    let policy = root.join("rename_policy.toml");
+    std::fs::write(&policy, b"inert_attributes = []\nstd_macros = []\n")?;
+    let output = output_with_input(
+        finding_command(root, "ledger.sqlite", "rules.json")
+            .arg("--rename-policy")
+            .arg(policy)
+            .arg(id),
+        &[],
+    )?;
+    let mut reply = site_reply(&output, oracle)?;
+    let actual = &mut reply["findings"][0];
+    assert_eq!(actual["rename_admission"]["status"], "admitted");
+    assert_eq!(actual["rename_applied"]["status"], "not_applied");
+    assert_site_fields(actual, expected)
+}
+
+fn site_reply(output: &Output, oracle: &OracleAnswers) -> TestResult<Value> {
     assert!(
         output.status.success(),
         "The finding request did not return original_site: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(output.stderr.as_slice(), b"");
-    let mut reply: Value = serde_json::from_slice(&output.stdout)?;
-    assert_eq!(reply["schema"], 4);
+    let reply: Value = serde_json::from_slice(&output.stdout)?;
+    assert_eq!(reply["schema"], 7);
     assert_eq!(
         reply["observed"],
         json!({"synced_tip":oracle.synced_tip, "ledger_revision":"absent"})
     );
-    let findings = reply["findings"]
-        .as_array_mut()
-        .ok_or("missing finding replies")?;
-    assert_eq!(findings.len(), ids.len());
-    for (actual, expected) in findings.iter_mut().zip(&oracle.cases) {
-        if expected.answer.get("original_site").is_some() {
-            let entry = actual.as_object_mut().ok_or("expected a finding object")?;
-            assert!(
-                entry.remove("same_declaration").is_some(),
-                "{} is missing same_declaration",
-                expected.name
-            );
-            assert!(
-                entry.remove("outside_rename").is_some(),
-                "{} is missing outside_rename",
-                expected.name
-            );
+    Ok(reply)
+}
+
+fn assert_site_fields(actual: &mut Value, expected: &SiteCase) -> TestResult<()> {
+    if expected.answer["status"] != "unknown_finding" {
+        let fields = actual.as_object_mut().ok_or("expected a finding object")?;
+        for field in [
+            "same_declaration",
+            "outside_rename",
+            "rename_admission",
+            "rename_applied",
+            "footprint",
+            "declaration",
+            "site_evidence",
+            "approvals",
+        ] {
+            let _ = fields
+                .remove(field)
+                .ok_or_else(|| format!("{}: missing {field}", expected.name))?;
         }
-        assert_eq!(&*actual, &expected.answer, "{}", expected.name);
     }
+    assert_eq!(&*actual, &expected.answer, "{}", expected.name);
     Ok(())
 }
 

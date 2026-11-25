@@ -42,6 +42,7 @@ use crate::tip_view::FingerprintSource;
 use crate::tip_view::MissingInput;
 use crate::tip_view::RepositoryTip;
 
+#[derive(Clone)]
 pub(crate) enum OriginalSite {
     Unchanged {
         site:   SourceCoordinate,
@@ -50,13 +51,17 @@ pub(crate) enum OriginalSite {
     NeedsJudgment(SiteRefusal),
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct SourceCoordinate {
     path: String,
     line: usize,
 }
 
-#[derive(Debug, Serialize)]
+impl SourceCoordinate {
+    pub(crate) const fn new(path: String, line: usize) -> Self { Self { path, line } }
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub(crate) enum SiteRefusal {
     #[serde(rename = "not an open Rust finding")]
     NotOpenRust,

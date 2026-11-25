@@ -109,7 +109,9 @@ use crate::reservation::OrphanRetirementReason;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::reservation::WorktreeRecoveryReason;
+use crate::scope::DeclaredReservationScopeError;
 use crate::scope::DeclaredReservationScopeSet;
+use crate::scope::DeclaredReservationScopeSetError;
 use crate::session;
 use crate::session::HookHarnessSessionSelection;
 use crate::verb::board;
@@ -237,7 +239,7 @@ enum Command {
     Hook(HookArguments),
     /// Claim paths for a reservation.
     #[command(long_about = CLAIM_LONG_ABOUT)]
-    Claim(ClaimArguments),
+    Claim(Box<ClaimArguments>),
     /// Compare observed worktree changes with an active reservation.
     Drift(DriftArguments),
     /// Checkpoint work for release when merged into its target.
@@ -513,23 +515,26 @@ impl BoardArguments {
     }
 }
 
-/// A command whose first argument is one or more repository paths.
+/// Repository paths supplied to a claim or an edit check.
 #[derive(Debug, Args)]
 struct PathArguments {
     /// The paths to check; unprefixed paths are files, while `tree:` includes descendants.
-    #[arg(required = true, value_name = PATH_VALUE_NAME)]
-    paths:       Vec<PathBuf>,
-    /// The output representation requested for this command.
-    #[command(flatten)]
-    json_output: JsonOutput,
+    #[arg(required_unless_present = "literal_paths", value_name = PATH_VALUE_NAME)]
+    paths:         Vec<PathBuf>,
+    /// Take one path literally. Repeat for each path.
+    #[arg(long = "path", value_name = PATH_VALUE_NAME)]
+    literal_paths: Vec<PathBuf>,
 }
 
 /// Edit-check paths and the reservation the caller intends to continue.
 #[derive(Debug, Args)]
 struct CheckArguments {
-    /// The paths and output representation for this check.
+    /// The paths for this check.
     #[command(flatten)]
     path_arguments: PathArguments,
+    /// The output representation requested for this command.
+    #[command(flatten)]
+    json_output:    JsonOutput,
     /// Continue the named active reservation held by the acting run and worktree.
     #[arg(long = RESERVATION_ARGUMENT, value_name = RESERVATION_VALUE_NAME)]
     reservation:    Option<ReservationId>,
@@ -559,10 +564,9 @@ struct ClaimArguments {
     /// The local branch into which this reservation integrates.
     #[arg(long, value_name = "BRANCH")]
     target:               Option<String>,
-    /// The repository paths to reserve; unprefixed paths are files, while `tree:` includes
-    /// descendants.
-    #[arg(required = true, value_name = PATH_VALUE_NAME)]
-    paths:                Vec<PathBuf>,
+    /// The repository paths to reserve.
+    #[command(flatten)]
+    path_arguments:       PathArguments,
     /// Sequence this reservation before the blocking reservation; repeat once per holder, and
     /// mix with --after for the other holders.
     #[arg(
@@ -920,15 +924,18 @@ impl Command {
                     },
                 };
             },
-            Self::Check(check_arguments) => match check_arguments.into_check_request() {
-                Ok(check_request) => check::execute(check_request, recovery_command_line),
-                Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
+            Self::Check(check_arguments) => {
+                let recovery = check_arguments.recovery_command_line();
+                match check_arguments.into_check_request(&recovery) {
+                    Ok(check_request) => check::execute(check_request, &recovery),
+                    Err(error) => OutputEnvelope::invalid_input(CommandVerb::Check, &error),
+                }
             },
             Self::Hook(HookArguments { command }) => {
                 return CommandOutputOwnership::HookOwnsItsResponse(command);
             },
             Self::Claim(claim_arguments) => match claim_arguments.into_claim_request() {
-                Ok(claim_request) => claim::execute(claim_request, recovery_command_line),
+                Ok((claim_request, recovery)) => claim::execute(claim_request, &recovery),
                 Err(error) => OutputEnvelope::invalid_input(CommandVerb::Claim, &error),
             },
             Self::Drift(drift_arguments) => {
@@ -982,9 +989,7 @@ impl Command {
         match self {
             Self::Init(init_arguments) => init_arguments.json_output.output_format(),
             Self::Board(board_arguments) => board_arguments.json_output.output_format(),
-            Self::Check(check_arguments) => {
-                check_arguments.path_arguments.json_output.output_format()
-            },
+            Self::Check(check_arguments) => check_arguments.json_output.output_format(),
             Self::Hook(_) => CliOutputFormat::Text,
             Self::Claim(claim_arguments) => claim_arguments.json_output.output_format(),
             Self::Drift(drift_arguments) => drift_arguments.json_output.output_format(),
@@ -1155,17 +1160,64 @@ enum CommandOutputOwnership {
 }
 
 impl CheckArguments {
-    fn into_check_request(self) -> Result<CheckRequest, String> {
+    fn recovery_command_line(&self) -> RecoveryCommandLine {
+        let mut options = Vec::new();
+        if let Some(reservation) = self.reservation {
+            options.extend(["--reservation".into(), reservation.to_string().into()]);
+        }
+        if self.json_output.json {
+            options.push("--json".into());
+        }
+        self.path_arguments.recovery_command_line("check", options)
+    }
+
+    fn into_check_request(self, recovery: &RecoveryCommandLine) -> Result<CheckRequest, String> {
         let reservation_selection = self.reservation.map_or(
             CheckReservationSelection::SessionMappingOrNew,
             CheckReservationSelection::Explicit,
         );
-        DeclaredReservationScopeSet::parse(self.path_arguments.paths, ScopeKind::File)
+        self.path_arguments
+            .into_declared_scopes(recovery)
             .map(|declared_scopes| CheckRequest {
                 declared_scopes,
                 reservation_selection,
             })
-            .map_err(|error| error.to_string())
+    }
+}
+
+impl PathArguments {
+    fn recovery_command_line(&self, verb: &str, options: Vec<OsString>) -> RecoveryCommandLine {
+        RecoveryCommandLine::scope_command(
+            std::env::args_os(),
+            verb,
+            options,
+            self.paths.iter().chain(&self.literal_paths),
+        )
+    }
+
+    fn into_declared_scopes(
+        self,
+        recovery: &RecoveryCommandLine,
+    ) -> Result<DeclaredReservationScopeSet, String> {
+        DeclaredReservationScopeSet::parse_arguments(
+            self.paths,
+            self.literal_paths,
+            ScopeKind::File,
+        )
+        .map_err(|error| {
+            if matches!(
+                error,
+                DeclaredReservationScopeSetError::InvalidScope(
+                    DeclaredReservationScopeError::ExistingPathPart { .. }
+                        | DeclaredReservationScopeError::MissingParent(_)
+                )
+            ) && let Some(command) = recovery.render()
+            {
+                format!("{error} If each argument names one literal path, run `{command}`.")
+            } else {
+                error.to_string()
+            }
+        })
     }
 }
 
@@ -1196,12 +1248,40 @@ impl InitArguments {
 }
 
 impl ClaimArguments {
+    fn recovery_command_line(&self, answer_recovery: &ClaimRecoveryCommand) -> RecoveryCommandLine {
+        let mut options = Vec::new();
+        for selector in &answer_recovery.selectors {
+            let (flag, value) = selector.argument();
+            append_recovery_option(&mut options, flag, value);
+        }
+        for (flag, holders) in [
+            ("--before", self.before.as_slice()),
+            ("--after", self.after.as_slice()),
+            ("--defer", self.defer.as_slice()),
+            ("--override", self.override_reservation.as_slice()),
+        ] {
+            for holder in holders {
+                options.extend([flag.into(), holder.to_string().into()]);
+            }
+        }
+        if let Some(reason) = &self.overlap_why {
+            append_recovery_option(&mut options, "--overlap-why", reason.clone());
+        }
+        if self.replace {
+            options.push("--replace".into());
+        }
+        if self.json_output.json {
+            options.push("--json".into());
+        }
+        self.path_arguments.recovery_command_line("claim", options)
+    }
+
     /// Retain the typed CLI selections before domain validation consumes them.
     fn answer_recovery(&self) -> ClaimRecoveryCommand {
         let Self {
             reservation,
             target,
-            paths,
+            path_arguments,
             before: _,
             after: _,
             defer: _,
@@ -1238,19 +1318,25 @@ impl ClaimArguments {
             selectors.push(ClaimRecoverySelector::Head(head.clone()));
         }
         ClaimRecoveryCommand {
-            paths: paths.clone(),
+            paths: path_arguments
+                .paths
+                .iter()
+                .chain(&path_arguments.literal_paths)
+                .cloned()
+                .collect(),
             selectors,
             replacement: OrderingReplacement::from(*replace),
             output: json_output.output_format(),
         }
     }
 
-    fn into_claim_request(self) -> Result<ClaimRequest, String> {
+    fn into_claim_request(self) -> Result<(ClaimRequest, RecoveryCommandLine), String> {
         let answer_recovery = self.answer_recovery();
+        let recovery = self.recovery_command_line(&answer_recovery);
         let Self {
             reservation,
             target,
-            paths,
+            path_arguments,
             before,
             after,
             defer,
@@ -1271,8 +1357,7 @@ impl ClaimArguments {
         // spelling reported one file. `hook::pre_tool_use::check_request` agrees on `File`, which
         // is why one path acquired by first touch recorded `file` and the same path acquired by an
         // explicit claim recorded `tree`.
-        let declared_scopes = DeclaredReservationScopeSet::parse(paths, ScopeKind::File)
-            .map_err(|error| error.to_string())?;
+        let declared_scopes = path_arguments.into_declared_scopes(&recovery)?;
         let source = match (plan, phase) {
             (Some(plan), Some(phase)) => ClaimSource::WorkPlan { plan, phase },
             (None, None) => ClaimSource::Explicit,
@@ -1300,7 +1385,7 @@ impl ClaimArguments {
             overlap_why.as_deref(),
         )?;
         let overlap_authorization = overlap_authorization_request(overlap_selection);
-        Ok(ClaimRequest {
+        let request = ClaimRequest {
             answer_recovery,
             reservation_selection: reservation.map_or(
                 ClaimReservationSelection::NewReservation,
@@ -1320,7 +1405,16 @@ impl ClaimArguments {
             ),
             phase_start,
             overlap_authorization,
-        })
+        };
+        Ok((request, recovery))
+    }
+}
+
+fn append_recovery_option(options: &mut Vec<OsString>, flag: &str, value: String) {
+    if value.starts_with('-') {
+        options.push(format!("{flag}={value}").into());
+    } else {
+        options.extend([flag.into(), value.into()]);
     }
 }
 
@@ -3756,7 +3850,9 @@ mod tests {
         ))
         .map_err(|error| error.to_string())?;
         match cli.command {
-            Command::Claim(claim_arguments) => claim_arguments.into_claim_request(),
+            Command::Claim(claim_arguments) => claim_arguments
+                .into_claim_request()
+                .map(|(request, _)| request),
             _ => Err("expected claim command".to_owned()),
         }
     }
@@ -3778,7 +3874,7 @@ mod tests {
         let arguments = arguments
             .into_iter()
             .map(|argument| match argument.as_str() {
-                "<paths...>" => "src/lib.rs".to_owned(),
+                "<path>" => "src/lib.rs".to_owned(),
                 HOLDER_RESERVATION_ID_PLACEHOLDER => RESERVATION_ID.to_owned(),
                 "<reason>" => "the overlap is coordinated".to_owned(),
                 _ => argument,
@@ -3788,7 +3884,7 @@ mod tests {
             format!("rendered overlap answer command `{rendered_command}` did not parse: {error}")
         })?;
         match cli.command {
-            Command::Claim(claim_arguments) => Ok(claim_arguments),
+            Command::Claim(claim_arguments) => Ok(*claim_arguments),
             _ => Err(format!(
                 "rendered overlap answer command `{rendered_command}` did not select `claim`"
             )),

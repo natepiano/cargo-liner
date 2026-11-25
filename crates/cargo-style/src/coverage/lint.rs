@@ -16,12 +16,13 @@ use serde_json::Serializer;
 use serde_json::ser::Formatter;
 use sha2::Digest as _;
 use sha2::Sha256;
+use toml::Table;
 
 use super::CoverageError;
 use super::constants::MEND_GLOBAL_CONFIG;
 use super::constants::MEND_REPO_CONFIG;
 use crate::error::ReaderError;
-use crate::facts::python_json_digest;
+use crate::facts;
 use crate::finding_source::EntryKind;
 use crate::finding_source::FindingSource;
 use crate::finding_source::SourceText;
@@ -147,7 +148,7 @@ pub(super) fn config_digest(
             let SourceText::Utf8(text) = source.source(&entry.object)? else {
                 return Err(CoverageError::UnreadableLintManifest(path.clone()));
             };
-            let manifest: toml::Table = toml::from_str(text.lines.text()).map_err(|source| {
+            let manifest: Table = toml::from_str(text.lines.text()).map_err(|source| {
                 CoverageError::LintManifest {
                     path:   path.clone(),
                     source: Box::new(source),
@@ -186,7 +187,7 @@ pub(super) fn config_digest(
             inputs.push(("global:cargo-mend/config.toml", digest));
         }
     }
-    Ok(python_json_digest(&inputs)?)
+    Ok(facts::python_json_digest(&inputs)?)
 }
 
 /// Match the spaces and ASCII escapes in the Python JSON inside each manifest row.

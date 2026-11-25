@@ -11,12 +11,9 @@ use rusqlite::Statement;
 
 use super::CoverageError;
 use super::constants::LEDGER_READ_ATTEMPTS;
-use super::constants::PINNED_PYTHON_LEDGER_SCHEMA;
-use crate::constants::LEDGER_SCHEMA_VERSION;
+use crate::constants::LEDGER_SCHEMA_VERSIONS;
+use crate::ledger_read;
 use crate::ledger_read::LedgerReadFailure;
-use crate::ledger_read::invalid_row;
-use crate::ledger_read::read_column;
-use crate::ledger_read::read_revision;
 use crate::site_ledger::InputScope;
 use crate::site_ledger::ReadScope;
 use crate::sqlite_read;
@@ -60,8 +57,9 @@ pub(super) struct Judgment {
 impl Judgment {
     fn read(row: &Row<'_>) -> Result<Self, LedgerReadFailure> {
         let key = row.get::<_, i64>("id")?.to_string();
-        let text = |name| read_column::<String>(row, ACTIVE_JUDGMENTS, &key, name);
-        let invalid = |name, value: &str| invalid_row(ACTIVE_JUDGMENTS, &key, name, &value);
+        let text = |name| ledger_read::read_column::<String>(row, ACTIVE_JUDGMENTS, &key, name);
+        let invalid =
+            |name, value: &str| ledger_read::invalid_row(ACTIVE_JUDGMENTS, &key, name, &value);
         let scope = match text("input_scope")?.as_str() {
             "file" => InputScope::File,
             "module" => InputScope::Module,
@@ -83,8 +81,9 @@ impl Judgment {
         let reads = match text("read_files")?.as_str() {
             "null" => ReadScope::Inferred,
             serialized => {
-                let paths: Vec<String> = serde_json::from_str(serialized)
-                    .map_err(|error| invalid_row(ACTIVE_JUDGMENTS, &key, "read_files", &error))?;
+                let paths: Vec<String> = serde_json::from_str(serialized).map_err(|error| {
+                    ledger_read::invalid_row(ACTIVE_JUDGMENTS, &key, "read_files", &error)
+                })?;
                 if paths.is_empty() {
                     return Err(invalid("read_files", "expected at least one path"));
                 }
@@ -93,7 +92,7 @@ impl Judgment {
         };
         Ok(Self {
             pin: text("rule_blob")?,
-            commit: read_revision(row, ACTIVE_JUDGMENTS, &key, "commit")?,
+            commit: ledger_read::read_revision(row, ACTIVE_JUDGMENTS, &key, "commit")?,
             fingerprint: text("input_fingerprint")?,
             scope,
             declared,
@@ -132,10 +131,7 @@ impl<'a> CoverageLedger<'a> {
         let versions = statement
             .query_map([], |row| row.get::<_, i64>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        if !matches!(
-            versions.as_slice(),
-            [LEDGER_SCHEMA_VERSION | PINNED_PYTHON_LEDGER_SCHEMA]
-        ) {
+        if !matches!(versions.as_slice(), [version] if LEDGER_SCHEMA_VERSIONS.contains(version)) {
             return Err(LedgerReadFailure::UnsupportedSchema(format!(
                 "{versions:?}"
             )));
@@ -145,7 +141,7 @@ impl<'a> CoverageLedger<'a> {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })?;
         if gix::ObjectId::from_hex(commit.as_bytes()).is_err() {
-            return Err(invalid_row(
+            return Err(ledger_read::invalid_row(
                 "sync",
                 "1",
                 "tip",

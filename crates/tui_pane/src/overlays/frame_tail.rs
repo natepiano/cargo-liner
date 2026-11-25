@@ -1,5 +1,6 @@
 //! The framework overlays drawn after an app's panes.
 
+use std::fmt::Debug;
 use std::time::Instant;
 
 use ratatui::Frame;
@@ -15,7 +16,9 @@ use crate::Keymap;
 use crate::PaneFocusState;
 use crate::Renderable;
 use crate::SettingsRows;
+use crate::TileGrid;
 use crate::ToastsRenderCtx;
+use crate::toasts::GridStability;
 
 /// Draw the framework's toasts inside `area`.
 pub fn render_toasts<Ctx: AppContext>(
@@ -23,15 +26,40 @@ pub fn render_toasts<Ctx: AppContext>(
     framework: &mut Framework<Ctx>,
     rect: Rect,
 ) {
-    Renderable::render(
-        &mut framework.toasts,
+    Renderable::render(&mut framework.toasts, frame, rect, &frame_toasts_ctx());
+}
+
+/// Draw the framework's toasts over `grid` in `viewport`.
+///
+/// Keep the cards in place while `grid` moves, even over the feet of
+/// `protected_frames`. After motion, move clear of the feet if the cards fit.
+pub fn render_toasts_over_grid<Ctx: AppContext, Id: Clone + Eq + Debug>(
+    frame: &mut Frame,
+    framework: &mut Framework<Ctx>,
+    grid: &TileGrid<Id>,
+    viewport: Rect,
+    protected_frames: &[Rect],
+) {
+    let grid_stability = if grid.has_pending_motion() {
+        GridStability::Moving
+    } else {
+        GridStability::Settled
+    };
+    framework.toasts.render_over_grid(
         frame,
-        rect,
-        &ToastsRenderCtx {
-            now:              Instant::now(),
-            pane_focus_state: PaneFocusState::Inactive,
-        },
+        viewport,
+        protected_frames,
+        grid_stability,
+        &frame_toasts_ctx(),
     );
+}
+
+/// The `ToastsRenderCtx` for toasts drawn after the app's panes: now, with no pane focus.
+fn frame_toasts_ctx() -> ToastsRenderCtx {
+    ToastsRenderCtx {
+        now:              Instant::now(),
+        pane_focus_state: PaneFocusState::Inactive,
+    }
 }
 
 /// Draw whichever framework overlay is open: settings with the app's
