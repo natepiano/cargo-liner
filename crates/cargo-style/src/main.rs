@@ -6,9 +6,13 @@
 //! the value. Each fact matches the Python reader in `scripts/style` that it ports.
 //! `RAYON_NUM_THREADS` sets the thread count; the default is one thread for each CPU.
 
+mod applied_tickets;
+mod binding;
 mod blob_reader;
 mod cache_constants;
 mod constants;
+mod coverage;
+mod declaration_reading;
 mod declaration_source;
 mod declarations;
 mod enclosing_items;
@@ -18,6 +22,7 @@ mod facts;
 mod finding;
 mod finding_anchor;
 mod finding_source;
+mod footprint;
 mod ledger_read;
 mod module_scan;
 mod module_sites;
@@ -27,10 +32,14 @@ mod outside_bindings;
 mod outside_mapping;
 mod outside_rename;
 mod relocation_ledger;
+mod rename_admission;
+mod rename_applied;
+mod rename_classifiers;
 mod request;
 mod rule_snapshot;
 mod same_declaration;
 mod site_ledger;
+mod sites;
 mod source_lines;
 mod source_sites;
 mod sqlite_read;
@@ -56,11 +65,14 @@ use crate::constants::VERSION_FLAG;
 use crate::finding::FINDING_SUBCOMMAND;
 use crate::finding::FindingRequest;
 use crate::request::Request;
+use crate::sites::SITES_SUBCOMMAND;
 
 /// The operation selected by a direct call or the Cargo subcommand.
 enum ReaderCommand {
+    Coverage(IntoIter<OsString>),
     Facts,
     Finding(IntoIter<OsString>),
+    Sites(IntoIter<OsString>),
     Version,
 }
 
@@ -74,10 +86,14 @@ impl From<Vec<OsString>> for ReaderCommand {
             first
         };
         match operation.as_deref() {
+            Some(argument) if argument == OsStr::new(constants::COVERAGE_SUBCOMMAND) => {
+                Self::Coverage(arguments)
+            },
             Some(argument) if argument == OsStr::new(VERSION_FLAG) => Self::Version,
             Some(argument) if argument == OsStr::new(FINDING_SUBCOMMAND) => {
                 Self::Finding(arguments)
             },
+            Some(argument) if argument == OsStr::new(SITES_SUBCOMMAND) => Self::Sites(arguments),
             _ => Self::Facts,
         }
     }
@@ -89,6 +105,7 @@ impl From<Vec<OsString>> for ReaderCommand {
 )]
 fn main() -> ExitCode {
     match ReaderCommand::from(std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        ReaderCommand::Coverage(arguments) => return coverage::run(arguments),
         ReaderCommand::Version => {
             println!(
                 "cargo-style {} protocol {PROTOCOL_VERSION}",
@@ -109,6 +126,19 @@ fn main() -> ExitCode {
             };
         },
         ReaderCommand::Facts => {},
+        ReaderCommand::Sites(arguments) => {
+            return match sites::SitesRequest::parse(arguments).and_then(sites::SitesRequest::answer)
+            {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!(
+                        "cargo-style: {}",
+                        error_chain(&error).replace(['\r', '\n'], " ")
+                    );
+                    ExitCode::FAILURE
+                },
+            };
+        },
     }
 
     // SAFETY: The locale changes before the reader starts any worker threads.

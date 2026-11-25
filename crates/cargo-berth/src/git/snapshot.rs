@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 use super::command;
 use super::constants::GIT_HEAD_REVISION;
+use super::constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
 use super::constants::GIT_NUL_TERMINATED_ARG;
 use super::constants::GIT_PORCELAIN_ARG;
 use super::constants::GIT_SYMBOLIC_REF_COMMAND;
@@ -28,11 +29,18 @@ use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
+use crate::scope::PathCase;
 
 /// Successful staged, unstaged and untracked path observations in porcelain format.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct CheckoutStatus {
     pub(crate) porcelain: Vec<u8>,
+}
+
+/// Whether the scoped status found a change on the requested path.
+pub(crate) enum EditedPathStatus {
+    Clean,
+    Changed,
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -152,7 +160,7 @@ impl RepositorySnapshot {
     /// Keep one status result for staged, unstaged and untracked paths.
     pub(crate) fn working_tree_status(&self) -> Result<&CheckoutStatus, GitError> {
         self.status
-            .read(|| Self::read_checkout_status(self.repository_root()))
+            .read(|| Self::read_checkout_status(self.repository_root(), &[]))
     }
 
     /// Each holder checkout has one status observation in this operation, even
@@ -172,19 +180,47 @@ impl RepositorySnapshot {
             .entry(checkout.clone())
             .or_insert_with(|| Arc::new(RepositoryFact::unread()))
             .clone();
-        fact.read(|| Self::read_checkout_status(&checkout)).cloned()
+        fact.read(|| Self::read_checkout_status(&checkout, &[]))
+            .cloned()
     }
 
-    fn read_checkout_status(checkout: &Path) -> Result<CheckoutStatus, GitError> {
-        read::status(checkout)?
+    /// Observe one literal path. This result carries no whole-worktree status.
+    pub(crate) fn edited_path_status_at(
+        checkout: &Path,
+        path: &ReservationScopePath,
+        path_case: PathCase,
+    ) -> Result<EditedPathStatus, GitError> {
+        let prefix = match path_case {
+            PathCase::Sensitive => GIT_LITERAL_TOP_PATHSPEC_PREFIX,
+            PathCase::Insensitive => ":(top,literal,icase)",
+        };
+        let pathspec = format!("{prefix}{path}");
+        let status = Self::read_checkout_status(checkout, &[pathspec])?;
+        Ok(if status.porcelain.is_empty() {
+            EditedPathStatus::Clean
+        } else {
+            EditedPathStatus::Changed
+        })
+    }
+
+    fn read_checkout_status(
+        checkout: &Path,
+        pathspecs: &[String],
+    ) -> Result<CheckoutStatus, GitError> {
+        read::status_for_pathspecs(checkout, pathspecs)?
             .or_git(|| {
-                let output = command::command_output(command::git_command(checkout)?.args([
-                    "status",
-                    "--porcelain",
-                    "-z",
-                    "--no-renames",
-                    "--untracked-files=all",
-                ]))?;
+                let output = command::command_output(
+                    command::git_command(checkout)?
+                        .args([
+                            "status",
+                            "--porcelain",
+                            "-z",
+                            "--no-renames",
+                            "--untracked-files=all",
+                            "--",
+                        ])
+                        .args(pathspecs),
+                )?;
                 if output.status.success() {
                     Ok(output.stdout)
                 } else {

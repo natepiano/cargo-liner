@@ -155,18 +155,18 @@ impl AnchorFixture {
             String::from_utf8_lossy(&output.stderr)
         );
         assert_eq!(output.stderr.as_slice(), b"");
-        let reply: Value = serde_json::from_slice(&output.stdout)?;
-        assert_eq!(reply["schema"], 1);
+        let mut reply: Value = serde_json::from_slice(&output.stdout)?;
+        assert_eq!(reply["schema"], 5);
         assert_eq!(
             reply["observed"],
             json!({"synced_tip":self.oracle.synced_tip, "ledger_revision":ledger_revision})
         );
         let findings = reply["findings"]
-            .as_array()
+            .as_array_mut()
             .ok_or("the reply has no findings array")?;
         assert_eq!(findings.len(), ids.len());
-        for (actual, expected) in findings.iter().zip(&self.oracle.cases) {
-            assert_eq!(actual, &expected.answer, "{}", expected.case);
+        for (actual, expected) in findings.iter_mut().zip(&self.oracle.cases) {
+            expected.assert_anchor_fields(actual)?;
         }
         assert_eq!(std::fs::read(&ledger)?, before, "the ledger bytes changed");
         Ok(())
@@ -209,9 +209,28 @@ impl AnchorCase {
             self.case,
             String::from_utf8_lossy(&output.stderr)
         );
-        let reply: Value = serde_json::from_slice(&output.stdout)?;
-        assert_eq!(reply["findings"], json!([self.answer]), "{}", self.case);
+        let mut reply: Value = serde_json::from_slice(&output.stdout)?;
+        let findings = reply["findings"]
+            .as_array_mut()
+            .ok_or("the reply has no findings array")?;
+        let [actual] = findings.as_mut_slice() else {
+            return Err(format!("{}: expected one finding, got {findings:?}", self.case).into());
+        };
+        self.assert_anchor_fields(actual)?;
         Ok(reply)
+    }
+
+    fn assert_anchor_fields(&self, actual: &mut Value) -> TestResult<()> {
+        if self.answer["status"] != "unknown_finding" {
+            let fields = actual.as_object_mut().ok_or("expected a finding object")?;
+            for field in ["rename_admission", "rename_applied"] {
+                let _ = fields
+                    .remove(field)
+                    .ok_or_else(|| format!("{}: missing {field}", self.case))?;
+            }
+        }
+        assert_eq!(&*actual, &self.answer, "{}", self.case);
+        Ok(())
     }
 }
 

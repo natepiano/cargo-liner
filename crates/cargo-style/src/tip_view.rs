@@ -401,7 +401,8 @@ fn ancestors(path: &str) -> impl Iterator<Item = &str> {
         .map(|path| path.to_str().filter(|path| !path.is_empty()).unwrap_or("."))
 }
 
-fn path_parts(path: &str) -> impl Iterator<Item = &str> {
+/// The parts of a `/` path, without empty and `.` parts.
+pub(crate) fn path_parts(path: &str) -> impl Iterator<Item = &str> {
     path.split('/').filter(|part| !matches!(*part, "" | "."))
 }
 

@@ -31,6 +31,8 @@ use super::scoped_patch_evaluation::RetainedSuccessorScopedPatchTargetVerdicts;
 use super::scoped_patch_evaluation::ScopedPatchEvaluationPriority;
 use super::scoped_patch_evaluation::ScopedPatchTargetEvaluationSchedule;
 use super::scoped_patch_evaluation::SuccessorScopedPatchTargetEvaluationSchedule;
+use crate::answer::AuthorizedOverlap;
+use crate::answer::AuthorizedOverlapSet;
 use crate::answer::ConflictAuthorization;
 use crate::coordination_identity::CoordinationIdentityProvenance;
 use crate::ids::CoordinationRunId;
@@ -104,6 +106,19 @@ pub(crate) enum RecordedTarget {
     Unrecorded,
 }
 
+impl RecordedTarget {
+    /// Use the repository trunk for a legacy claim that has no recorded branch.
+    pub(crate) const fn or_trunk<'target>(
+        &'target self,
+        repository_trunk: &'target IntegrationTarget,
+    ) -> &'target IntegrationTarget {
+        match self {
+            Self::Recorded { target, .. } => target,
+            Self::Unrecorded => repository_trunk,
+        }
+    }
+}
+
 impl From<&ClaimTarget> for RecordedTarget {
     fn from(claim_target: &ClaimTarget) -> Self {
         Self::Recorded {
@@ -136,6 +151,49 @@ impl Reservation {
             && !self.target_proof_commits.contains(trunk_oid)
         {
             self.target_proof_commits.push(trunk_oid.clone());
+        }
+    }
+
+    /// Record the authorization of one widen.
+    ///
+    /// A [`ConflictAuthorization::ExistingAnswersCoverEveryOverlap`] keeps only the bindings that
+    /// no earlier one of this reservation holds, and is not recorded when none is left. It covers
+    /// only an exact match of a binding, and `reservations_authorize_scope` asks whether any
+    /// binding of the reservation covers, so a repeated binding changes no answer. Each widen binds
+    /// every current overlap again, so without this the reservation stores each binding once per
+    /// widen.
+    pub(super) fn record_widen_authorization(&mut self, authorization: &ConflictAuthorization) {
+        let ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps } = authorization
+        else {
+            self.authorizations.push(authorization.clone());
+            return;
+        };
+        let recorded = self
+            .authorizations
+            .iter()
+            .filter_map(|recorded_authorization| match recorded_authorization {
+                ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps } => {
+                    Some(overlaps.as_slice())
+                },
+                ConflictAuthorization::NoConflict
+                | ConflictAuthorization::Enrollment { .. }
+                | ConflictAuthorization::Sequence { .. }
+                | ConflictAuthorization::SequencePerHolder { .. }
+                | ConflictAuthorization::SequenceWithExistingEdges { .. }
+                | ConflictAuthorization::Defer { .. }
+                | ConflictAuthorization::Override { .. } => None,
+            })
+            .flatten()
+            .collect::<Vec<&AuthorizedOverlap>>();
+        let unrecorded = overlaps
+            .as_slice()
+            .iter()
+            .filter(|authorized_overlap| !recorded.contains(authorized_overlap))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Ok(overlaps) = AuthorizedOverlapSet::try_from(unrecorded) {
+            self.authorizations
+                .push(ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps });
         }
     }
 

@@ -5,6 +5,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::path::PathBuf;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -19,7 +20,7 @@ use crate::ledger::CanonicalWorktreeRoot;
 use crate::ledger::EditAuthorization;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
-use crate::reservation::RetainedReservationSet;
+use crate::reservation::ReservationFacts;
 use crate::reservation::WorktreeOccupancy;
 
 /// Whether a caller presented the coordination identity a claim was recorded under.
@@ -104,8 +105,40 @@ pub(crate) struct RecoveryCommandLine(Vec<OsString>);
 
 impl RecoveryCommandLine {
     pub(crate) fn current_process() -> Self {
-        let arguments = std::env::args_os().collect::<Vec<_>>();
-        Self::try_from(arguments).unwrap_or_else(|_| Self(vec![OsString::from("cargo-berth")]))
+        let mut process_arguments = std::env::args_os();
+        let mut arguments = vec![Self::process_executable(&mut process_arguments)];
+        arguments.extend(process_arguments);
+        Self(arguments)
+    }
+
+    pub(crate) fn scope_command<'path>(
+        process_arguments: impl Iterator<Item = OsString>,
+        verb: &str,
+        options: Vec<OsString>,
+        paths: impl IntoIterator<Item = &'path PathBuf>,
+    ) -> Self {
+        let mut arguments = vec![Self::process_executable(process_arguments), verb.into()];
+        arguments.extend(options);
+        for path in paths {
+            if path.as_os_str().as_encoded_bytes().starts_with(b"-") {
+                let mut argument = OsString::from("--path=");
+                argument.push(path);
+                arguments.push(argument);
+            } else {
+                arguments.extend([OsString::from("--path"), path.as_os_str().to_owned()]);
+            }
+        }
+        Self(arguments)
+    }
+
+    fn process_executable(mut process_arguments: impl Iterator<Item = OsString>) -> OsString {
+        process_arguments
+            .next()
+            .unwrap_or_else(|| OsString::from("cargo-berth"))
+    }
+
+    pub(crate) fn render(&self) -> Option<String> {
+        self.runnable_arguments().ok().map(|argv| argv.render())
     }
 
     fn runnable_arguments(
@@ -744,11 +777,11 @@ impl Error for CoordinationIdentityValidationError {}
 /// second foreignness answer of its own.
 ///
 /// Both terms of the rule arrive here in the types: the holder's provenance on the record
-/// [`RetainedReservationSet::worktree_occupancy`] reads, and the acting side as
+/// [`ReservationFacts::worktree_occupancy`] reads, and the acting side as
 /// [`PresentedCoordinationRun`], which a caller holding only a bare [`CoordinationRunId`]
 /// cannot produce.
 pub(crate) fn validate_worktree_occupancy(
-    retained_reservation_set: &RetainedReservationSet,
+    retained_reservation_set: &ReservationFacts,
     worktree_context: &WorktreeContext,
     worktree_id: WorktreeId,
     acting_run: PresentedCoordinationRun,
@@ -781,7 +814,7 @@ pub(crate) fn validate_worktree_occupancy(
 
 /// Validate one coherently resolved authorization against retained reservations.
 pub(crate) fn validate_coordination_identity(
-    retained_reservation_set: &RetainedReservationSet,
+    retained_reservation_set: &ReservationFacts,
     coordination_identity_validation_context: &CoordinationIdentityValidationContext,
 ) -> Result<(), CoordinationIdentityValidationError> {
     let resolved_edit_authorization =
@@ -820,7 +853,7 @@ pub(crate) fn validate_coordination_identity(
 }
 
 fn validate_session_mapping(
-    retained_reservation_set: &RetainedReservationSet,
+    retained_reservation_set: &ReservationFacts,
     coordination_run_id: CoordinationRunId,
     reservation_id: ReservationId,
     issuing_worktree_id: WorktreeId,
@@ -939,7 +972,7 @@ fn build_stale_session_mapping(
 }
 
 fn validate_marker(
-    retained_reservation_set: &RetainedReservationSet,
+    retained_reservation_set: &ReservationFacts,
     coordination_run_id: CoordinationRunId,
     issuing_worktree_id: WorktreeId,
     worktree_context: &WorktreeContext,
@@ -1011,6 +1044,7 @@ pub(crate) fn shell_quote(argument: &str) -> String {
 mod tests {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;
+    use std::path::PathBuf;
 
     use serde_json::Value;
     use tempfile::TempDir;
@@ -1271,6 +1305,23 @@ mod tests {
         assert!(RecoveryCommandLine::try_from(Vec::<OsString>::new()).is_err());
         assert!(RunnableRecoveryCommandLine::try_from(Vec::<String>::new()).is_err());
         assert!(CoordinationIdentityRecoveryActions::try_from(Vec::new()).is_err());
+    }
+
+    #[test]
+    fn scope_recovery_preserves_the_absolute_process_executable() {
+        let process_arguments =
+            ["/opt/berth tools/cargo-berth", "check", "src/lib.rs"].map(OsString::from);
+        let command = RecoveryCommandLine::scope_command(
+            process_arguments.into_iter(),
+            "check",
+            vec!["--json".into()],
+            &[PathBuf::from("src/lib.rs")],
+        );
+
+        assert_eq!(
+            command.render().as_deref(),
+            Some("'/opt/berth tools/cargo-berth' check --json --path src/lib.rs")
+        );
     }
 
     #[test]

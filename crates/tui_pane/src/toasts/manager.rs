@@ -157,14 +157,15 @@ impl<Ctx: AppContext> Toasts<Ctx> {
     ///
     /// This scans the stored toasts without building `ToastView`s.
     /// Each toast combines its line-height, countdown, tracked-item, and
-    /// lifetime deadlines.
+    /// lifetime deadlines. A `GridToastStack` that waits for the grid to
+    /// settle adds the next frame poll.
     #[must_use]
     pub fn next_visual_change_deadline(&self, now: Instant) -> ToastVisualDeadline {
         if !self.settings.toasts_enabled() {
             return ToastVisualDeadline::NoVisualChangeScheduled;
         }
         let earliest_deadline = self.entries.iter().fold(
-            ToastVisualDeadline::NoVisualChangeScheduled,
+            self.grid_stack.next_visual_change_deadline(now),
             |deadline, toast| {
                 deadline.earlier(toast.next_visual_change_deadline(
                     now,

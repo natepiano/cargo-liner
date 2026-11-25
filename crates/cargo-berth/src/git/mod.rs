@@ -91,6 +91,7 @@ pub(crate) use refs::reference_lookup;
 pub(crate) use refs::reservation_retention_ref_name;
 pub(crate) use refs::update_local_branch;
 pub(crate) use refs::write_reservation_retention_ref;
+pub(crate) use snapshot::EditedPathStatus;
 pub(crate) use snapshot::RepositorySnapshot;
 pub(crate) use trunk_merge_index::TrunkMergeIndex;
 pub(crate) use worktree_operation::WorktreeOperation;

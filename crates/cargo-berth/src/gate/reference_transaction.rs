@@ -31,8 +31,8 @@ use crate::ledger::Ledger;
 use crate::ledger::LedgerError;
 use crate::ledger::WorktreeContext;
 use crate::reservation::RecordedTarget;
+use crate::reservation::Reservation;
 use crate::reservation::ReservationLifecycle;
-use crate::reservation::RetainedReservationSet;
 
 const LOCAL_BRANCH_REFERENCE_PREFIX: &str = "refs/heads/";
 pub(crate) const REFERENCE_TRANSACTION_ISSUING_DIRECTORY_ENVIRONMENT: &str =
@@ -387,7 +387,7 @@ pub(crate) fn evaluate_reference_transaction(
 
     let worktree_context = repository.context();
     let reservations = read_gate_reservations(worktree_context)?;
-    let gated_updates = gated_updates(&movements, &reservations, trunk_reference);
+    let gated_updates = gated_updates(&movements, reservations.iter(), trunk_reference);
     let rewrite_events = rewrite::capture_branch_rewrites(issuing_directory, &rewrites)?;
     for movement in gated_updates {
         if let SelectedGateUpdate::Evaluate(update) = movement.select_target()? {
@@ -420,7 +420,7 @@ fn evaluate_prepared_updates(
     {
         let reservations = read_gate_reservations(repository.context())?;
         if let SelectedGateUpdate::StandAside(_) =
-            select_prepared_update(movements, &reservations, trunk_reference)?
+            select_prepared_update(movements, reservations.iter(), trunk_reference)?
         {
             return Ok(Vec::new());
         }
@@ -435,7 +435,7 @@ fn evaluate_prepared_updates(
                 error,
             )))
         })?;
-        match select_prepared_update(movements, reservations, trunk_reference)
+        match select_prepared_update(movements, reservations.iter(), trunk_reference)
             .map_err(GatePreparationRejection::Failed)?
         {
             SelectedGateUpdate::Evaluate(update) => Ok(update),
@@ -450,10 +450,9 @@ fn evaluate_prepared_updates(
     }
 }
 
-fn read_gate_reservations(context: &WorktreeContext) -> Result<RetainedReservationSet, GateError> {
+fn read_gate_reservations(context: &WorktreeContext) -> Result<Vec<Reservation>, GateError> {
     Ledger::open_from_discovered_worktree(context)?
-        .read_validated_journal()?
-        .into_reservations()
+        .read_validated_live_reservations()?
         .map_err(|error| GateError::Ledger(LedgerError::ReservationReplay(error)))
 }
 
@@ -481,13 +480,12 @@ fn committed_target_candidates<'transaction>(
         .collect())
 }
 
-fn gated_updates<'transaction>(
+fn gated_updates<'transaction, 'reservation>(
     movements: &[ReferenceMove<'transaction>],
-    reservations: &RetainedReservationSet,
+    reservations: impl Iterator<Item = &'reservation Reservation>,
     trunk_reference: &FullRefName,
 ) -> Vec<ReferenceMove<'transaction>> {
     let gated_references = reservations
-        .iter()
         .filter(|reservation| {
             !matches!(
                 reservation.lifecycle(),
@@ -507,9 +505,9 @@ fn gated_updates<'transaction>(
         .collect()
 }
 
-fn select_prepared_update(
+fn select_prepared_update<'reservation>(
     movements: &[ReferenceMove<'_>],
-    reservations: &RetainedReservationSet,
+    reservations: impl Iterator<Item = &'reservation Reservation>,
     trunk_reference: &FullRefName,
 ) -> Result<SelectedGateUpdate, GateError> {
     let gated = gated_updates(movements, reservations, trunk_reference);

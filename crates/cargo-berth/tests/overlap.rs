@@ -1171,7 +1171,7 @@ fn no_session_with_two_eligible_reservations_reports_ambiguity_without_mutation(
     assert_eq!(
         envelope["message"],
         format!(
-            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> --path <path>` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
         )
     );
     assert_eq!(envelope["reservations"], expected_candidates);
@@ -1232,7 +1232,7 @@ fn ambiguous_phase_refusal_names_each_candidates_session() {
     assert_eq!(
         envelope["message"],
         format!(
-            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+            "No session names one phase's reservation among {candidates}. Run `cargo-berth check --reservation <reservation-id> --path <path>` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
         )
     );
     assert!(
@@ -1329,7 +1329,7 @@ fn ambiguous_refusal_does_not_claim_no_sessions_when_the_index_is_unreadable() {
         assert_eq!(
             envelope["message"],
             format!(
-                "No session names one phase's reservation among {labels}. Run `cargo-berth check --reservation <reservation-id> <path>...` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
+                "No session names one phase's reservation among {labels}. Run `cargo-berth check --reservation <reservation-id> --path <path>` with one candidate id to select it. No reservation was appended or widened, and no session was mapped to one."
             )
         );
         let detail = envelope["presentation"]["blocks"][0]["detail"]

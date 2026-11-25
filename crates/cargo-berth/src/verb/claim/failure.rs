@@ -60,6 +60,7 @@ pub(super) enum ClaimRejection {
 
 #[derive(Debug)]
 pub(crate) enum ClaimError {
+    FullReconciliationRequired,
     CapacityRecovery(Box<ReconcileError>),
     InvalidTarget(TargetRefusal),
     InvalidRepositoryTrunk(String),
@@ -92,6 +93,9 @@ pub(crate) enum ClaimError {
 impl Display for ClaimError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::FullReconciliationRequired => {
+                formatter.write_str("this edit requires a complete repository observation")
+            },
             Self::CapacityRecovery(error) => Display::fmt(error, formatter),
             Self::InvalidTarget(error) => formatter.write_str(&error.message()),
             Self::InvalidRepositoryTrunk(error) => formatter.write_str(error),

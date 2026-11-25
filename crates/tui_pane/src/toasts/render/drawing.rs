@@ -21,6 +21,7 @@ use crate::toasts::ToastHitbox;
 use crate::toasts::ToastId;
 use crate::toasts::ToastStyle;
 use crate::toasts::ToastView;
+use crate::toasts::ToastVisualDeadline;
 use crate::toasts::body;
 use crate::toasts::manager;
 use crate::toasts::view::ToastExitState;
@@ -54,27 +55,48 @@ pub(super) const fn fallback_toast_palette() -> FallbackToastPalette {
     }
 }
 
+/// Whether the tile grid under a toast stack moves on the frame that draws the stack.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum GridStability {
+    /// A grid step is in flight or queued, so the protected frame feet can still change place.
+    Moving,
+    /// The grid shows its destination, so the protected frame feet are in their final place.
+    Settled,
+}
+
+/// What the next settled frame must check for a toast stack.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::toasts) enum GridToastPlacementState {
+    /// The stack found its rows while the grid moved. Search on the first settled frame.
+    Provisional,
+    /// The stack used its rows on a settled frame.
+    Settled,
+    /// The stack kept its settled rows during motion. Check the foot when motion ends.
+    HeldDuringMotion,
+}
+
 /// The rows that the toast stack over a tile grid keeps between draws.
 ///
-/// `Toasts::render_over_grid` reads and replaces it on each draw. The rows
-/// stay the same while the grid viewport stays the same, no new toast joins
-/// the stack, every card keeps its settled height, and no protected frame
-/// foot reaches the cards. Grid cells that change height do not move a card.
+/// When the viewport and cards still fit, a moving foot can pass behind them.
+/// The first settled frame searches again if the stack found its rows during
+/// motion or if a protected foot reaches the cards. A search must fit the full
+/// stack before it replaces the held rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::toasts) enum GridToastStack {
-    /// The last draw over the grid has no rows to keep: it drew no card, or a card
-    /// had less than its settled height.
+    /// The last draw over the grid drew no card.
     Unplaced,
-    /// The last draw put every card at its settled height in `area`.
+    /// The last draw put cards in `area`.
     Placed {
         /// The grid viewport of the draw that selected `area`.
-        viewport: Rect,
+        viewport:        Rect,
         /// The active toasts when `area` was selected.
-        toasts:   Vec<ToastId>,
+        toasts:          Vec<ToastId>,
         /// The rows between pane borders that hold the cards.
-        area:     Rect,
+        area:            Rect,
         /// The cells of every card that the last draw put in `area`.
-        cards:    Rect,
+        cards:           Rect,
+        /// The check that the next settled frame must make.
+        placement_state: GridToastPlacementState,
     },
 }
 
@@ -83,6 +105,8 @@ pub(in crate::toasts) enum GridToastStack {
 enum ToastStackBounds {
     /// Find the rows between pane borders inside this area.
     Search(Rect),
+    /// Search for rows that fit the full stack. Use `fallback` if they cannot fit it.
+    SearchWithFallback { search: Rect, fallback: Rect },
     /// Use the rows that an earlier draw found.
     Held(Rect),
 }
@@ -92,10 +116,8 @@ enum ToastStackBounds {
 enum ToastStackPlacement {
     /// The draw put no card on screen.
     NoCards,
-    /// A visible toast got less than its settled height, or no card.
-    Cramped,
-    /// Every visible toast got a card at its settled height.
-    Settled {
+    /// The draw put cards on screen.
+    Drawn {
         /// The rows between pane borders that hold the cards.
         area:  Rect,
         /// The cells of every drawn card.
@@ -107,7 +129,7 @@ impl ToastStackBounds {
     /// Return the rows to draw in: the kept rows, or the rows found between pane borders.
     fn area(self, frame: &mut Frame, settings: &ToastSettings, required_height: u16) -> Rect {
         match self {
-            Self::Search(area) => {
+            Self::Search(area) | Self::SearchWithFallback { search: area, .. } => {
                 card::area_between_pane_borders(frame, area, settings, required_height)
             },
             Self::Held(area) => area,
@@ -116,28 +138,13 @@ impl ToastStackBounds {
 }
 
 impl ToastStackPlacement {
-    /// Classify the drawn cards in `area`. `complete_toasts` holds the settled heights that
-    /// `allocated` gave rows to.
-    fn of_cards(
-        area: Rect,
-        hitboxes: &[ToastHitbox],
-        complete_toasts: &[ToastView],
-        allocated: &[u16],
-    ) -> Self {
-        let settled = hitboxes.len() == complete_toasts.len()
-            && complete_toasts
-                .iter()
-                .zip(allocated)
-                .all(|(toast, allocated)| *allocated >= toast.desired_height());
-        match hitboxes
+    /// Record the cells that the drawn cards use in `area`.
+    fn of_cards(area: Rect, hitboxes: &[ToastHitbox]) -> Self {
+        hitboxes
             .iter()
             .map(|hitbox| hitbox.card_rect)
             .reduce(Rect::union)
-        {
-            None => Self::NoCards,
-            Some(cards) if settled => Self::Settled { area, cards },
-            Some(_) => Self::Cramped,
-        }
+            .map_or(Self::NoCards, |cards| Self::Drawn { area, cards })
     }
 }
 
@@ -177,34 +184,41 @@ fn render_toasts(
     let max_visible = settings.max_visible.get().max(1);
     let start = toasts.len().saturating_sub(max_visible);
     let visible_toasts = &toasts[start..];
-    let mut complete_toasts: Vec<_> = visible_toasts
-        .iter()
-        .map(|toast| {
-            let mut complete = toast.clone();
-            complete.desired_height = toast.settled_height();
-            complete
-        })
-        .collect();
+    let mut complete_toasts = visible_toasts.to_vec();
     let gap = TOAST_ROW_GAP;
-    let required_height = complete_toasts
+    let required_height = visible_toasts
         .iter()
-        .map(ToastView::desired_height)
+        .map(ToastView::settled_height)
         .fold(TOAST_ROW_GAP.saturating_mul(2), u16::saturating_add)
         .saturating_add(gap.saturating_mul(
             u16::try_from(visible_toasts.len().saturating_sub(1)).unwrap_or(u16::MAX),
         ));
-    let area = stack_bounds.area(frame, settings, required_height);
-    let available = area
-        .height
-        .saturating_sub(stack_gap_rows(frame.area(), area, required_height));
-    let width = stack_card_width(visible_toasts, settings, area);
-    for toast in &mut complete_toasts {
-        if toast.exit_state == ToastExitState::Visible {
-            toast.min_height = toast.min_height.max(first_sentence_height(toast, width));
-            toast.desired_height = toast.desired_height.max(toast.min_height);
+    let frame_area = frame.area();
+    let allocate = |area: Rect, complete_toasts: &mut [ToastView]| {
+        let available =
+            area.height
+                .saturating_sub(stack_gap_rows(frame_area, area, required_height));
+        let width = stack_card_width(visible_toasts, settings, area);
+        for (complete, toast) in complete_toasts.iter_mut().zip(visible_toasts) {
+            complete.min_height = toast.min_height();
+            if toast.exit_state == ToastExitState::Visible {
+                complete.min_height = complete.min_height.max(first_sentence_height(toast, width));
+            }
+            complete.desired_height = toast.settled_height().max(complete.min_height);
         }
+        (
+            width,
+            layout::allocate_toast_heights(complete_toasts, available, gap),
+        )
+    };
+    let mut area = stack_bounds.area(frame, settings, required_height);
+    let (mut width, mut allocated) = allocate(area, &mut complete_toasts);
+    if let ToastStackBounds::SearchWithFallback { fallback, .. } = stack_bounds
+        && !full_stack_fits(&complete_toasts, &allocated)
+    {
+        area = fallback;
+        (width, allocated) = allocate(area, &mut complete_toasts);
     }
-    let allocated = layout::allocate_toast_heights(&complete_toasts, available, gap);
     let visible_toasts: Vec<_> = visible_toasts
         .iter()
         .map(|toast| {
@@ -239,12 +253,19 @@ fn render_toasts(
             layout::render_bottom_up(frame, area, &visible_toasts, &allocated, layout)
         },
     };
-    let placement = ToastStackPlacement::of_cards(area, &hitboxes, &complete_toasts, &allocated);
+    let placement = ToastStackPlacement::of_cards(area, &hitboxes);
 
     ToastRenderResult {
         hitboxes,
         placement,
     }
+}
+
+fn full_stack_fits(complete_toasts: &[ToastView], allocated: &[u16]) -> bool {
+    complete_toasts
+        .iter()
+        .zip(allocated)
+        .all(|(toast, allocated)| *allocated >= toast.desired_height())
 }
 
 /// Rows of `area` that the stack keeps empty around its cards.
@@ -352,25 +373,26 @@ impl<Ctx: crate::AppContext> crate::Renderable<ToastsRenderCtx> for super::super
 impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
     /// Draw toasts over a tile grid and avoid its protected frame feet.
     ///
-    /// The first draw of a stack selects its rows. Later draws keep those rows
-    /// while `viewport` stays the same, no new toast arrives, every card keeps
-    /// its settled height and no protected frame foot reaches the cards. A card
-    /// and its close button stay in place while grid cells change height.
+    /// Keep the cards and close buttons in place while the grid moves. Draw
+    /// over any moving foot that reaches them. On the first settled frame,
+    /// move only if the new rows fit the full stack.
     pub(crate) fn render_over_grid(
         &mut self,
         frame: &mut Frame<'_>,
         viewport: Rect,
         protected_frames: &[Rect],
+        grid_stability: GridStability,
         ctx: &ToastsRenderCtx,
     ) {
         let drawn = self.render_stack(frame, viewport.width, ctx, |toasts, active| {
             toasts
                 .grid_stack
-                .bounds(viewport, active, protected_frames, || {
+                .bounds(viewport, active, protected_frames, grid_stability, || {
                     toasts.area_avoiding_frames(viewport, protected_frames)
                 })
         });
-        self.grid_stack.record_draw(viewport, &drawn);
+        self.grid_stack
+            .record_draw(viewport, grid_stability, &drawn);
     }
 
     /// Draw the active toasts in the rows that `select_bounds` gives and store their hitboxes.
@@ -443,13 +465,13 @@ impl<Ctx: crate::AppContext> super::super::Toasts<Ctx> {
 }
 
 impl GridToastStack {
-    /// Keep the placed rows while the viewport, the toasts and the protected frame feet allow it;
-    /// else search again.
+    /// Keep the placed rows during motion. Check the protected feet on settled frames.
     fn bounds(
         &self,
         viewport: Rect,
         active: &[ToastView],
         protected_frames: &[Rect],
+        grid_stability: GridStability,
         search_area: impl FnOnce() -> Rect,
     ) -> ToastStackBounds {
         match self {
@@ -458,41 +480,91 @@ impl GridToastStack {
                 toasts,
                 area,
                 cards,
+                placement_state,
             } if *placed_viewport == viewport
-                && active.iter().all(|view| toasts.contains(&view.id()))
-                && !protected_frames
-                    .iter()
-                    .any(|frame| foot_reaches_cards(*area, *frame, *cards)) =>
+                && active.iter().all(|view| toasts.contains(&view.id())) =>
             {
-                ToastStackBounds::Held(*area)
+                if grid_stability == GridStability::Moving
+                    || (*placement_state != GridToastPlacementState::Provisional
+                        && !protected_frames
+                            .iter()
+                            .any(|frame| foot_reaches_cards(*area, *frame, *cards)))
+                {
+                    ToastStackBounds::Held(*area)
+                } else {
+                    ToastStackBounds::SearchWithFallback {
+                        search:   search_area(),
+                        fallback: *area,
+                    }
+                }
             },
             Self::Placed { .. } | Self::Unplaced => ToastStackBounds::Search(search_area()),
         }
     }
 
-    /// Record a draw over the grid in `viewport`. A kept draw updates only its card cells.
-    fn record_draw(&mut self, viewport: Rect, drawn: &DrawnToastStack) {
+    /// Record the card cells and the next check after a draw over the grid.
+    fn record_draw(
+        &mut self,
+        viewport: Rect,
+        grid_stability: GridStability,
+        drawn: &DrawnToastStack,
+    ) {
         match (drawn.stack_bounds, drawn.placement) {
-            (_, ToastStackPlacement::NoCards | ToastStackPlacement::Cramped) => {
+            (_, ToastStackPlacement::NoCards) => {
                 *self = Self::Unplaced;
             },
-            (ToastStackBounds::Held(_), ToastStackPlacement::Settled { cards, .. }) => {
+            (ToastStackBounds::Held(_), ToastStackPlacement::Drawn { cards, .. }) => {
                 if let Self::Placed {
                     cards: placed_cards,
+                    placement_state,
                     ..
                 } = self
                 {
                     *placed_cards = cards;
+                    *placement_state = match (grid_stability, *placement_state) {
+                        (GridStability::Settled, _) => GridToastPlacementState::Settled,
+                        (GridStability::Moving, GridToastPlacementState::Provisional) => {
+                            GridToastPlacementState::Provisional
+                        },
+                        (GridStability::Moving, _) => GridToastPlacementState::HeldDuringMotion,
+                    };
                 }
             },
-            (ToastStackBounds::Search(_), ToastStackPlacement::Settled { area, cards }) => {
+            (
+                ToastStackBounds::Search(_) | ToastStackBounds::SearchWithFallback { .. },
+                ToastStackPlacement::Drawn { area, cards },
+            ) => {
                 *self = Self::Placed {
                     viewport,
                     toasts: drawn.views.iter().map(ToastView::id).collect(),
                     area,
                     cards,
+                    placement_state: match grid_stability {
+                        GridStability::Moving => GridToastPlacementState::Provisional,
+                        GridStability::Settled => GridToastPlacementState::Settled,
+                    },
                 };
             },
+        }
+    }
+
+    /// Request a frame while the stack waits for the grid to settle.
+    /// The first settled tick can report `Repaint::NotNeeded`.
+    pub(in crate::toasts) const fn next_visual_change_deadline(
+        &self,
+        now: Instant,
+    ) -> ToastVisualDeadline {
+        match self {
+            Self::Placed {
+                placement_state:
+                    GridToastPlacementState::Provisional | GridToastPlacementState::HeldDuringMotion,
+                ..
+            } => ToastVisualDeadline::At(now),
+            Self::Placed {
+                placement_state: GridToastPlacementState::Settled,
+                ..
+            }
+            | Self::Unplaced => ToastVisualDeadline::NoVisualChangeScheduled,
         }
     }
 }

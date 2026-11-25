@@ -444,6 +444,21 @@ pub(crate) fn resolve_first_touch_mapping(
     if let Some(identity) = reservation_command::selected_identity(ledger_directory) {
         return FirstTouchSessionReservationMapping::Mapped(identity);
     }
+    published_first_touch_mapping(ledger_directory)
+}
+
+/// Check whether command routing selected an identity that the session has yet to publish.
+pub(crate) fn command_selection_needs_publication(ledger_directory: &Path) -> bool {
+    let Some(selected) = reservation_command::selected_identity(ledger_directory) else {
+        return false;
+    };
+    !matches!(
+        published_first_touch_mapping(ledger_directory),
+        FirstTouchSessionReservationMapping::Mapped(published) if published == selected
+    )
+}
+
+fn published_first_touch_mapping(ledger_directory: &Path) -> FirstTouchSessionReservationMapping {
     let HarnessSessionIdentity::Available {
         harness_session_id, ..
     } = HarnessSessionId::from_current_process()

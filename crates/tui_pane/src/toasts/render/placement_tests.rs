@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
 
+use super::GridStability;
 use super::ToastsRenderCtx;
 use super::card;
 use super::test_support::TestApp;
@@ -18,12 +19,14 @@ use crate::Hittable as _;
 use crate::PaneFocusState;
 use crate::Renderable;
 use crate::Toasts;
+use crate::constants::FRAME_POLL_MILLIS;
 use crate::constants::TOAST_ROW_GAP;
 use crate::toasts::ToastCountdownState;
 use crate::toasts::ToastFocus;
 use crate::toasts::ToastHit;
 use crate::toasts::ToastId;
 use crate::toasts::ToastStyle;
+use crate::toasts::ToastVisualDeadline;
 
 fn row(buffer: &Buffer, y: u16) -> String {
     (buffer.area.left()..buffer.area.right())
@@ -35,6 +38,7 @@ fn row(buffer: &Buffer, y: u16) -> String {
 const GRID: Rect = Rect::new(0, 0, 80, 30);
 /// The lifetime of the startup notice in the toast-over-grid tests.
 const NOTICE_SECONDS: u64 = 12;
+const MULTILINE_NOTICE_BODY: &str = "Metadata\nDisk\nLanguages\nGit\nTests";
 
 /// A startup notice and the instant when its entrance is complete.
 struct GridNotice {
@@ -44,11 +48,13 @@ struct GridNotice {
 }
 
 impl GridNotice {
-    fn new() -> Self {
+    fn new() -> Self { Self::with_body("Read projects and check the registry.") }
+
+    fn with_body(body: &str) -> Self {
         let mut toasts = Toasts::<TestApp>::new();
         let id = toasts.push_timed_styled(
             "Startup",
-            "Read projects and check the registry.",
+            body,
             Duration::from_secs(NOTICE_SECONDS),
             1,
             ToastStyle::Success,
@@ -61,12 +67,35 @@ impl GridNotice {
         }
     }
 
-    /// Draw the grid with a summary cell `summary_height` rows tall, `elapsed` seconds after
-    /// the entrance, then the notice over it. Return the notice card.
+    /// Draw a settled grid with a summary cell `summary_height` rows tall, `elapsed` seconds
+    /// after the entrance, then the notice over it. Return the notice card.
     fn draw(
         &mut self,
         terminal: &mut Terminal<TestBackend>,
         summary_height: u16,
+        elapsed: u64,
+    ) -> Result<Rect, Box<dyn Error>> {
+        self.draw_over(terminal, GridStability::Settled, summary_height, elapsed)
+    }
+
+    /// Draw the grid in `grid_stability` with a summary cell `summary_height` rows tall,
+    /// `elapsed` seconds after the entrance, then the notice over it. Return the notice card.
+    fn draw_over(
+        &mut self,
+        terminal: &mut Terminal<TestBackend>,
+        grid_stability: GridStability,
+        summary_height: u16,
+        elapsed: u64,
+    ) -> Result<Rect, Box<dyn Error>> {
+        self.draw_over_panes(terminal, grid_stability, summary_height, &[], elapsed)
+    }
+
+    fn draw_over_panes(
+        &mut self,
+        terminal: &mut Terminal<TestBackend>,
+        grid_stability: GridStability,
+        summary_height: u16,
+        panes: &[Rect],
         elapsed: u64,
     ) -> Result<Rect, Box<dyn Error>> {
         let now = self.settled + Duration::from_secs(elapsed);
@@ -75,10 +104,14 @@ impl GridNotice {
             frame.render_widget(chrome.block("Grid".to_owned(), false), GRID);
             let summary = Rect::new(GRID.x, GRID.y, GRID.width, summary_height);
             frame.render_widget(chrome.block("Summary".to_owned(), false), summary);
+            for pane in panes {
+                frame.render_widget(chrome.block("Command".to_owned(), false), *pane);
+            }
             self.toasts.render_over_grid(
                 frame,
                 crate::frame_inner(GRID),
                 &[summary],
+                grid_stability,
                 &ToastsRenderCtx {
                     now,
                     pane_focus_state: PaneFocusState::Inactive,
@@ -113,6 +146,116 @@ fn a_drawn_toast_keeps_its_position_when_grid_frames_change_height() -> Result<(
         let card = notice.draw(&mut terminal, summary_height, elapsed)?;
         assert_eq!(card, first, "summary height {summary_height}");
     }
+    Ok(())
+}
+
+#[test]
+fn a_toast_placed_while_the_grid_moves_moves_once_on_the_first_settled_frame()
+-> Result<(), Box<dyn Error>> {
+    let mut terminal = Terminal::new(TestBackend::new(GRID.width, GRID.height))?;
+    let settled = GridNotice::new().draw(&mut terminal, 8, 0)?;
+    let mut notice = GridNotice::new();
+    // A summary cell 20 rows tall leaves more rows above its foot than below it, so the
+    // search on the moving frame puts the card above the foot.
+    let moving = notice.draw_over(&mut terminal, GridStability::Moving, 20, 0)?;
+    assert_ne!(moving, settled);
+    // Between two countdown ticks, only the kept place asks for the next frame poll.
+    let between_ticks = notice.settled + Duration::from_millis(500);
+    let next_poll =
+        ToastVisualDeadline::At(between_ticks + Duration::from_millis(FRAME_POLL_MILLIS));
+    assert_eq!(
+        notice.toasts.next_visual_change_deadline(between_ticks),
+        next_poll
+    );
+    assert_eq!(notice.draw(&mut terminal, 8, 1)?, settled);
+    assert_ne!(
+        notice.toasts.next_visual_change_deadline(between_ticks),
+        next_poll
+    );
+    // The summary foot and bottom border stay above the cleared gap over the card.
+    let tall = settled.top() - TOAST_ROW_GAP;
+    let fresh = GridNotice::new().draw(&mut terminal, tall, 0)?;
+    assert_ne!(fresh, settled, "fresh placement at summary height {tall}");
+    for (elapsed, (grid_stability, summary_height)) in (2..).zip([
+        (GridStability::Settled, tall),
+        (GridStability::Moving, 12),
+        (GridStability::Settled, tall),
+    ]) {
+        let card = notice.draw_over(&mut terminal, grid_stability, summary_height, elapsed)?;
+        assert_eq!(
+            card, settled,
+            "{grid_stability:?} summary height {summary_height}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn a_startup_notice_stays_visible_as_the_protected_foot_rises() -> Result<(), Box<dyn Error>> {
+    let mut terminal = Terminal::new(TestBackend::new(GRID.width, GRID.height))?;
+    for initial_grid_stability in [GridStability::Moving, GridStability::Settled] {
+        let mut notice = GridNotice::with_body(MULTILINE_NOTICE_BODY);
+        let first = notice.draw_over(&mut terminal, initial_grid_stability, 20, 0)?;
+        assert!(first.height > 3, "{first:?}");
+        let reaching = first.top() + 3;
+        for summary_height in (reaching..=GRID.height).rev() {
+            let card = notice.draw_over(&mut terminal, GridStability::Moving, summary_height, 0)?;
+            assert_eq!(card, first, "summary height {summary_height}");
+        }
+        let between_ticks = notice.settled + Duration::from_millis(500);
+        let next_poll =
+            ToastVisualDeadline::At(between_ticks + Duration::from_millis(FRAME_POLL_MILLIS));
+        assert_eq!(
+            notice.toasts.next_visual_change_deadline(between_ticks),
+            next_poll
+        );
+        let settled = notice.draw(&mut terminal, reaching, 1)?;
+        assert_ne!(settled, first);
+        assert_eq!(settled.height, first.height);
+        assert_ne!(
+            notice.toasts.next_visual_change_deadline(between_ticks),
+            next_poll
+        );
+        assert_eq!(notice.draw(&mut terminal, reaching, 2)?, settled);
+    }
+    Ok(())
+}
+
+#[test]
+fn a_startup_notice_keeps_its_place_when_the_settled_corner_is_too_short()
+-> Result<(), Box<dyn Error>> {
+    let mut terminal = Terminal::new(TestBackend::new(GRID.width, GRID.height))?;
+    let mut notice = GridNotice::with_body(MULTILINE_NOTICE_BODY);
+    let first = notice.draw_over(&mut terminal, GridStability::Moving, 20, 0)?;
+    // The Command pane leaves one row below its top border inside the grid viewport.
+    let command = Rect::new(GRID.x, GRID.bottom() - 3, GRID.width, 3);
+    for elapsed in 1..=2 {
+        let card = notice.draw_over_panes(
+            &mut terminal,
+            GridStability::Settled,
+            8,
+            &[command],
+            elapsed,
+        )?;
+        assert_eq!(card, first);
+    }
+    Ok(())
+}
+
+#[test]
+fn a_startup_notice_first_drawn_short_keeps_its_place_during_motion() -> Result<(), Box<dyn Error>>
+{
+    let mut terminal = Terminal::new(TestBackend::new(GRID.width, GRID.height))?;
+    let mut notice = GridNotice::with_body(MULTILINE_NOTICE_BODY);
+    let full_height = notice.toasts.active_views(notice.settled)[0].settled_height();
+    let command = Rect::new(GRID.x, GRID.bottom() - 7, GRID.width, 7);
+    let first = notice.draw_over_panes(&mut terminal, GridStability::Moving, 8, &[command], 0)?;
+    assert!(first.height < full_height);
+    for summary_height in [GRID.height, 20, 8] {
+        let card = notice.draw_over(&mut terminal, GridStability::Moving, summary_height, 0)?;
+        assert_eq!(card, first, "summary height {summary_height}");
+    }
+    assert_eq!(notice.draw(&mut terminal, 8, 1)?.height, full_height);
     Ok(())
 }
 

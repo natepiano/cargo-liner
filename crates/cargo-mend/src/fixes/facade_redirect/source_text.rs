@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::ffi::OsStr;
@@ -11,7 +12,9 @@ use std::path::PathBuf;
 
 use proc_macro2::Delimiter;
 use proc_macro2::Group;
+use proc_macro2::LexError;
 use proc_macro2::LineColumn;
+use proc_macro2::Span;
 use proc_macro2::TokenStream;
 use proc_macro2::TokenTree;
 use syn::ItemUse;
@@ -287,84 +290,193 @@ pub(in crate::fixes) enum IdentifierUse {
     Unparseable,
 }
 
-/// Identifier or inline-format-argument presence, excluding documentation attribute bodies.
+/// Identifier or inline-format-argument presence of one naming token.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IdentifierPresence {
     Absent,
     Present,
 }
 
-/// Documentation bodies lex as bracketed groups starting with `doc`; skip their contents.
+/// Documentation bodies lex as a `#` or `#!` and then a bracketed group that starts with
+/// `doc`; skip their contents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttributeGroupKind {
     Documentation,
     Traversable,
 }
 
-/// Whether `word` occurs as an identifier in `text` once every `excluded`
-/// byte range is blanked out. Comments, doc comments, and string literals do
-/// not count, except a `{word}` or `{word:` inline format argument in a
-/// literal. Text that does not lex counts as an occurrence, so the caller keeps
-/// the name.
+/// What the tokens before a group say about it: a `#`, or a `#` and then a `!`, opens an
+/// attribute body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GroupOpener {
+    Attribute,
+    Other,
+}
+
+impl GroupOpener {
+    /// The opener for the token after `token`. A `!` keeps the opener that the `#` set.
+    fn after(self, token: &TokenTree) -> Self {
+        match token {
+            TokenTree::Punct(punct) => match punct.as_char() {
+                '#' => Self::Attribute,
+                '!' => self,
+                _ => Self::Other,
+            },
+            TokenTree::Ident(_) | TokenTree::Group(_) | TokenTree::Literal(_) => Self::Other,
+        }
+    }
+}
+
+/// The texts that name one word, made once for each word question: the word itself for an
+/// identifier, and its `{word}` and `{word:` inline format arguments for a literal.
+struct WordNeedles<'w> {
+    identifier:         &'w str,
+    bare_argument:      String,
+    formatted_argument: String,
+}
+
+impl<'w> From<&'w str> for WordNeedles<'w> {
+    fn from(word: &'w str) -> Self {
+        Self {
+            identifier:         word,
+            bare_argument:      format!("{{{word}}}"),
+            formatted_argument: format!("{{{word}:"),
+        }
+    }
+}
+
+/// The text of a token that can name a word, kept from the lex. `Identifier` holds the
+/// unraw identifier text. `Literal` holds the literal as written, which can hold a `{word}`
+/// inline format argument.
+enum NamingText {
+    Identifier(String),
+    Literal(String),
+}
+
+impl NamingText {
+    fn names(&self, needles: &WordNeedles<'_>) -> IdentifierPresence {
+        let named = match self {
+            Self::Identifier(text) => text == needles.identifier,
+            Self::Literal(text) => {
+                text.contains(needles.bare_argument.as_str())
+                    || text.contains(needles.formatted_argument.as_str())
+            },
+        };
+        if named {
+            IdentifierPresence::Present
+        } else {
+            IdentifierPresence::Absent
+        }
+    }
+}
+
+/// An identifier or a literal outside documentation attribute bodies, with its text and
+/// its place in the source.
+struct NamingToken {
+    text: NamingText,
+    span: Span,
+}
+
+/// The naming tokens of one source text outside documentation attribute bodies. The text
+/// is lexed on the first word question, once; each later question reads the same tokens.
+pub(in crate::fixes) struct NamingTokens<'a> {
+    text:   &'a str,
+    tokens: OnceCell<Result<Vec<NamingToken>, LexError>>,
+}
+
+impl<'a> From<&'a str> for NamingTokens<'a> {
+    fn from(text: &'a str) -> Self {
+        Self {
+            text,
+            tokens: OnceCell::new(),
+        }
+    }
+}
+
+impl NamingTokens<'_> {
+    /// Whether a token outside every `excluded` byte range names `word`. A token that
+    /// overlaps an excluded range does not count. Comments, doc comments, and string
+    /// literals do not count, except a `{word}` or `{word:` inline format argument in a
+    /// literal. Text that does not lex counts as an occurrence, so the caller keeps the name.
+    pub(in crate::fixes) fn word_use(
+        &self,
+        excluded: &[Range<usize>],
+        word: &str,
+    ) -> IdentifierUse {
+        let tokens = self.tokens.get_or_init(|| {
+            self.text.parse::<TokenStream>().map(|stream| {
+                let mut tokens = Vec::new();
+                collect_naming_tokens(stream, &mut tokens);
+                tokens
+            })
+        });
+        tokens
+            .as_ref()
+            .map_or(IdentifierUse::Unparseable, |tokens| {
+                let needles = WordNeedles::from(word);
+                let present = tokens
+                    .iter()
+                    .filter(|token| token.text.names(&needles) == IdentifierPresence::Present)
+                    .any(|token| {
+                        let bytes = token.span.byte_range();
+                        !excluded
+                            .iter()
+                            .any(|range| range.start < bytes.end && bytes.start < range.end)
+                    });
+                if present {
+                    IdentifierUse::Present
+                } else {
+                    IdentifierUse::Absent
+                }
+            })
+    }
+}
+
+/// Whether `word` occurs as an identifier in `text` outside every `excluded` byte range.
+/// `NamingTokens::word_use` gives the rules. A caller that asks about several words or
+/// ranges in one text keeps one `NamingTokens`, so the text is lexed once.
 pub(in crate::fixes) fn word_occurs_outside(
     text: &str,
     excluded: impl IntoIterator<Item = Range<usize>>,
     word: &str,
 ) -> IdentifierUse {
-    let mut blanked = text.to_string();
-    for range in excluded {
-        let blank = " ".repeat(range.len());
-        blanked.replace_range(range, &blank);
-    }
-    blanked
-        .parse::<TokenStream>()
-        .map_or(IdentifierUse::Unparseable, |tokens| {
-            match tokens_name(tokens, word) {
-                IdentifierPresence::Absent => IdentifierUse::Absent,
-                IdentifierPresence::Present => IdentifierUse::Present,
-            }
-        })
+    let excluded: Vec<Range<usize>> = excluded.into_iter().collect();
+    NamingTokens::from(text).word_use(&excluded, word)
 }
 
-/// Whether `tokens` hold `word` as an identifier or as an inline format
-/// argument, skipping `#[doc = ...]` attribute bodies.
-fn tokens_name(tokens: TokenStream, word: &str) -> IdentifierPresence {
-    for token in tokens {
-        let presence = match token {
-            TokenTree::Ident(ident) => {
-                if ident.unraw() == word {
-                    IdentifierPresence::Present
-                } else {
-                    IdentifierPresence::Absent
-                }
+/// Push each identifier and literal of `stream` onto `tokens` with its text, nested groups
+/// included, and skip `#[doc = ...]` and `#![doc = ...]` attribute bodies.
+fn collect_naming_tokens(stream: TokenStream, tokens: &mut Vec<NamingToken>) {
+    let mut opener = GroupOpener::Other;
+    for token in stream {
+        let next_opener = opener.after(&token);
+        match token {
+            TokenTree::Ident(ident) => tokens.push(NamingToken {
+                text: NamingText::Identifier(ident.unraw().to_string()),
+                span: ident.span(),
+            }),
+            TokenTree::Literal(literal) => tokens.push(NamingToken {
+                text: NamingText::Literal(literal.to_string()),
+                span: literal.span(),
+            }),
+            TokenTree::Group(group) => match is_doc_attribute(opener, &group) {
+                AttributeGroupKind::Documentation => {},
+                AttributeGroupKind::Traversable => {
+                    collect_naming_tokens(group.stream(), tokens);
+                },
             },
-            TokenTree::Group(group) => match is_doc_attribute(&group) {
-                AttributeGroupKind::Documentation => IdentifierPresence::Absent,
-                AttributeGroupKind::Traversable => tokens_name(group.stream(), word),
-            },
-            TokenTree::Literal(literal) => {
-                let text = literal.to_string();
-                if text.contains(&format!("{{{word}}}")) || text.contains(&format!("{{{word}:")) {
-                    IdentifierPresence::Present
-                } else {
-                    IdentifierPresence::Absent
-                }
-            },
-            TokenTree::Punct(_) => IdentifierPresence::Absent,
-        };
-        match presence {
-            IdentifierPresence::Present => return presence,
-            IdentifierPresence::Absent => {},
+            TokenTree::Punct(_) => {},
         }
+        opener = next_opener;
     }
-    IdentifierPresence::Absent
 }
 
-/// Whether `group` is the bracketed body of a `#[doc = ...]` attribute, which
-/// is how a doc comment lexes.
-fn is_doc_attribute(group: &Group) -> AttributeGroupKind {
-    match group.delimiter() {
-        Delimiter::Bracket => match group.stream().into_iter().next() {
+/// Whether `group` is the bracketed body of a `#[doc = ...]` or `#![doc = ...]` attribute,
+/// which is how a doc comment lexes. A bracket group without `opener` is an array, a slice
+/// or a pattern, so a leading `doc` there is an ordinary identifier.
+fn is_doc_attribute(opener: GroupOpener, group: &Group) -> AttributeGroupKind {
+    match (opener, group.delimiter()) {
+        (GroupOpener::Attribute, Delimiter::Bracket) => match group.stream().into_iter().next() {
             Some(TokenTree::Ident(ident)) => {
                 if ident == "doc" {
                     AttributeGroupKind::Documentation
@@ -376,7 +488,8 @@ fn is_doc_attribute(group: &Group) -> AttributeGroupKind {
                 AttributeGroupKind::Traversable
             },
         },
-        Delimiter::Parenthesis | Delimiter::Brace | Delimiter::None => {
+        (GroupOpener::Other, _)
+        | (GroupOpener::Attribute, Delimiter::Parenthesis | Delimiter::Brace | Delimiter::None) => {
             AttributeGroupKind::Traversable
         },
     }
@@ -417,7 +530,7 @@ mod tests {
 
     use super::AttributeGroupKind;
     use super::DeletionExtent;
-    use super::IdentifierPresence;
+    use super::GroupOpener;
     use super::IdentifierUse;
     use super::NeighborLine;
     use super::SourceLines;
@@ -425,7 +538,6 @@ mod tests {
     use super::is_doc_attribute;
     use super::item_use_byte_range;
     use super::line_deletion;
-    use super::tokens_name;
     use super::word_occurs_outside;
 
     /// The text left after `line_deletion` removes the first occurrence of
@@ -651,34 +763,58 @@ mod tests {
     #[test]
     fn recursive_identifier_presence_keeps_later_leaves_and_skips_doc_bodies() {
         for (text, expected) in [
-            ("", IdentifierPresence::Absent),
-            ("{ () [] } Name", IdentifierPresence::Present),
-            ("{ (r#Name) }", IdentifierPresence::Present),
-            ("#[doc = Name]", IdentifierPresence::Absent),
-            ("#[doc = Name] unrelated Name", IdentifierPresence::Present),
-            ("#[cfg(Name)]", IdentifierPresence::Present),
-            ("NameSuffix", IdentifierPresence::Absent),
+            ("", IdentifierUse::Absent),
+            ("{ () [] } Name", IdentifierUse::Present),
+            ("{ (r#Name) }", IdentifierUse::Present),
+            ("#[doc = Name]", IdentifierUse::Absent),
+            ("#![doc = Name]", IdentifierUse::Absent),
+            ("#[doc = Name] unrelated Name", IdentifierUse::Present),
+            ("#[cfg(Name)]", IdentifierUse::Present),
+            ("NameSuffix", IdentifierUse::Absent),
         ] {
-            assert_eq!(tokens_name(text.parse().expect("tokens"), "Name"), expected);
+            assert_eq!(
+                word_occurs_outside(text, iter::empty(), "Name"),
+                expected,
+                "{text}"
+            );
         }
     }
 
+    /// `[doc, fold::fold_faces()]` is an array whose first element is a local `doc`, not a
+    /// doc attribute body, so the `fold` in it is a use.
     #[test]
-    fn attribute_group_kind_requires_brackets_and_a_leading_doc_identifier() {
-        for delimiter in [
-            Delimiter::Bracket,
-            Delimiter::Brace,
-            Delimiter::Parenthesis,
-            Delimiter::None,
-        ] {
-            for body in ["", "doc = Name", "cfg(Name)", "[doc]", "1", "::"] {
-                let group = Group::new(delimiter, body.parse().expect("group body"));
-                let expected = if delimiter == Delimiter::Bracket && body == "doc = Name" {
-                    AttributeGroupKind::Documentation
-                } else {
-                    AttributeGroupKind::Traversable
-                };
-                assert_eq!(is_doc_attribute(&group), expected);
+    fn a_bracket_group_without_a_pound_is_not_a_doc_body() {
+        assert_eq!(
+            word_occurs_outside(
+                "fn f() { let pair = [doc, fold::fold_faces()]; }\n",
+                iter::empty(),
+                "fold"
+            ),
+            IdentifierUse::Present
+        );
+    }
+
+    #[test]
+    fn attribute_group_kind_requires_a_pound_brackets_and_a_leading_doc_identifier() {
+        for opener in [GroupOpener::Attribute, GroupOpener::Other] {
+            for delimiter in [
+                Delimiter::Bracket,
+                Delimiter::Brace,
+                Delimiter::Parenthesis,
+                Delimiter::None,
+            ] {
+                for body in ["", "doc = Name", "cfg(Name)", "[doc]", "1", "::"] {
+                    let group = Group::new(delimiter, body.parse().expect("group body"));
+                    let expected = if opener == GroupOpener::Attribute
+                        && delimiter == Delimiter::Bracket
+                        && body == "doc = Name"
+                    {
+                        AttributeGroupKind::Documentation
+                    } else {
+                        AttributeGroupKind::Traversable
+                    };
+                    assert_eq!(is_doc_attribute(opener, &group), expected);
+                }
             }
         }
     }

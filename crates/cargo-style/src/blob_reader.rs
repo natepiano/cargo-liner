@@ -70,13 +70,7 @@ impl BlobReader {
         blob: &str,
         cache: &mut FactCache,
     ) -> Result<BlobSource, ReaderError> {
-        let id =
-            ObjectId::from_hex(blob.as_bytes()).map_err(|source| ReaderError::QueryBlobId {
-                blob: blob.to_owned(),
-                source,
-            })?;
-        let mut repository = self.repository.to_thread_local();
-        repository.objects.ignore_replacements = true;
+        let (repository, id) = self.blob_lookup(blob)?;
         if let CachedFact::Found(encoded) = cache.lookup(id) {
             match validated_cached_blob(&repository, id, &encoded)? {
                 Ok(reading) => return Ok(reading.into_source()),
@@ -94,6 +88,22 @@ impl BlobReader {
                 }
             }),
         )
+    }
+
+    pub(crate) fn raw_bytes(&self, blob: &str) -> Result<Option<Vec<u8>>, ReaderError> {
+        let (repository, id) = self.blob_lookup(blob)?;
+        Ok(read_blob_object(&repository, id)?.map(|blob| blob.detach().data))
+    }
+
+    fn blob_lookup(&self, blob: &str) -> Result<(Repository, ObjectId), ReaderError> {
+        let id =
+            ObjectId::from_hex(blob.as_bytes()).map_err(|source| ReaderError::QueryBlobId {
+                blob: blob.to_owned(),
+                source,
+            })?;
+        let mut repository = self.repository.to_thread_local();
+        repository.objects.ignore_replacements = true;
+        Ok((repository, id))
     }
 
     /// Write all facts and queries in bounded batches, including queried blobs outside the commits.

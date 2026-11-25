@@ -1,10 +1,14 @@
 //! The journal, append-only between compactions, and its complete version-one operation union.
 
+mod checkpoint_coordination;
+
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
+use std::fs::File;
+use std::fs::Metadata;
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::io::Seek;
@@ -17,6 +21,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+pub(super) use checkpoint_coordination::CheckpointCoordinationRecord;
+pub(super) use checkpoint_coordination::CheckpointOrderingRecord;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -34,6 +40,7 @@ use super::constants::MAXIMUM_DERIVED_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_JOURNAL_RECORD_BYTES;
 use super::constants::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
 use super::history::FinishedHistory;
+#[cfg(test)]
 use super::replay_checkpoint::ReplayCheckpoint;
 use super::target::ClaimTarget;
 use super::target::IntegrationTarget;
@@ -64,9 +71,11 @@ use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProofSubjectRevision;
 use crate::reservation::IntegrationWitness;
+use crate::reservation::LiveReservationFacts;
 use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::ReservationRunStatus;
@@ -2205,20 +2214,162 @@ pub(super) struct JournalReplay {
     pub(super) finished_history:    FinishedHistory,
 }
 
+/// The position and repository identities represented by a replay.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct ReplayCore {
+    pub(super) repositories: BTreeSet<RepoInstanceId>,
+    pub(super) record_count: u64,
+    pub(super) end_offset:   JournalByteOffset,
+    pub(super) fingerprint:  JournalFingerprint,
+    pub(super) generation:   ProjectionGeneration,
+}
+
+impl From<&JournalReplay> for ReplayCore {
+    fn from(replay: &JournalReplay) -> Self {
+        Self {
+            repositories: replay.repositories.clone(),
+            record_count: replay.record_count,
+            end_offset:   replay.end_offset,
+            fingerprint:  replay.fingerprint,
+            generation:   replay.generation,
+        }
+    }
+}
+
+/// The reservation fold and its position. Other checkpoint parts are separate.
+#[derive(Clone)]
+pub(super) struct ReservationReplay {
+    pub(super) core:         ReplayCore,
+    pub(super) reservations: Result<LiveReservationFacts, ReservationReplayError>,
+}
+
+impl ReservationReplay {
+    pub(super) fn into_reservations(self) -> Result<Vec<Reservation>, ReservationReplayError> {
+        self.reservations
+            .map(LiveReservationFacts::into_reservations)
+    }
+
+    /// Fold the tail with the same reservation fold as `JournalReplay`.
+    ///
+    /// An incursion record needs the checkpointed incidents. Let the caller load those records.
+    pub(super) fn extended_over(self, appended: &[u8]) -> Result<Option<Self>, JournalError> {
+        self.extended_over_visiting(appended, |_| {})
+    }
+
+    pub(super) fn extended_over_visiting(
+        mut self,
+        appended: &[u8],
+        mut visit: impl FnMut(&JournalEvent),
+    ) -> Result<Option<Self>, JournalError> {
+        let mut reservations = self.reservations.map(LiveReservationFacts::into_tail_fold);
+        let replayed_lines =
+            usize::try_from(self.core.record_count).map_err(JournalError::JournalTooLarge)?;
+        let mut needs_incidents = false;
+        let complete_end = decode_complete_records(appended, replayed_lines + 1, |event, _| {
+            visit(&event);
+            needs_incidents |= matches!(
+                event.operation,
+                JournalOperation::Incursion { .. } | JournalOperation::ResolveIncursion { .. }
+            );
+            if !needs_incidents {
+                if let Ok(fold) = &mut reservations {
+                    fold.apply(&event);
+                }
+                self.core.repositories.insert(event.actor.repository);
+                self.core.record_count += 1;
+                self.core.generation = event.projection_generation;
+            }
+        })?;
+        // A tail operation can refer to a settled reservation outside this fold.
+        if needs_incidents {
+            return Ok(None);
+        }
+        self.reservations = match reservations {
+            Ok(fold) => {
+                let Some(facts) = fold.finish() else {
+                    return Ok(None);
+                };
+                Ok(facts)
+            },
+            Err(error) => Err(error),
+        };
+        let length = u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?;
+        self.core.end_offset = JournalByteOffset::from(u64::from(self.core.end_offset) + length);
+        self.core.fingerprint = self.core.fingerprint.continued(&appended[..complete_end]);
+        Ok(Some(self))
+    }
+}
+
+impl From<JournalReplay> for ReservationReplay {
+    fn from(replay: JournalReplay) -> Self {
+        Self {
+            core:         ReplayCore::from(&replay),
+            reservations: replay.reservations.map(RetainedReservationSet::into_live),
+        }
+    }
+}
+
 /// A deterministic fingerprint over a journal's bytes.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
 pub(super) struct JournalFingerprint(pub(super) u64);
 
-/// The file identity whose prefix produced a prepared journal replay.
-#[derive(Clone, Copy)]
-pub(super) struct JournalReplaySource {
+/// The device and inode of an open journal file.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct JournalFileIdentity {
     device: u64,
     inode:  u64,
 }
 
+impl From<&Metadata> for JournalFileIdentity {
+    fn from(metadata: &Metadata) -> Self {
+        Self {
+            device: metadata.dev(),
+            inode:  metadata.ino(),
+        }
+    }
+}
+
+/// The open file whose prefix produced a prepared journal replay.
+pub(super) struct JournalReplaySource {
+    // Keep the inode allocated until no preparation can reuse its replay.
+    _file:    File,
+    identity: JournalFileIdentity,
+}
+
 impl JournalReplaySource {
-    pub(super) const fn new(device: u64, inode: u64) -> Self { Self { device, inode } }
+    pub(super) fn open(path: &Path) -> Result<Self, JournalError> {
+        let file = fs::File::open(path)?;
+        let identity = JournalFileIdentity::from(&file.metadata()?);
+        Ok(Self::new(file, identity))
+    }
+
+    pub(super) const fn new(file: File, identity: JournalFileIdentity) -> Self {
+        Self {
+            _file: file,
+            identity,
+        }
+    }
+
+    pub(super) fn status(
+        &self,
+        metadata: &Metadata,
+        end_offset: JournalByteOffset,
+    ) -> JournalReplaySourceStatus {
+        if JournalFileIdentity::from(metadata) == self.identity
+            && metadata.len() >= u64::from(end_offset)
+        {
+            JournalReplaySourceStatus::Current
+        } else {
+            JournalReplaySourceStatus::ReplacedOrShortened
+        }
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) enum JournalReplaySourceStatus {
+    Current,
+    ReplacedOrShortened,
 }
 
 /// The journal file opened at its fixed ledger path.
@@ -2315,30 +2466,26 @@ impl Journal {
 
     /// Advance an unlocked preparation over complete appended records. An unfinished write
     /// belongs to its writer and must remain available for a later read, never be truncated.
-    /// Replay a replaced or shortened journal from the start of the opened file: an earlier
-    /// path identity check cannot guarantee that this descriptor still names the replay's source.
+    /// Report a changed source so the caller can reload its checkpoint. Check the opened file
+    /// because its identity can differ from an earlier lookup of the path.
     pub(super) fn advance_read_only_tail(
         path: &Path,
         replay: &mut JournalReplay,
-        expected_source: JournalReplaySource,
-    ) -> Result<(), JournalError> {
+        expected_source: &JournalReplaySource,
+    ) -> Result<JournalReplaySourceStatus, JournalError> {
         let mut journal_file = fs::File::open(path)?;
         let metadata = journal_file.metadata()?;
         let replayed_length = u64::from(replay.end_offset);
-        if metadata.dev() != expected_source.device
-            || metadata.ino() != expected_source.inode
-            || metadata.len() < replayed_length
+        if expected_source.status(&metadata, replay.end_offset)
+            == JournalReplaySourceStatus::ReplacedOrShortened
         {
-            let mut bytes = Vec::new();
-            journal_file.read_to_end(&mut bytes)?;
-            *replay = replay_complete_records(&bytes)?.0;
-            return Ok(());
+            return Ok(JournalReplaySourceStatus::ReplacedOrShortened);
         }
         journal_file.seek(SeekFrom::Start(replayed_length))?;
         let mut appended = Vec::new();
         journal_file.read_to_end(&mut appended)?;
         replay.advance_over(&appended)?;
-        Ok(())
+        Ok(JournalReplaySourceStatus::Current)
     }
 
     /// Cut the journal to `length` bytes, discarding an incomplete final record.
@@ -2355,8 +2502,20 @@ impl Journal {
         replay_complete_records(&bytes).map(|(replay, _)| replay)
     }
 
-    /// Replay complete records without opening the journal for mutation, resuming after
-    /// `checkpoint` when it still describes the journal.
+    /// Replay complete records and keep their source file open.
+    pub(super) fn replay_read_only_with_source(
+        path: &Path,
+    ) -> Result<(JournalReplay, JournalReplaySource, u64), JournalError> {
+        let mut file = fs::File::open(path)?;
+        let metadata = file.metadata()?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let (replay, _) = replay_complete_records(&bytes)?;
+        let source = JournalReplaySource::new(file, JournalFileIdentity::from(&metadata));
+        Ok((replay, source, metadata.len()))
+    }
+
+    #[cfg(test)]
     pub(super) fn replay_read_only_from_checkpoint(
         path: &Path,
         checkpoint: &ReplayCheckpoint<'_>,
@@ -2410,7 +2569,11 @@ impl JournalReplay {
     ///
     /// Updates every field except the byte range, which [`Self::cover`] extends.
     fn apply_record(&mut self, event: JournalEvent, record_bytes: u64) {
-        fold_reservations(&mut self.reservations, &event);
+        fold_reservations(
+            &mut self.reservations,
+            &event,
+            RetainedReservationSet::apply,
+        );
         let history_changes = match &self.reservations {
             Ok(reservations) => self.finished_history.observe(&event, reservations),
             Err(_) => Vec::new(),
@@ -2544,12 +2707,13 @@ pub(super) fn complete_record_events(bytes: &[u8]) -> Result<Vec<JournalEvent>, 
 ///
 /// The first failure replaces the set and no later event is applied, so
 /// the fold stops at its first error.
-fn fold_reservations(
-    reservations: &mut Result<RetainedReservationSet, ReservationReplayError>,
+fn fold_reservations<Set>(
+    reservations: &mut Result<Set, ReservationReplayError>,
     event: &JournalEvent,
+    apply: impl FnOnce(&mut Set, &JournalEvent) -> Result<(), ReservationReplayError>,
 ) {
     if let Ok(retained) = reservations
-        && let Err(error) = retained.apply(event)
+        && let Err(error) = apply(retained, event)
     {
         *reservations = Err(error);
     }
@@ -2696,7 +2860,6 @@ mod tests {
     use std::collections::BTreeSet;
     use std::fs;
     use std::io::Write;
-    use std::os::unix::fs::MetadataExt;
 
     use serde_json::Value;
     use tempfile::tempdir;
@@ -2727,6 +2890,7 @@ mod tests {
     use super::JournalOperation;
     use super::JournalReplay;
     use super::JournalReplaySource;
+    use super::JournalReplaySourceStatus;
     use super::MAXIMUM_JOURNAL_RECORD_BYTES;
     use super::MAXIMUM_RECORDED_IDENTITY_INPUT_VALUE_BYTES;
     use super::NonEmptyReservationPurpose;
@@ -3688,8 +3852,7 @@ mod tests {
         let (journal, _) = Journal::open_or_create(&journal_path)?;
         journal.append(&events[0])?;
         let mut replay = Journal::replay_read_only(&journal_path)?;
-        let source = fs::metadata(&journal_path)?;
-        let source = JournalReplaySource::new(source.dev(), source.ino());
+        let source = JournalReplaySource::open(&journal_path)?;
         journal.append(&events[1])?;
         let mut record = serde_json::to_vec(&events[2])?;
         record.push(b'\n');
@@ -3698,19 +3861,25 @@ mod tests {
         writer.write_all(&record[..split])?;
         let in_progress_length = fs::metadata(&journal_path)?.len();
 
-        Journal::advance_read_only_tail(&journal_path, &mut replay, source)?;
+        assert_eq!(
+            Journal::advance_read_only_tail(&journal_path, &mut replay, &source)?,
+            JournalReplaySourceStatus::Current,
+        );
         assert_eq!(replay.record_count, 2);
         assert_eq!(fs::metadata(&journal_path)?.len(), in_progress_length);
 
         writer.write_all(&record[split..])?;
-        Journal::advance_read_only_tail(&journal_path, &mut replay, source)?;
+        assert_eq!(
+            Journal::advance_read_only_tail(&journal_path, &mut replay, &source)?,
+            JournalReplaySourceStatus::Current,
+        );
         assert_eq!(replay.record_count, 3);
         assert_eq!(replay, Journal::replay_read_only(&journal_path)?);
         Ok(())
     }
 
     #[test]
-    fn unlocked_tail_advancement_replays_a_longer_compacted_replacement()
+    fn unlocked_tail_advancement_detects_a_longer_compacted_replacement()
     -> Result<(), Box<dyn std::error::Error>> {
         let (events, failing_record_index) = round_trip_sequence_events()?;
         let temporary_directory = tempdir()?;
@@ -3720,7 +3889,7 @@ mod tests {
         // holder observation. A preparation has read through that first observation.
         journal.append_events(&events[..11])?;
         let mut replay = Journal::replay_read_only(&journal_path)?;
-        let original_file = fs::metadata(&journal_path)?;
+        let original_file = JournalReplaySource::open(&journal_path)?;
         journal.append_events(&events[11..failing_record_index])?;
 
         let replacement_path = temporary_directory.path().join("compacted.ndjson");
@@ -3737,15 +3906,20 @@ mod tests {
             b'\n',
             "the old replay offset must land inside a replacement record"
         );
-        assert_eq!(fs::metadata(&journal_path)?.ino(), original_file.ino());
+        assert_eq!(
+            original_file.status(&fs::metadata(&journal_path)?, replay.end_offset),
+            JournalReplaySourceStatus::Current,
+        );
         fs::rename(&replacement_path, &journal_path)?;
 
-        Journal::advance_read_only_tail(
-            &journal_path,
-            &mut replay,
-            JournalReplaySource::new(original_file.dev(), original_file.ino()),
-        )?;
-        assert_eq!(replay, expected);
+        let original_replay = replay.clone();
+        let source_status =
+            Journal::advance_read_only_tail(&journal_path, &mut replay, &original_file)?;
+        assert_eq!(
+            source_status,
+            JournalReplaySourceStatus::ReplacedOrShortened
+        );
+        assert_eq!(replay, original_replay);
         assert_eq!(fs::read(&journal_path)?, replacement_bytes);
         Ok(())
     }

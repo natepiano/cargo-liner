@@ -24,7 +24,7 @@ use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationPurpose;
 use crate::ledger::ResolvedEditAuthorization;
 use crate::ledger::WorktreeContext;
-use crate::reservation::RetainedReservationSet;
+use crate::reservation::ReservationFacts;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 
@@ -229,7 +229,7 @@ impl ClaimRunValidation {
     /// [`coordination_identity::validate_worktree_occupancy`].
     pub(super) fn validate(
         self,
-        reservations: &RetainedReservationSet,
+        reservations: &ReservationFacts,
         worktree_context: &WorktreeContext,
         worktree_id: WorktreeId,
         recovery_command_line: &RecoveryCommandLine,

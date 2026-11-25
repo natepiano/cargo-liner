@@ -30,6 +30,8 @@ pub(crate) use authorization::ResolvedEditAuthorization;
 pub(crate) use authorization::ResolvedJournalMutationActor;
 pub(crate) use compaction::JournalCompaction;
 pub(crate) use compaction::JournalCompactionError;
+#[cfg(test)]
+pub(crate) use compaction::superseded_bytes;
 pub(crate) use constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub(crate) use constants::GATE_DEADLINE_ENVIRONMENT;
 pub(crate) use constants::GATE_TARGETS_FILE_NAME;
@@ -111,6 +113,12 @@ pub(crate) use path::AncestorCanonicalizationError;
 pub(crate) use path::canonicalize_through_nearest_existing_ancestor;
 pub(crate) use path::normalize_absolute_path;
 pub(crate) use projection::JournalPosition;
+pub(crate) use projection::ReplayPosition;
+pub(crate) use replay_checkpoint::CheckpointReservationParts;
+#[cfg(test)]
+pub(crate) use replay_checkpoint::count_checkpoint_decodes;
+#[cfg(test)]
+pub(crate) use replay_checkpoint::count_checkpoint_part_decodes;
 pub(crate) use target::ClaimTarget;
 pub(crate) use target::IntegrationTarget;
 pub(crate) use target::ReservationJudgingBranch;

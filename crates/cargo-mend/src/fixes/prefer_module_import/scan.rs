@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::ops::Range;
 use std::path::Path;
 
 use anyhow::Context;
@@ -23,12 +24,14 @@ use super::support::CrateSources;
 use super::support::SourceSpan;
 use crate::compiler::SOURCE_DIR_SRC;
 use crate::config::DiagnosticCode;
+use crate::fixes::facade_redirect::NamingTokens;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::ImportGroup;
 use crate::fixes::imports::ImportProposal;
 use crate::fixes::imports::ImportReservation;
 use crate::fixes::imports::ImportSource;
 use crate::fixes::imports::ModuleImports;
+use crate::fixes::imports::RewrittenPaths;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::Finding;
@@ -292,6 +295,7 @@ fn scan_file(
 
     let mut module_to_functions = fixable_function_candidates(
         &FileScope {
+            file_context: &file_context,
             syntax,
             module_map,
             sources: crate_sources.sources,
@@ -300,7 +304,7 @@ fn scan_file(
         },
         raw_candidates,
         &mut inline_candidates,
-    );
+    )?;
 
     if module_to_functions.is_empty() && inline_candidates.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -375,6 +379,7 @@ fn detect_candidates<'a>(
 
 /// What the candidate drops read about the scanned file.
 struct FileScope<'a> {
+    file_context:        &'a ScanFileContext<'a>,
     syntax:              &'a File,
     module_map:          &'a ModuleMap,
     sources:             &'a ParsedSources,
@@ -388,10 +393,15 @@ fn fixable_function_candidates(
     scope: &FileScope<'_>,
     candidates: Vec<RawCandidate>,
     inline_candidates: &mut Vec<InlineCallCandidate>,
-) -> BTreeMap<String, Vec<RawCandidate>> {
+) -> Result<BTreeMap<String, Vec<RawCandidate>>> {
     let mut module_to_functions = group_candidates_by_module(candidates);
 
-    drop_colliding_candidates(scope.imports, &mut module_to_functions, inline_candidates);
+    drop_colliding_candidates(
+        scope.file_context,
+        scope.imports,
+        &mut module_to_functions,
+        inline_candidates,
+    )?;
 
     descendant_imports::drop_candidates_reached_by_descendants(
         scope.syntax,
@@ -405,7 +415,7 @@ fn fixable_function_candidates(
     // side and eliminate a collision.
     drop_candidates_colliding_with_each_other(&mut module_to_functions, inline_candidates);
 
-    module_to_functions
+    Ok(module_to_functions)
 }
 
 fn group_candidates_by_module(
@@ -499,32 +509,73 @@ fn drop_candidates_colliding_with_each_other(
 /// Drop candidates whose target module name is already bound in the same scope
 /// to a *different* module. Introducing `use <module>;` would collide with that
 /// existing import (E0252), and rewriting the call to `name::fn(...)` would
-/// resolve to the wrong module (E0425). Leave such imports untouched rather than
-/// emit an unfixable finding.
+/// resolve to the wrong module (E0425). A glob import in that scope can also
+/// bring in the name: when the file uses the name outside the paths that the
+/// fix rewrites, `use <module>;` would hide the glob's binding there (E0425).
+/// Leave such imports untouched rather than emit an unfixable finding.
+///
+/// A fix for one module rewrites every candidate path to that module, so each
+/// `use` item of the module and the `crate::module::` prefix of each inline
+/// call to it are excluded from the usage check. The fix does not rewrite the
+/// leaf of an inline call or its generic arguments, so those stay in the check.
+/// An `ImportTarget::ParentModule` candidate adds no `use` and rewrites to
+/// `super::`, so it cannot collide and is kept.
 fn drop_colliding_candidates(
+    file_context: &ScanFileContext<'_>,
     imports: &ModuleImports,
     module_to_functions: &mut BTreeMap<String, Vec<RawCandidate>>,
     inline_candidates: &mut Vec<InlineCallCandidate>,
-) {
+) -> Result<()> {
+    let source = file_context.source();
+    let mut rewritten_ranges: BTreeMap<Vec<String>, Vec<Range<usize>>> = BTreeMap::new();
+    for candidate in module_to_functions.values().flatten() {
+        let span = SourceSpan::new(source, candidate.span_start, candidate.span_end)?;
+        rewritten_ranges
+            .entry(candidate.absolute_module.clone())
+            .or_default()
+            .push(span.start().byte()..span.end());
+    }
+    for candidate in inline_candidates.iter() {
+        let span = SourceSpan::new(source, candidate.prefix_start, candidate.leaf_start)?;
+        rewritten_ranges
+            .entry(candidate.absolute_module.clone())
+            .or_default()
+            .push(span.start().byte()..span.end());
+    }
+    let naming_tokens = NamingTokens::from(file_context.text());
+    let rewritten_paths = |absolute_module: &[String]| {
+        RewrittenPaths::new(
+            &naming_tokens,
+            rewritten_ranges
+                .get(absolute_module)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        )
+    };
     module_to_functions.retain(|_, functions| {
-        functions.retain(|candidate| {
-            !imports.collides(
+        functions.retain(|candidate| match candidate.import_target {
+            ImportTarget::ParentModule => true,
+            ImportTarget::OtherModule => !imports.collides(
                 imports.offset_for_scope(&candidate.inline_scope),
                 &candidate.module_name,
                 &candidate.absolute_module,
                 &ImportProposal::RewriteAt(candidate.span_start),
-            )
+                &rewritten_paths(&candidate.absolute_module),
+            ),
         });
         !functions.is_empty()
     });
-    inline_candidates.retain(|candidate| {
-        !imports.collides(
+    inline_candidates.retain(|candidate| match candidate.import_target {
+        ImportTarget::ParentModule => true,
+        ImportTarget::OtherModule => !imports.collides(
             0,
             &candidate.module_name,
             &candidate.absolute_module,
             &ImportProposal::Addition,
-        )
+            &rewritten_paths(&candidate.absolute_module),
+        ),
     });
+    Ok(())
 }
 
 /// Drop candidates whose imports `preserved_imports` keeps, because an attribute

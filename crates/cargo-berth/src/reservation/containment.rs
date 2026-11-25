@@ -15,9 +15,8 @@ use super::lifecycle::ReservationLifecycle;
 use super::merge_extent::MergeExtent;
 use super::merge_extent::ReservationProtection;
 use super::merge_extent::RetainedMergeEvidence;
-use super::record::RecordedTarget;
 use super::record::Reservation;
-use super::retention::RetainedReservationSet;
+use super::retention::ReservationFacts;
 use crate::config::BerthConfig;
 use crate::config::Enrollment;
 use crate::git::RepositorySnapshot;
@@ -70,7 +69,7 @@ enum CrossTargetRemainder {
 impl ActingHeadContainment {
     /// Select the current checkout's recorded target, or its automatic branch target.
     pub(crate) fn observe_for_actor(
-        retained_reservation_set: &RetainedReservationSet,
+        retained_reservation_set: &ReservationFacts,
         repository_snapshot: &RepositorySnapshot,
         resolved_edit_authorization: ResolvedEditAuthorization,
     ) -> Self {
@@ -85,7 +84,7 @@ impl ActingHeadContainment {
     /// Observe only holders whose complete protection touches this edit. Containment can
     /// remove protection, never add it, so disjoint holders cannot affect the answer.
     pub(crate) fn observe_for_edit(
-        reservations: &RetainedReservationSet,
+        reservations: &ReservationFacts,
         repository: &RepositorySnapshot,
         authorization: ResolvedEditAuthorization,
         requested: &ReservationScopeSet,
@@ -101,7 +100,7 @@ impl ActingHeadContainment {
     }
 
     fn observe_for_actor_holders(
-        reservations: &RetainedReservationSet,
+        reservations: &ReservationFacts,
         repository: &RepositorySnapshot,
         authorization: ResolvedEditAuthorization,
         holders: &[&Reservation],
@@ -127,10 +126,7 @@ impl ActingHeadContainment {
             })
             .last();
         let target = if let Some(reservation) = acting_reservation {
-            match reservations.target_of(reservation.id(), &repository_trunk) {
-                Ok(target) => target,
-                Err(_) => return Self::unavailable(acting_worktree),
-            }
+            reservation.target().or_trunk(&repository_trunk).clone()
         } else {
             let Ok(head) = fs::read_to_string(context.administrative_directory().join("HEAD"))
             else {
@@ -163,7 +159,7 @@ impl ActingHeadContainment {
     }
     /// Apply the same candidate-first rule during locked acquisition validation.
     pub(crate) fn observe_for_claim(
-        reservations: &RetainedReservationSet,
+        reservations: &ReservationFacts,
         repository: &RepositorySnapshot,
         acting_worktree: WorktreeId,
         acting_target: &IntegrationTarget,
@@ -236,7 +232,7 @@ impl ActingHeadContainment {
 
     /// Reuse a caller's resolved HEAD when observing foreign committed protection.
     pub(crate) fn observe_at_head(
-        reservations: &RetainedReservationSet,
+        reservations: &ReservationFacts,
         repository: &RepositorySnapshot,
         context: &WorktreeContext,
         acting_worktree: WorktreeId,
@@ -268,7 +264,7 @@ impl ActingHeadContainment {
             .iter()
             .filter(|holder| holder.actor().worktree != acting_worktree)
             .filter_map(|holder| {
-                let holder_target = holder_target(holder.target(), repository_trunk);
+                let holder_target = holder.target().or_trunk(repository_trunk);
                 match holder.merge_extent() {
                     MergeExtent::Protected { key, .. }
                     | MergeExtent::Unavailable {
@@ -379,7 +375,7 @@ impl ActingHeadContainment {
         else {
             return scopes.as_slice().to_vec();
         };
-        let holder_target = holder_target(holder.target(), repository_trunk);
+        let holder_target = holder.target().or_trunk(repository_trunk);
         scopes
             .as_slice()
             .iter()
@@ -439,16 +435,6 @@ fn automatically_selected_target(
     }
 }
 
-const fn holder_target<'target>(
-    recorded_target: &'target RecordedTarget,
-    repository_trunk: &'target IntegrationTarget,
-) -> &'target IntegrationTarget {
-    match recorded_target {
-        RecordedTarget::Recorded { target, .. } => target,
-        RecordedTarget::Unrecorded => repository_trunk,
-    }
-}
-
 /// Whether a holder's recorded target is the acting reservation's target.
 #[derive(Clone, Copy)]
 enum HolderTargetRelation {
@@ -473,7 +459,7 @@ fn committed_path_remains(
 /// matches, retain all its contributors: containment can change which sibling represents
 /// the union in an overlap answer, even when that sibling's own paths are disjoint.
 fn requested_holders<'a>(
-    reservations: &'a RetainedReservationSet,
+    reservations: &'a ReservationFacts,
     acting_worktree: WorktreeId,
     requested: &ReservationScopeSet,
     path_case: PathCase,
@@ -524,7 +510,6 @@ mod tests {
     use super::HolderTargetRelation;
     use super::automatically_selected_target;
     use super::committed_path_remains;
-    use super::holder_target;
     use crate::git::RepositorySnapshot;
     use crate::ids::CoordinationRunId;
     use crate::ids::EventId;
@@ -862,7 +847,7 @@ mod tests {
             committed_paths: paths(&["integration.txt"])?,
             outside_target:  CrossTargetRemainder::Paths(HashSet::new()),
         };
-        let holder_target = holder_target(&RecordedTarget::Unrecorded, &repository_trunk);
+        let holder_target = RecordedTarget::Unrecorded.or_trunk(&repository_trunk);
         assert_ne!(holder_target, &acting_target);
         assert!(!committed_path_remains(
             &holder_head_remainder,

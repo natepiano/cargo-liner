@@ -11,8 +11,11 @@ use super::claim::FirstTouchClaimExecution;
 use super::claim::FirstTouchClaimRequest;
 use super::claim::FirstTouchConflictHandling;
 use super::claim::FirstTouchConflictOutcome;
+use super::claim::FirstTouchObservation;
+use super::claim::PhaseReservationCandidate;
 use super::refusal;
 use crate::answer::OverlapApprover;
+use crate::config::BerthConfig;
 use crate::config::DefaultAnswer;
 use crate::config::Enrollment;
 use crate::coordination_identity;
@@ -35,8 +38,8 @@ use crate::output::OutputEnvelope;
 use crate::reconcile;
 use crate::reservation::ActingHeadContainment;
 use crate::reservation::ReservationConflict;
+use crate::reservation::ReservationFacts;
 use crate::reservation::ReservationReplayError;
-use crate::reservation::RetainedReservationSet;
 use crate::scope::DeclaredReservationScopeSet;
 use crate::scope::PathCase;
 use crate::scope::PathCaseError;
@@ -52,7 +55,6 @@ pub(crate) struct CheckRequest {
 
 struct CheckDecision {
     requester:         ResolvedJournalMutationActor,
-    worktree_context:  WorktreeContext,
     acquisition:       CheckAcquisitionDecision,
     scopes:            ReservationScopeSet,
     conflicts:         Vec<ReservationConflict>,
@@ -80,6 +82,8 @@ enum CheckDecisionError {
     ReservationReplay(ReservationReplayError),
     /// The process identity is stale or belongs to another worktree.
     CoordinationIdentity(CoordinationIdentityRejection),
+    /// More than one reservation declares the edit and the caller has not selected an owner.
+    AmbiguousEditHookOwners(Vec<PhaseReservationCandidate>),
 }
 
 impl From<CoordinationIdentityValidationError> for CheckDecisionError {
@@ -108,6 +112,9 @@ impl CheckDecisionError {
             Self::CoordinationIdentity(rejection) => {
                 OutputEnvelope::coordination_identity_rejected(CommandVerb::Check, rejection)
             },
+            Self::AmbiguousEditHookOwners(candidates) => {
+                OutputEnvelope::ambiguous_active_run_reservations(CommandVerb::Check, &candidates)
+            },
         }
     }
 }
@@ -117,8 +124,36 @@ pub(crate) fn execute(
     check_request: CheckRequest,
     recovery_command_line: &RecoveryCommandLine,
 ) -> OutputEnvelope {
-    let mut capacity_recovery = claim::ClaimCapacityRecovery::default();
+    let invocation_directory = match session::command_directory() {
+        Ok(invocation_directory) => invocation_directory,
+        Err(error) => {
+            return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
+        },
+    };
+    execute_at(&invocation_directory, check_request, recovery_command_line)
+}
+
+fn execute_at(
+    invocation_directory: &Path,
+    check_request: CheckRequest,
+    recovery_command_line: &RecoveryCommandLine,
+) -> OutputEnvelope {
+    let repository = match RepositorySnapshot::discover(invocation_directory) {
+        Ok(repository) => repository,
+        Err(error) => return OutputEnvelope::ledger_error(CommandVerb::Check, &error),
+    };
+    let ledger = if matches!(
+        check_request.reservation_selection,
+        CheckReservationSelection::EditHook
+    ) {
+        Ledger::for_edit_check(repository.context())
+    } else {
+        Ledger::for_command_check(repository.context())
+    };
+    let mut capacity_recovery = ClaimCapacityRecovery::default();
     let output = execute_with_capacity_recovery(
+        &ledger,
+        &repository,
         check_request,
         recovery_command_line,
         &mut capacity_recovery,
@@ -127,23 +162,15 @@ pub(crate) fn execute(
 }
 
 fn execute_with_capacity_recovery(
+    ledger: &Ledger,
+    repository: &RepositorySnapshot,
     check_request: CheckRequest,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> OutputEnvelope {
-    let invocation_directory = match session::command_directory() {
-        Ok(invocation_directory) => invocation_directory,
-        Err(error) => {
-            return OutputEnvelope::ledger_unreadable(CommandVerb::Check, &error.to_string());
-        },
-    };
-    let repository = match crate::git::RepositorySnapshot::discover(&invocation_directory) {
-        Ok(repository) => repository,
-        Err(error) => return OutputEnvelope::ledger_error(CommandVerb::Check, &error),
-    };
     let first_decision = match decide(
-        &invocation_directory,
-        &repository,
+        ledger,
+        repository,
         check_request.declared_scopes.clone(),
         check_request.reservation_selection,
         recovery_command_line,
@@ -167,9 +194,32 @@ fn execute_with_capacity_recovery(
         first_decision.merge_observation,
         MergeObservationRequirement::Required
     ) {
+        if matches!(
+            check_request.reservation_selection,
+            CheckReservationSelection::EditHook
+        ) && first_decision.conflicts.is_empty()
+        {
+            let acquisition = acquire_first_touch(
+                ledger,
+                repository,
+                check_request.declared_scopes.clone(),
+                check_request.reservation_selection,
+                FirstTouchObservation::EditedPath,
+                recovery_command_line,
+                capacity_recovery,
+            );
+            if !matches!(acquisition, Err(ClaimError::FullReconciliationRequired)) {
+                return render_acquisition(
+                    acquisition,
+                    first_decision.approver,
+                    first_decision.requester,
+                    ledger,
+                );
+            }
+        }
         return reconcile_and_retry(
-            &invocation_directory,
-            &repository,
+            ledger,
+            repository,
             check_request.declared_scopes,
             check_request.reservation_selection,
             recovery_command_line,
@@ -178,16 +228,18 @@ fn execute_with_capacity_recovery(
     }
     if first_decision.conflicts.is_empty() {
         return match acquire_first_touch(
-            &repository,
+            ledger,
+            repository,
             check_request.declared_scopes.clone(),
             check_request.reservation_selection,
+            FirstTouchObservation::Retained,
             recovery_command_line,
             capacity_recovery,
         ) {
             Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { .. })) => {
                 reconcile_and_retry(
-                    &invocation_directory,
-                    &repository,
+                    ledger,
+                    repository,
                     check_request.declared_scopes,
                     check_request.reservation_selection,
                     recovery_command_line,
@@ -198,13 +250,13 @@ fn execute_with_capacity_recovery(
                 acquisition,
                 first_decision.approver,
                 first_decision.requester,
-                &first_decision.worktree_context,
+                ledger,
             ),
         };
     }
     reconcile_and_retry(
-        &invocation_directory,
-        &repository,
+        ledger,
+        repository,
         check_request.declared_scopes,
         check_request.reservation_selection,
         recovery_command_line,
@@ -214,14 +266,14 @@ fn execute_with_capacity_recovery(
 
 /// Reconcile, then decide again; report reconciliation failures directly.
 fn reconcile_and_retry(
-    invocation_directory: &Path,
+    ledger: &Ledger,
     repository: &RepositorySnapshot,
     declared_scopes: DeclaredReservationScopeSet,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> OutputEnvelope {
-    let reconciliation_report = match reconcile::reconcile_for_check(repository) {
+    let reconciliation_report = match reconcile::reconcile_for_check(repository, ledger) {
         Ok(Enrollment::Enrolled(reconciliation_report)) => reconciliation_report,
         Ok(Enrollment::Unconfigured {
             expected_configuration_path,
@@ -231,7 +283,7 @@ fn reconcile_and_retry(
         Err(error) => return error.into_output(CommandVerb::Check),
     };
     let retried_decision = match decide(
-        invocation_directory,
+        ledger,
         repository,
         declared_scopes.clone(),
         reservation_selection,
@@ -258,22 +310,24 @@ fn reconcile_and_retry(
     if retried_decision.conflicts.is_empty() || retried_decision.default_answer.is_some() {
         render_acquisition(
             acquire_first_touch(
+                ledger,
                 repository,
                 declared_scopes,
                 reservation_selection,
+                FirstTouchObservation::Retained,
                 recovery_command_line,
                 capacity_recovery,
             ),
             retried_decision.approver,
             retried_decision.requester,
-            &retried_decision.worktree_context,
+            ledger,
         )
         .with_alerts(reconciliation_report.alerts)
         .with_retention_maintenance(&reconciliation_report.retention_maintenance)
         .with_automatic_releases(&reconciliation_report.settlements)
     } else {
         refusal::record(
-            &retried_decision.worktree_context,
+            ledger,
             retried_decision.requester,
             RefusedVerb::Check,
             &retried_decision.scopes,
@@ -291,9 +345,11 @@ fn reconcile_and_retry(
 }
 
 fn acquire_first_touch(
+    ledger: &Ledger,
     repository: &RepositorySnapshot,
     declared_scopes: DeclaredReservationScopeSet,
     reservation_selection: CheckReservationSelection,
+    observation: FirstTouchObservation,
     recovery_command_line: &RecoveryCommandLine,
     capacity_recovery: &mut ClaimCapacityRecovery,
 ) -> Result<Enrollment<FirstTouchClaimExecution>, ClaimError> {
@@ -304,6 +360,8 @@ fn acquire_first_touch(
         },
         reservation_selection,
         repository,
+        ledger,
+        observation,
         recovery_command_line,
         capacity_recovery,
     )
@@ -313,7 +371,7 @@ fn render_acquisition(
     acquisition: Result<Enrollment<FirstTouchClaimExecution>, ClaimError>,
     approver: Option<OverlapApprover>,
     requester: ResolvedJournalMutationActor,
-    worktree_context: &WorktreeContext,
+    ledger: &Ledger,
 ) -> OutputEnvelope {
     match acquisition {
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Acquired {
@@ -332,13 +390,7 @@ fn render_acquisition(
             ..
         })) => OutputEnvelope::blocked_check(scopes, conflicts, approver),
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::Blocked { scopes, conflicts })) => {
-            refusal::record(
-                worktree_context,
-                requester,
-                RefusedVerb::Check,
-                &scopes,
-                &conflicts,
-            );
+            refusal::record(ledger, requester, RefusedVerb::Check, &scopes, &conflicts);
             OutputEnvelope::blocked_check(scopes, conflicts, approver)
         },
         Ok(Enrollment::Enrolled(FirstTouchClaimExecution::ReservationLimitReached(maximum))) => {
@@ -352,25 +404,29 @@ fn render_acquisition(
 }
 
 fn decide(
-    invocation_directory: &Path,
+    ledger: &Ledger,
     repository: &RepositorySnapshot,
     declared_scopes: DeclaredReservationScopeSet,
     reservation_selection: CheckReservationSelection,
     recovery_command_line: &RecoveryCommandLine,
 ) -> Result<Enrollment<CheckDecision>, CheckDecisionError> {
-    let (reservations, worktree_context, configuration) =
-        match Ledger::read_for_edit_check(invocation_directory)
-            .map_err(CheckDecisionError::Ledger)?
-        {
-            Enrollment::Enrolled(snapshot) => snapshot.into_parts(),
-            Enrollment::Unconfigured {
+    let worktree_context = repository.context();
+    let configuration = match BerthConfig::read(&worktree_context.configuration_lookup())
+        .map_err(LedgerError::from)
+        .map_err(CheckDecisionError::Ledger)?
+    {
+        Enrollment::Enrolled(configuration) => configuration,
+        Enrollment::Unconfigured {
+            expected_configuration_path,
+        } => {
+            return Ok(Enrollment::Unconfigured {
                 expected_configuration_path,
-            } => {
-                return Ok(Enrollment::Unconfigured {
-                    expected_configuration_path,
-                });
-            },
-        };
+            });
+        },
+    };
+    let reservations = ledger
+        .with_validated_reservation_facts(|facts, _| facts.cloned().map_err(Clone::clone))
+        .map_err(CheckDecisionError::Ledger)?;
     let path_case = PathCase::read(worktree_context.common_git_directory())
         .map_err(CheckDecisionError::PathCase)?;
     // Refusal follows the full declared edit, including every child of a tree scope.
@@ -378,39 +434,45 @@ fn decide(
     let acquisition_scopes = declared_scopes.clone().into_exact_file_antichain(path_case);
     let scopes = declared_scopes.into_minimal_antichain(path_case);
     let reservations = reservations.map_err(CheckDecisionError::ReservationReplay)?;
-    let resolved_edit_authorization =
-        ledger::resolve_identity(&worktree_context).map_err(CheckDecisionError::Ledger)?;
-    let resolved_edit_authorization =
-        if matches!(reservation_selection, CheckReservationSelection::EditHook) {
-            claim::sole_phase_edit_authorization(&reservations, resolved_edit_authorization)
-        } else {
-            resolved_edit_authorization
-        };
+    let caller_identity =
+        ledger::resolve_identity(worktree_context).map_err(CheckDecisionError::Ledger)?;
+    let edit_authorization = if matches!(reservation_selection, CheckReservationSelection::EditHook)
+    {
+        claim::edit_hook_authorization(
+            &reservations,
+            caller_identity,
+            &acquisition_scopes,
+            path_case,
+            &worktree_context.ledger_directory(),
+        )
+        .map_err(CheckDecisionError::AmbiguousEditHookOwners)
+    } else {
+        Ok(caller_identity)
+    };
     let repository = check_repository_observation(repository);
     let acting_head_containment = ActingHeadContainment::observe_for_edit(
         &reservations,
         &repository,
-        resolved_edit_authorization,
+        *edit_authorization.as_ref().unwrap_or(&caller_identity),
         &scopes,
         path_case,
     );
     let reservations = reservations.with_acting_head_containment(acting_head_containment);
     let identity_validation = CoordinationIdentityValidationContext::for_user_command(
-        resolved_edit_authorization,
-        &worktree_context,
+        caller_identity,
+        worktree_context,
         recovery_command_line,
     );
     coordination_identity::validate_coordination_identity(&reservations, &identity_validation)
         .map_err(CheckDecisionError::from)?;
-    validate_edit_worktree_occupancy(
-        &reservations,
-        &worktree_context,
-        resolved_edit_authorization,
-    )
-    .map_err(CheckDecisionError::from)?;
+    validate_edit_worktree_occupancy(&reservations, worktree_context, caller_identity)
+        .map_err(CheckDecisionError::from)?;
+    let resolved_edit_authorization = edit_authorization?;
     let conflicts =
         reservations.conflicts_for_edit(&scopes, resolved_edit_authorization, path_case);
     let acquisition = if conflicts.is_empty()
+        && resolved_edit_authorization == caller_identity
+        && !session::command_selection_needs_publication(&worktree_context.ledger_directory())
         && let Ok(repository_trunk) = configuration.repository_trunk()
     {
         claim::selected_reservation_check_acquisition(
@@ -444,7 +506,6 @@ fn decide(
         default_answer: configuration.default_answer,
         requester: resolved_edit_authorization
             .journal_mutation_actor_for(resolved_edit_authorization.coordination_run_id),
-        worktree_context,
     }))
 }
 
@@ -463,7 +524,7 @@ fn decide(
 /// `claim --run <second> --override <holder>` that this same rule refuses before any conflict
 /// is evaluated. The occupancy refusal names the repair that works instead.
 fn validate_edit_worktree_occupancy(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     worktree_context: &WorktreeContext,
     resolved_edit_authorization: ResolvedEditAuthorization,
 ) -> Result<(), CoordinationIdentityValidationError> {
@@ -487,10 +548,736 @@ fn check_repository_observation(repository: &RepositorySnapshot) -> RepositorySn
 
 #[cfg(test)]
 mod cost_tests {
-    use cargo_berth_test_support::CommandDeadlineExt as _;
+    use std::error::Error;
+    use std::fs;
+    use std::os::unix::fs::MetadataExt as _;
+    use std::path::Path;
+    use std::path::PathBuf;
+    use std::process::ExitCode;
+    use std::process::Stdio;
 
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+    use cargo_berth_test_support::TestProcessGroup;
+    use serde_json::Value;
+    use tempfile::TempDir;
+
+    use super::CheckRequest;
+    use super::CheckReservationSelection;
     use super::check_repository_observation;
+    use super::execute_at;
+    use crate::config::Enrollment;
+    use crate::coordination_identity::RecoveryCommandLine;
+    use crate::exit::BerthExit;
     use crate::git::RepositorySnapshot;
+    use crate::hook::pre_tool_use;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
+    use crate::ledger;
+    use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
+    use crate::ledger::JournalOperation;
+    use crate::ledger::Ledger;
+    use crate::ledger::LedgerTransactionOutcome;
+    use crate::ledger::ScopeKind;
+    use crate::ledger::TransactionValidation;
+    use crate::output::OutputEnvelope;
+    use crate::reconcile::RecoveredBypassReporting;
+    use crate::reservation::MergeExtent;
+    use crate::reservation::ReservationRunStatus;
+    use crate::scope::DeclaredReservationScopeSet;
+
+    const TEST_COMPACTION_THRESHOLD_BYTES: u64 = 1;
+    const HELD_PATH: &str = "held.rs";
+    const UNRESERVED_PATH: &str = "new.rs";
+
+    #[test]
+    fn edit_hook_first_touch_decodes_checkpoint_once() -> Result<(), Box<dyn Error>> {
+        const CHILD_MODE: &str = "CARGO_BERTH_TEST_COUNT_PRE_TOOL_USE_DECODES";
+        const TEST: &str = "verb::check::cost_tests::edit_hook_first_touch_decodes_checkpoint_once";
+        if std::env::var_os(CHILD_MODE).is_some() {
+            let (exit_code, decodes) =
+                Ledger::with_compaction_threshold_for_test(TEST_COMPACTION_THRESHOLD_BYTES, || {
+                    ledger::count_checkpoint_decodes(pre_tool_use::execute)
+                });
+            assert_eq!(exit_code, ExitCode::SUCCESS);
+            assert_eq!(decodes, 1);
+            return Ok(());
+        }
+
+        let fixture = EditCheckFixture::new()?;
+        let ledger = Ledger::open(fixture.root())?;
+        let events = ledger.journal_events_for_test()?;
+        let (actor, reservation_id, scopes) = events
+            .iter()
+            .find_map(|event| match &event.operation {
+                JournalOperation::Claim {
+                    reservation_id,
+                    scopes,
+                    ..
+                } => Some((&event.actor, *reservation_id, scopes)),
+                _ => None,
+            })
+            .ok_or("expected the foreign claim")?;
+        let observation = JournalOperation::MergeExtentObserved {
+            reservation_id,
+            extent: MergeExtent::NotDerived {
+                protection: scopes.clone(),
+            },
+            run_status: ReservationRunStatus::default(),
+        };
+        ledger.append_legacy_journal_operation(actor.clone(), observation.clone())?;
+        ledger.append_legacy_journal_operation(actor.clone(), observation)?;
+        Ledger::repair_projection(fixture.root())?;
+        ledger.write_replay_checkpoint_for_test()?;
+        let before_hook = ledger.journal_events_for_test()?;
+        let journal = fixture.root().join(".git/cargo-berth/journal.ndjson");
+        let original_bytes = fs::read(&journal)?;
+        let original_inode = fs::metadata(&journal)?.ino();
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "tool_name": "Write",
+            "cwd": fixture.root(),
+            "tool_input": {"file_path": fixture.root().join(UNRESERVED_PATH)},
+        }))?;
+        let mut command = cargo_berth_test_support::berth_command(std::env::current_exe()?);
+        let child = TestProcessGroup::spawn(
+            command
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD_MODE, "1")
+                .env_remove("CARGO_BERTH_BYPASS")
+                .env_remove("CARGO_BERTH_RUN")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )?;
+        let output = child.output_with_input(&payload)?;
+        assert!(output.status.success(), "{output:?}");
+
+        assert!(
+            fs::read(&journal)?.starts_with(&original_bytes),
+            "the edit hook must preserve the journal byte prefix"
+        );
+        assert_eq!(
+            fs::metadata(&journal)?.ino(),
+            original_inode,
+            "the edit hook must keep the journal inode"
+        );
+        let events = ledger.journal_events_for_test()?;
+        assert!(
+            events.starts_with(&before_hook),
+            "the edit hook must preserve due history"
+        );
+        let appended = &events[before_hook.len()..];
+        assert!(appended.iter().any(|event| {
+            matches!(
+                &event.operation,
+                JournalOperation::HolderMergeExtentObserved { .. }
+            )
+        }));
+        assert!(appended.iter().any(|event| {
+            matches!(
+                &event.operation,
+                JournalOperation::Claim { scopes, .. } if scopes.covers_path(UNRESERVED_PATH.as_bytes())
+            )
+        }));
+        assert!(
+            ledger::superseded_bytes(&ledger)? >= TEST_COMPACTION_THRESHOLD_BYTES,
+            "compaction must still be due after the edit hook"
+        );
+        assert_ordinary_renewal_compacts_journal(
+            fixture.root(),
+            &ledger,
+            reservation_id,
+            events.len(),
+        )
+    }
+
+    fn assert_ordinary_renewal_compacts_journal(
+        root: &Path,
+        ledger: &Ledger,
+        reservation_id: ReservationId,
+        records_before_renewal: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let outcome =
+            Ledger::with_compaction_threshold_for_test(TEST_COMPACTION_THRESHOLD_BYTES, || {
+                Ledger::open(root)?.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+                    TransactionValidation::<()>::Append(Box::new(JournalOperation::Renew {
+                        reservation_id,
+                    }))
+                })
+            })?;
+        assert!(matches!(outcome, LedgerTransactionOutcome::Appended { .. }));
+        let compacted = ledger.journal_events_for_test()?;
+        assert!(
+            compacted.len() < records_before_renewal + 1,
+            "the ordinary mutation must compact"
+        );
+        assert!(compacted.last().is_some_and(|event| {
+            matches!(event.operation, JournalOperation::Renew { reservation_id: renewed } if renewed == reservation_id)
+        }));
+        assert_eq!(
+            ledger::superseded_bytes(ledger)?,
+            0,
+            "the ordinary mutation must remove all superseded bytes"
+        );
+        ledger.read_validated_journal()?;
+        Ok(())
+    }
+
+    #[test]
+    fn edit_hook_keeps_first_touch_held_and_refused_answers() -> Result<(), Box<dyn Error>> {
+        const CHILD_MODE: &str = "CARGO_BERTH_TEST_CHECK_EDIT_HOOK_ANSWERS";
+        const TEST: &str =
+            "verb::check::cost_tests::edit_hook_keeps_first_touch_held_and_refused_answers";
+        if std::env::var_os(CHILD_MODE).is_none() {
+            // `edit_check` calls `execute_at` directly. The fixture needs a process without
+            // a harness session or run identity from the test launcher.
+            let output = cargo_berth_test_support::berth_command(std::env::current_exe()?)
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD_MODE, "1")
+                .env_remove(HARNESS_SESSION_ENVIRONMENT)
+                .env_remove("CARGO_BERTH_RUN")
+                .bounded_output()?;
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+
+        let fixture = EditCheckFixture::new()?;
+        let ledger = Ledger::open(fixture.root())?;
+        ledger.write_replay_checkpoint_for_test()?;
+
+        let first = serde_json::to_value(edit_check(fixture.root(), UNRESERVED_PATH)?)?;
+        assert_eq!(first["status"], "clear", "{first}");
+        assert_eq!(
+            first["message"],
+            "No foreign reservation overlaps the requested paths; a first-touch reservation was acquired."
+        );
+        let before_held = ledger.journal_events_for_test()?.len();
+        let held = serde_json::to_value(edit_check(fixture.root(), UNRESERVED_PATH)?)?;
+        assert_eq!(held["status"], "clear", "{held}");
+        assert_eq!(held["reservations"], first["reservations"]);
+        assert_eq!(
+            held["message"],
+            "No foreign reservation overlaps the requested paths; the acting run already holds them."
+        );
+        let events = ledger.journal_events_for_test()?;
+        let appended = &events[before_held..];
+        assert!(
+            appended.iter().all(|event| {
+                !matches!(
+                    event.operation,
+                    JournalOperation::Claim { .. } | JournalOperation::Widen { .. }
+                )
+            }),
+            "an already-held edit acquired scope again: {appended:?}"
+        );
+
+        let (refusal, decodes) =
+            ledger::count_checkpoint_decodes(|| edit_check(fixture.root(), HELD_PATH));
+        let refusal = serde_json::to_value(refusal?)?;
+        assert_eq!(refusal["status"], "blocked_by_overlap", "{refusal}");
+        assert_eq!(refusal["blocked_by"], fixture.holder);
+        assert_eq!(decodes, 1);
+        let events = ledger.journal_events_for_test()?;
+        assert!(events.last().is_some_and(|event| {
+            matches!(event.operation, JournalOperation::OverlapRefused { .. })
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn edit_hook_observes_a_foreign_change_outside_the_foreign_claim() -> Result<(), Box<dyn Error>>
+    {
+        run_edit_observation_test(
+            "verb::check::cost_tests::edit_hook_observes_a_foreign_change_outside_the_foreign_claim",
+            || {
+                let fixture = EditCheckFixture::new()?;
+                assert_eq!(
+                    board_settlements(fixture.root())?,
+                    Vec::<ReservationId>::new()
+                );
+                fs::write(fixture.foreign.join(UNRESERVED_PATH), "foreign edit\n")?;
+
+                let refusal = serde_json::to_value(edit_check(fixture.root(), UNRESERVED_PATH)?)?;
+                assert_eq!(refusal["status"], "blocked_by_overlap", "{refusal}");
+                assert_eq!(refusal["blocked_by"], fixture.holder);
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn edit_hook_observes_an_ascii_case_variant_in_a_foreign_checkout() -> Result<(), Box<dyn Error>>
+    {
+        run_edit_observation_test(
+            "verb::check::cost_tests::edit_hook_observes_an_ascii_case_variant_in_a_foreign_checkout",
+            || {
+                let fixture = EditCheckFixture::new()?;
+                run_git(fixture.root(), &["config", "core.ignorecase", "true"])?;
+                assert_eq!(
+                    board_settlements(fixture.root())?,
+                    Vec::<ReservationId>::new()
+                );
+                fs::write(fixture.foreign.join("NEW.rs"), "foreign edit\n")?;
+
+                let path = UNRESERVED_PATH.parse()?;
+                assert!(matches!(
+                    RepositorySnapshot::edited_path_status_at(
+                        &fixture.foreign,
+                        &path,
+                        crate::scope::PathCase::Insensitive,
+                    )?,
+                    crate::git::EditedPathStatus::Changed
+                ));
+                let refusal = serde_json::to_value(edit_check(fixture.root(), UNRESERVED_PATH)?)?;
+                assert_eq!(refusal["status"], "blocked_by_overlap", "{refusal}");
+                assert_eq!(refusal["blocked_by"], fixture.holder);
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn edit_hook_fully_observes_non_ascii_edits_in_a_case_insensitive_checkout()
+    -> Result<(), Box<dyn Error>> {
+        run_edit_observation_test(
+            "verb::check::cost_tests::edit_hook_fully_observes_non_ascii_edits_in_a_case_insensitive_checkout",
+            || {
+                let fixture = EditCheckFixture::new()?;
+                run_git(fixture.root(), &["config", "core.ignorecase", "true"])?;
+                fixture.integrate_holder()?;
+
+                let answer = edit_check(fixture.root(), "é.rs")?;
+                assert_eq!(answer.exit_code(), BerthExit::Clear, "{answer:?}");
+                let holder = fixture.holder_reservation_id()?;
+                let events = Ledger::open(fixture.root())?.journal_events_for_test()?;
+                assert!(events.iter().any(|event| {
+                    matches!(event.operation, JournalOperation::Release { reservation_id, .. } if reservation_id == holder)
+                }));
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn edit_hook_keeps_an_integrated_holder_with_an_untracked_path() -> Result<(), Box<dyn Error>> {
+        run_edit_observation_test(
+            "verb::check::cost_tests::edit_hook_keeps_an_integrated_holder_with_an_untracked_path",
+            || {
+                let fixture = EditCheckFixture::new()?;
+                fixture.integrate_holder()?;
+                fs::write(fixture.foreign.join("untracked.rs"), "uncommitted work\n")?;
+
+                let answer = edit_check(fixture.root(), UNRESERVED_PATH)?;
+                assert_eq!(answer.exit_code(), BerthExit::Clear, "{answer:?}");
+                fixture.assert_holder_not_released()?;
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn edit_hook_leaves_clean_holder_settlement_to_the_board() -> Result<(), Box<dyn Error>> {
+        run_edit_observation_test(
+            "verb::check::cost_tests::edit_hook_leaves_clean_holder_settlement_to_the_board",
+            || {
+                let fixture = EditCheckFixture::new()?;
+                fixture.integrate_holder()?;
+
+                Ledger::open(fixture.root())?.write_replay_checkpoint_for_test()?;
+                let (answer, parts) = ledger::count_checkpoint_part_decodes(|| {
+                    edit_check(fixture.root(), UNRESERVED_PATH)
+                });
+                let answer = answer?;
+                assert_eq!(
+                    parts, 3,
+                    "read the core, reservations, and ordering records"
+                );
+
+                assert_eq!(answer.exit_code(), BerthExit::Clear, "{answer:?}");
+                fixture.assert_holder_not_released()?;
+
+                assert_eq!(
+                    board_settlements(fixture.root())?,
+                    [fixture.holder_reservation_id()?]
+                );
+                assert_eq!(
+                    board_settlements(fixture.root())?,
+                    Vec::<ReservationId>::new()
+                );
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn edit_hook_reconciles_an_integrated_holder_at_capacity() -> Result<(), Box<dyn Error>> {
+        run_edit_observation_test(
+            "verb::check::cost_tests::edit_hook_reconciles_an_integrated_holder_at_capacity",
+            || {
+                let fixture = EditCheckFixture::new()?;
+                fixture.integrate_holder()?;
+                fixture.set_reservation_limit_to_one()?;
+
+                let answer = edit_check(fixture.root(), UNRESERVED_PATH)?;
+                assert_eq!(answer.exit_code(), BerthExit::Clear, "{answer:?}");
+                assert_eq!(
+                    board_settlements(fixture.root())?,
+                    Vec::<ReservationId>::new()
+                );
+                let holder = fixture.holder_reservation_id()?;
+                let journal = Ledger::open(fixture.root())?.journal_events_for_test()?;
+                assert!(journal.iter().any(|event| {
+                    matches!(event.operation, JournalOperation::Release { reservation_id, .. } if reservation_id == holder)
+                }));
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn edit_hook_counts_a_checkpointed_holder_with_new_work_at_capacity()
+    -> Result<(), Box<dyn Error>> {
+        run_edit_observation_test(
+            "verb::check::cost_tests::edit_hook_counts_a_checkpointed_holder_with_new_work_at_capacity",
+            || {
+                let fixture = EditCheckFixture::new()?;
+                fixture.set_reservation_limit_to_one()?;
+                fixture.checkpoint_holder()?;
+                run_git(&fixture.foreign, &["switch", "--quiet", "--detach", "main"])?;
+                assert_eq!(
+                    board_settlements(fixture.root())?,
+                    Vec::<ReservationId>::new()
+                );
+                let ledger = Ledger::open(fixture.root())?;
+                let holder = fixture.holder_reservation_id()?;
+                let reservations = ledger.read_validated_live_reservations()??;
+                let reservation = reservations
+                    .iter()
+                    .find(|reservation| reservation.id() == holder)
+                    .ok_or("expected the checkpointed holder")?;
+                assert_eq!(reservation.run_status(), ReservationRunStatus::Ended);
+                assert!(matches!(
+                    reservation.merge_extent(),
+                    MergeExtent::Empty { .. }
+                ));
+                fs::write(fixture.foreign.join("z.rs"), "uncommitted work\n")?;
+
+                let edit = serde_json::to_value(edit_check(fixture.root(), UNRESERVED_PATH)?)?;
+                let full = serde_json::to_value(check_with_selection(
+                    fixture.root(),
+                    UNRESERVED_PATH,
+                    CheckReservationSelection::SessionMappingOrSingleActive,
+                )?)?;
+                let expected =
+                    serde_json::to_value(OutputEnvelope::check_reservation_limit_reached(1))?;
+                assert_eq!(edit["status"], expected["status"], "{edit}");
+                assert_eq!(
+                    edit["payload"]["data"], expected["payload"]["data"],
+                    "{edit}"
+                );
+                assert_eq!(edit["status"], full["status"], "{full}");
+                assert_eq!(edit["payload"]["data"], full["payload"]["data"], "{full}");
+                fixture.assert_holder_not_released()
+            },
+        )
+    }
+
+    #[test]
+    fn edit_hook_rechecks_exact_overlap_revision_when_other_paths_change()
+    -> Result<(), Box<dyn Error>> {
+        run_edit_observation_test(
+            "verb::check::cost_tests::edit_hook_rechecks_exact_overlap_revision_when_other_paths_change",
+            || {
+                let fixture = EditCheckFixture::new()?;
+                let ledger = Ledger::open(fixture.root())?;
+                assert_eq!(
+                    board_settlements(fixture.root())?,
+                    Vec::<ReservationId>::new()
+                );
+                record_exact_overlap_answer(&fixture, &ledger)?;
+                fs::write(
+                    fixture.foreign.join(UNRESERVED_PATH),
+                    "change full revision\n",
+                )?;
+
+                let refusal = serde_json::to_value(edit_check(fixture.root(), HELD_PATH)?)?;
+                assert_eq!(refusal["status"], "blocked_by_overlap", "{refusal}");
+                assert_eq!(refusal["blocked_by"], fixture.holder);
+                let before_full_observation = ledger.journal_events_for_test()?.len();
+                board_settlements(fixture.root())?;
+                let after_full = serde_json::to_value(edit_check(fixture.root(), HELD_PATH)?)?;
+                assert_eq!(after_full["status"], refusal["status"]);
+                assert_eq!(after_full["blocked_by"], refusal["blocked_by"]);
+                assert!(ledger.journal_events_for_test()?.len() > before_full_observation);
+                Ok(())
+            },
+        )
+    }
+
+    fn record_exact_overlap_answer(
+        fixture: &EditCheckFixture,
+        ledger: &Ledger,
+    ) -> Result<(), Box<dyn Error>> {
+        let scopes =
+            DeclaredReservationScopeSet::parse(vec![PathBuf::from(HELD_PATH)], ScopeKind::File)?
+                .into_minimal_antichain(crate::scope::PathCase::Sensitive);
+        let overlaps = crate::answer::AuthorizedOverlapSet::try_from(vec![
+            crate::answer::AuthorizedOverlap {
+                reservation_id: fixture.holder_reservation_id()?,
+                scope_revision: crate::answer::OverlapScopeRevision::from(&scopes),
+                scopes:         scopes.clone().into(),
+            },
+        ])?;
+        let answer = JournalOperation::Answer {
+            reservation_id: None,
+            scopes:         scopes.clone(),
+            authorizations: vec![
+                crate::answer::ConflictAuthorization::ExistingAnswersCoverEveryOverlap { overlaps },
+            ],
+        };
+        let context = ledger::WorktreeContext::discover(fixture.root())?;
+        let identity = ledger::resolve_identity(&context)?;
+        let run = CoordinationRunId::new();
+        let conflicts = || {
+            ledger.with_validated_reservation_facts(|facts, _| {
+                facts.map_err(Clone::clone).map(|facts| {
+                    facts.conflicts_for_first_touch(
+                        &scopes,
+                        run,
+                        identity.worktree_id,
+                        crate::scope::PathCase::Sensitive,
+                    )
+                })
+            })
+        };
+        let before = conflicts()??;
+        assert_eq!(before.len(), 1);
+        assert_eq!(before[0].reservation_id, fixture.holder_reservation_id()?);
+        let outcome = ledger.transact(identity.worktree_id, run, |_| {
+            TransactionValidation::<()>::Append(Box::new(answer.clone()))
+        })?;
+        assert!(matches!(outcome, LedgerTransactionOutcome::Appended { .. }));
+        assert!(
+            conflicts()??.is_empty(),
+            "the answer must cover the original extent"
+        );
+        Ok(())
+    }
+
+    fn board_settlements(root: &Path) -> Result<Vec<ReservationId>, Box<dyn Error>> {
+        let Enrollment::Enrolled(report) =
+            crate::reconcile::reconcile_for_board(root, RecoveredBypassReporting::Report)?
+        else {
+            return Err("expected an enrolled board".into());
+        };
+        Ok(report
+            .settlements
+            .into_iter()
+            .map(|settlement| settlement.reservation_id)
+            .collect())
+    }
+
+    fn run_edit_observation_test(
+        name: &str,
+        exercise: impl FnOnce() -> Result<(), Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
+        const CHILD_MODE: &str = "CARGO_BERTH_TEST_EDIT_OBSERVATION";
+        if std::env::var_os(CHILD_MODE).is_some() {
+            return exercise();
+        }
+        let output = cargo_berth_test_support::berth_command(std::env::current_exe()?)
+            .args(["--exact", name, "--nocapture"])
+            .env(CHILD_MODE, "1")
+            .env_remove(HARNESS_SESSION_ENVIRONMENT)
+            .env_remove("CARGO_BERTH_RUN")
+            .bounded_output()?;
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    struct EditCheckFixture {
+        directory:          TempDir,
+        _foreign_directory: TempDir,
+        foreign:            PathBuf,
+        holder:             Value,
+    }
+
+    impl EditCheckFixture {
+        fn new() -> Result<Self, Box<dyn Error>> {
+            let directory =
+                cargo_berth_test_support::copy_git_repository_seed("edit-check-base", |root| {
+                    run_git(root, &["init", "--quiet", "-b", "main"])?;
+                    run_git(root, &["config", "core.ignorecase", "false"])?;
+                    fs::write(root.join(HELD_PATH), "base\n")?;
+                    run_git(root, &["add", HELD_PATH])?;
+                    run_git(
+                        root,
+                        &[
+                            "-c",
+                            "user.name=Test",
+                            "-c",
+                            "user.email=test@example.com",
+                            "commit",
+                            "--quiet",
+                            "-m",
+                            "base",
+                        ],
+                    )
+                });
+            let root = directory.path();
+            Ledger::initialize(root)?;
+
+            let foreign_directory = tempfile::tempdir()?;
+            let foreign = foreign_directory.path().join("holder");
+            let foreign_argument = foreign.to_str().ok_or("worktree path must be UTF-8")?;
+            run_git(
+                root,
+                &[
+                    "worktree",
+                    "add",
+                    "--quiet",
+                    "-b",
+                    "holder",
+                    foreign_argument,
+                ],
+            )?;
+            let answer = edit_check(&foreign, HELD_PATH)?;
+            assert_eq!(answer.exit_code(), BerthExit::Clear, "{answer:?}");
+            std::fs::write(foreign.join(HELD_PATH), "holder edit\n")?;
+            let holder = serde_json::to_value(answer)?["reservations"].clone();
+            Ok(Self {
+                directory,
+                _foreign_directory: foreign_directory,
+                foreign,
+                holder,
+            })
+        }
+
+        fn root(&self) -> &Path { self.directory.path() }
+
+        fn integrate_holder(&self) -> Result<(), Box<dyn Error>> {
+            assert_eq!(board_settlements(self.root())?, Vec::<ReservationId>::new());
+            self.commit_holder()?;
+            run_git(self.root(), &["merge", "--quiet", "--ff-only", "holder"])
+        }
+
+        fn set_reservation_limit_to_one(&self) -> Result<(), std::io::Error> {
+            fs::write(
+                self.root()
+                    .join(crate::config::BerthConfig::relative_path()),
+                "trunk = \"main\"\nmaximum_reservations = 1\n",
+            )
+        }
+
+        fn checkpoint_holder(&self) -> Result<(), Box<dyn Error>> {
+            self.commit_holder()?;
+            let trunk_snapshot = RepositorySnapshot::discover(self.root())?
+                .head_object_id()?
+                .clone();
+            let protected_tip = RepositorySnapshot::discover(&self.foreign)?
+                .head_object_id()?
+                .clone();
+            let ledger = Ledger::open(self.root())?;
+            let reservation_id = self.holder_reservation_id()?;
+            let holder = ledger
+                .read_validated_live_reservations()??
+                .into_iter()
+                .find(|reservation| reservation.id() == reservation_id)
+                .ok_or("expected holder")?;
+            let actor = holder.actor();
+            let outcome = ledger.transact(actor.worktree, actor.run, |_| {
+                TransactionValidation::<()>::Append(Box::new(JournalOperation::Checkpoint {
+                    reservation_id,
+                    protected_tip: protected_tip.clone().into(),
+                    trunk_snapshot: trunk_snapshot.clone(),
+                }))
+            })?;
+            assert!(matches!(outcome, LedgerTransactionOutcome::Appended { .. }));
+            Ok(())
+        }
+
+        fn commit_holder(&self) -> Result<(), Box<dyn Error>> {
+            run_git(
+                &self.foreign,
+                &[
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "--quiet",
+                    "-am",
+                    "land holder work",
+                ],
+            )
+        }
+
+        fn holder_reservation_id(&self) -> Result<ReservationId, Box<dyn Error>> {
+            Ok(self.holder[0]
+                .as_str()
+                .ok_or("expected holder ID")?
+                .parse()?)
+        }
+
+        fn assert_holder_not_released(&self) -> Result<(), Box<dyn Error>> {
+            let holder = self.holder_reservation_id()?;
+            let events = Ledger::open(self.root())?.journal_events_for_test()?;
+            assert!(
+                events.iter().all(|event| {
+                    !matches!(event.operation, JournalOperation::Release { reservation_id, .. } if reservation_id == holder)
+                }),
+                "the edit hook must keep the foreign holder"
+            );
+            Ok(())
+        }
+    }
+
+    fn edit_check(root: &Path, file: &str) -> Result<OutputEnvelope, Box<dyn Error>> {
+        check_with_selection(root, file, CheckReservationSelection::EditHook)
+    }
+
+    fn check_with_selection(
+        root: &Path,
+        file: &str,
+        reservation_selection: CheckReservationSelection,
+    ) -> Result<OutputEnvelope, Box<dyn Error>> {
+        let recovery = RecoveryCommandLine::try_from(
+            ["cargo-berth", "check", "--path", file]
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<_>>(),
+        )?;
+        Ok(execute_at(
+            root,
+            CheckRequest {
+                declared_scopes: DeclaredReservationScopeSet::parse(
+                    vec![PathBuf::from(file)],
+                    ScopeKind::File,
+                )?,
+                reservation_selection,
+            },
+            &recovery,
+        ))
+    }
+
+    fn run_git(root: &Path, arguments: &[&str]) -> Result<(), Box<dyn Error>> {
+        let status = cargo_berth_test_support::fixture_git_command()
+            .args(arguments)
+            .current_dir(root)
+            .bounded_status()?;
+        assert!(status.success(), "git {arguments:?} failed");
+        Ok(())
+    }
 
     #[test]
     fn check_reuses_merge_pairs_across_decision_passes() -> Result<(), Box<dyn std::error::Error>> {

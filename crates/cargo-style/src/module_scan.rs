@@ -6,6 +6,9 @@ use std::collections::BTreeSet;
 use serde::Deserialize;
 use serde::Serialize;
 
+use crate::module_sites;
+use crate::module_sites::FileModule;
+use crate::rename_classifiers;
 #[cfg(test)]
 use crate::tokenizer;
 use crate::tokenizer::Token;
@@ -23,6 +26,31 @@ pub(crate) enum ModuleScanReading {
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct ModuleScan {
     declarations: Vec<ModuleDeclaration>,
+}
+
+impl ModuleScan {
+    pub(crate) fn declares(
+        &self,
+        owner: &str,
+        module: &FileModule,
+        parent: &[String],
+        target: &str,
+    ) -> bool {
+        self.declarations
+            .iter()
+            .any(|declaration| match &declaration.path {
+                ModulePath::Other(PathForm::Uncertain) => true,
+                ModulePath::Other(PathForm::Default) => {
+                    declaration.name == rename_classifiers::module_name(target)
+                        && module.contains_declaration(&declaration.scope, parent)
+                },
+                ModulePath::Literal { literal } => {
+                    literal.rsplit('/').next() == Some(rename_classifiers::filename(target))
+                        && (!declaration.scope.is_empty()
+                            || module_sites::joined_path(owner, literal) == target)
+                },
+            })
+    }
 }
 
 /// A module declaration with its inline scope and path form.
