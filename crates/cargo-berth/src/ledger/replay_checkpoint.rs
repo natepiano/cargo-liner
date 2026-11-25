@@ -1,6 +1,6 @@
 //! The disposable replay checkpoint, so a replay decodes only the records appended after it.
 //!
-//! The checkpoint holds a header and five JSON lines for the replay parts.
+//! The checkpoint holds a header and seven JSON lines for the replay parts.
 //! The header records the byte length of each part. The parts describe the journal
 //! through the last complete record at [`CheckpointHeader::end_offset`]. The parts decode only when
 //! the header still describes the journal: this build's [`FOLD_FORMAT_VERSION`], this repository,
@@ -20,6 +20,7 @@
 //! deleted or invalidated, and the replay's fingerprint continues from the checkpointed one
 //! instead of covering the edited bytes.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
 use std::fs::Metadata;
@@ -45,22 +46,30 @@ use super::constants::REPLAY_CHECKPOINT_INTERVAL_BYTES;
 use super::constants::REPLAY_CHECKPOINT_INTERVAL_RECORDS;
 use super::constants::REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO;
 use super::history::FinishedHistory;
+use super::journal::CheckpointCoordinationRecord;
+use super::journal::CheckpointOrderingRecord;
 use super::journal::JournalError;
 use super::journal::JournalEvent;
 use super::journal::JournalFileIdentity;
 use super::journal::JournalFingerprint;
+use super::journal::JournalOperation;
 use super::journal::JournalReplay;
 use super::journal::JournalReplaySource;
 use super::journal::ReplayCore;
 use super::journal::ReservationReplay;
+use crate::edge::EdgeReplayError;
+use crate::edge::OrderingGraph;
+use crate::edge::OrderingReplayRecord;
 use crate::ids::JournalByteOffset;
 use crate::ids::RepoInstanceId;
+use crate::ids::ReservationId;
 use crate::reservation::IncursionIncident;
-use crate::reservation::ReservationFacts;
+use crate::reservation::LiveReservationFacts;
+use crate::reservation::Reservation;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 
-const CHECKPOINT_PART_COUNT: usize = 5;
+const CHECKPOINT_PART_COUNT: usize = 7;
 
 /// A ledger's replay checkpoint file and the repository it belongs to.
 pub(super) struct ReplayCheckpoint<'a> {
@@ -135,7 +144,7 @@ struct CheckpointHeader {
     last_record_offset:  JournalByteOffset,
     /// The FNV-1a digest of the last checkpointed record's bytes, newline included.
     last_record_digest:  JournalFingerprint,
-    /// Lengths of the core, reservations, incidents, coordination, and maintenance lines.
+    /// Lengths of core, live, settled, incident, ordering, coordination, and maintenance parts.
     #[serde(default)]
     part_lengths:        [u64; CHECKPOINT_PART_COUNT],
 }
@@ -145,16 +154,46 @@ struct CheckpointBody {
     lengths: [u64; CHECKPOINT_PART_COUNT],
 }
 
+#[derive(Deserialize, Serialize)]
+struct CheckpointCore {
+    #[serde(flatten)]
+    replay:    ReplayCore,
+    /// The IDs of checkpointed claims, in the order of their ordering records.
+    claim_ids: Vec<ReservationId>,
+}
+
+/// The original reservation and incident parts from one open checkpoint.
+pub(crate) struct CheckpointReservationParts {
+    live:      LiveReservationFacts,
+    settled:   Vec<(usize, Reservation)>,
+    incidents: Vec<IncursionIncident>,
+}
+
+impl CheckpointReservationParts {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        LiveReservationFacts,
+        Vec<(usize, Reservation)>,
+        Vec<IncursionIncident>,
+    ) {
+        (self.live, self.settled, self.incidents)
+    }
+}
+
 /// The edit facts and the unread transaction parts from their open checkpoint.
 pub(super) struct DeferredReplay {
     checkpoint: ReservationReplay,
-    appended:   Option<DeferredTail>,
+    claim_ids:  Vec<ReservationId>,
+    appended:   Option<Box<DeferredTail>>,
+    ordering:   Option<Vec<CheckpointOrderingRecord>>,
     body:       CheckpointBody,
 }
 
 struct DeferredTail {
-    replay: ReservationReplay,
-    bytes:  Vec<u8>,
+    replay:       ReservationReplay,
+    bytes:        Vec<u8>,
+    coordination: Vec<JournalEvent>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -173,24 +212,24 @@ impl CheckpointBody {
         Some(part)
     }
 
-    fn decode_reservations(&mut self, end_offset: JournalByteOffset) -> Option<ReservationReplay> {
+    fn defer(mut self, end_offset: JournalByteOffset) -> Option<DeferredReplay> {
         let [core_length, reservations_length, ..] = self.lengths;
-        let core: ReplayCore = self.read_part(core_length)?;
+        let CheckpointCore {
+            replay: core,
+            claim_ids,
+        } = self.read_part(core_length)?;
         if core.end_offset != end_offset {
             return None;
         }
-        let reservations: Result<ReservationFacts, ReservationReplayError> =
+        let reservations: Result<LiveReservationFacts, ReservationReplayError> =
             self.read_part(reservations_length)?;
         #[cfg(test)]
         CHECKPOINT_DECODES.update(|decodes| decodes + 1);
-        Some(ReservationReplay { core, reservations })
-    }
-
-    fn defer(mut self, end_offset: JournalByteOffset) -> Option<DeferredReplay> {
-        let checkpoint = self.decode_reservations(end_offset)?;
         Some(DeferredReplay {
-            checkpoint,
+            checkpoint: ReservationReplay { core, reservations },
+            claim_ids,
             appended: None,
+            ordering: None,
             body: self,
         })
     }
@@ -207,29 +246,118 @@ impl DeferredReplay {
         if bytes.is_empty() {
             return Ok(Some(self));
         }
-        let Some(replay) = self.checkpoint.clone().extended_over(&bytes)? else {
+        let mut coordination = Vec::new();
+        let Some(replay) = self
+            .checkpoint
+            .clone()
+            .extended_over_visiting(&bytes, |event| {
+                if event.operation.is_coordination_record() {
+                    coordination.push(event.clone());
+                }
+            })?
+        else {
             return Ok(None);
         };
-        self.appended = Some(DeferredTail { replay, bytes });
+        let new_claims = coordination
+            .iter()
+            .filter_map(|event| match &event.operation {
+                JournalOperation::Claim { reservation_id, .. } => Some(*reservation_id),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if !new_claims.is_empty() && self.claim_ids.iter().any(|id| new_claims.contains(id)) {
+            // Complete replay reports a duplicate of a settled ID.
+            return Ok(None);
+        }
+        self.appended = Some(Box::new(DeferredTail {
+            replay,
+            bytes,
+            coordination,
+        }));
         Ok(Some(self))
+    }
+
+    fn ordering_records(&mut self) -> Option<&[CheckpointOrderingRecord]> {
+        if self.ordering.is_none() {
+            let [_, _, settled_length, incidents_length, ordering_length, ..] = self.body.lengths;
+            let start = self.body.reader.stream_position().ok()?;
+            let offset = start
+                .checked_add(settled_length)?
+                .checked_add(incidents_length)?;
+            self.body.reader.seek(SeekFrom::Start(offset)).ok()?;
+            let ordering = self.body.read_part(ordering_length);
+            self.body.reader.seek(SeekFrom::Start(start)).ok()?;
+            self.ordering = Some(ordering?);
+        }
+        self.ordering.as_deref()
+    }
+
+    /// Read only the checkpoint part that supplies ordering facts.
+    pub(super) fn read_ordering_graph(&mut self) -> Option<Result<OrderingGraph, EdgeReplayError>> {
+        self.ordering_records()?;
+        let ordering = self.ordering.as_deref()?;
+        let mut claim_ids = self.claim_ids.iter().copied();
+        let records = ordering
+            .iter()
+            .map(|record| record.replay_record(&mut claim_ids))
+            .collect::<Option<Vec<_>>>()?;
+        if claim_ids.next().is_some() {
+            return None;
+        }
+        let tail = self.appended.iter().flat_map(|tail| &tail.coordination);
+        Some(OrderingGraph::replay_records(
+            records
+                .into_iter()
+                .chain(tail.map(OrderingReplayRecord::Event)),
+        ))
+    }
+
+    pub(super) fn into_reservation_replay(self) -> ReservationReplay {
+        self.appended.map_or(self.checkpoint, |tail| tail.replay)
     }
 
     pub(super) fn complete(mut self) -> Option<JournalReplay> {
         let [
             _,
             _,
+            settled_length,
             incidents_length,
+            ordering_length,
             coordination_length,
             maintenance_length,
         ] = self.body.lengths;
+        let settled: Vec<(usize, Reservation)> = self.body.read_part(settled_length)?;
         let incidents: Vec<IncursionIncident> = self.body.read_part(incidents_length)?;
-        let coordination_events: Vec<JournalEvent> = self.body.read_part(coordination_length)?;
+        let ordering = match self.ordering {
+            Some(ordering) => {
+                let start = self.body.reader.stream_position().ok()?;
+                self.body
+                    .reader
+                    .seek(SeekFrom::Start(start.checked_add(ordering_length)?))
+                    .ok()?;
+                ordering
+            },
+            None => self.body.read_part(ordering_length)?,
+        };
+        let coordination: Vec<CheckpointCoordinationRecord> =
+            self.body.read_part(coordination_length)?;
+        let coordination_events =
+            CheckpointCoordinationRecord::restore(self.claim_ids, ordering, coordination)?;
         let maintenance: Maintenance<SupersededExtents, FinishedHistory> =
             self.body.read_part(maintenance_length)?;
         let ReservationReplay { core, reservations } = self.checkpoint;
+        let reservations = match reservations {
+            Ok(live) => Ok(RetainedReservationSet::from_checkpoint_parts(
+                CheckpointReservationParts {
+                    live,
+                    settled,
+                    incidents,
+                },
+            )?),
+            Err(error) => Err(error),
+        };
         let replay = JournalReplay {
-            reservations: reservations
-                .map(|facts| RetainedReservationSet::from_checkpoint(facts, incidents)),
+            reservations,
             coordination_events,
             repositories: core.repositories,
             record_count: core.record_count,
@@ -316,20 +444,8 @@ impl<'a> ReplayCheckpoint<'a> {
         &self,
         journal_path: &Path,
     ) -> Result<(ReservationReplay, JournalReplaySource), JournalError> {
-        let mut file = File::open(journal_path)?;
-        let metadata = file.metadata()?;
-        let identity = JournalFileIdentity::from(&metadata);
-        let (body, start) = self.open_parts(&mut file, identity, metadata.len());
-        if let (Some(mut body), ReplayStart::Checkpoint { header, .. }) = (body, &start) {
-            file.seek(SeekFrom::Start(u64::from(header.end_offset)))?;
-            let mut appended = Vec::new();
-            file.read_to_end(&mut appended)?;
-            if !start.should_refresh(&appended, self.interval)?
-                && let Some(decoded) = body.decode_reservations(header.end_offset)
-                && let Some(replay) = decoded.extended_over(&appended)?
-            {
-                return Ok((replay, JournalReplaySource::new(file, identity)));
-            }
+        if let Some((deferred, source)) = self.deferred_edit_start(journal_path)? {
+            return Ok((deferred.into_reservation_replay(), source));
         }
         let (replay, source) = self.replay_journal(journal_path)?;
         Ok((ReservationReplay::from(replay), source))
@@ -540,14 +656,26 @@ impl<'a> ReplayCheckpoint<'a> {
             |_| Vec::new(),
             |set| set.incursion_incidents().collect::<Vec<_>>(),
         );
+        let (live, settled) = match reservations {
+            Ok(reservations) => {
+                let (live, settled) = reservations.checkpoint_parts();
+                (Ok(live), settled)
+            },
+            Err(error) => (Err(error), Vec::new()),
+        };
+        let (claim_ids, ordering, coordination) =
+            CheckpointCoordinationRecord::split(&replay.coordination_events);
+        let core = CheckpointCore {
+            replay: ReplayCore::from(replay),
+            claim_ids,
+        };
         let lengths = [
-            write_part(&mut body, &ReplayCore::from(replay))?,
-            write_part(
-                &mut body,
-                &reservations.map(RetainedReservationSet::checkpoint),
-            )?,
+            write_part(&mut body, &core)?,
+            write_part(&mut body, &live)?,
+            write_part(&mut body, &settled)?,
             write_part(&mut body, &incidents)?,
-            write_part(&mut body, &replay.coordination_events)?,
+            write_part(&mut body, &ordering)?,
+            write_part(&mut body, &coordination)?,
             write_part(
                 &mut body,
                 &Maintenance {
@@ -611,6 +739,15 @@ pub(crate) fn count_checkpoint_decodes<Output>(action: impl FnOnce() -> Output) 
     let before = CHECKPOINT_DECODES.get();
     let output = action();
     (output, CHECKPOINT_DECODES.get() - before)
+}
+
+#[cfg(test)]
+pub(crate) fn count_checkpoint_part_decodes<Output>(
+    action: impl FnOnce() -> Output,
+) -> (Output, usize) {
+    let before = CHECKPOINT_PART_DECODES.get();
+    let output = action();
+    (output, CHECKPOINT_PART_DECODES.get() - before)
 }
 
 impl ReplayStart {
@@ -706,6 +843,7 @@ mod tests {
     use crate::ids::EventId;
     use crate::ids::ProjectionGeneration;
     use crate::ids::RepoInstanceId;
+    use crate::ids::ReservationId;
     use crate::ledger::constants::FOLD_FORMAT_VERSION;
     use crate::ledger::constants::JOURNAL_FILE_NAME;
     use crate::ledger::constants::REPLAY_CHECKPOINT_FILE_NAME;
@@ -718,6 +856,8 @@ mod tests {
     use crate::ledger::journal::JournalEvent;
     use crate::ledger::journal::JournalOperation;
     use crate::ledger::journal::JournalReplay;
+    use crate::reservation::LiveReservationFacts;
+    use crate::reservation::ReservationReplayError;
     use crate::reservation::RetainedReservationSet;
 
     /// The audit records in the large checkpoint. The first refresh skips while the checkpoint
@@ -792,11 +932,8 @@ mod tests {
             .deferred_edit_start(&fixture.journal_path)?
             .ok_or("expected a deferred replay")?;
         assert_eq!(
-            deferred.reservation_replay().reservations.as_ref(),
-            whole
-                .reservations
-                .as_ref()
-                .map(RetainedReservationSet::checkpoint)
+            deferred.reservation_replay().reservations,
+            super::ReservationReplay::from(whole.clone()).reservations
         );
         assert_eq!(CHECKPOINT_PART_DECODES.get() - decodes_before, 2);
 
@@ -849,11 +986,8 @@ mod tests {
             super::ReplayCore::from(&whole)
         );
         assert_eq!(
-            deferred.reservation_replay().reservations.as_ref(),
-            whole
-                .reservations
-                .as_ref()
-                .map(RetainedReservationSet::checkpoint),
+            deferred.reservation_replay().reservations,
+            super::ReservationReplay::from(whole.clone()).reservations,
             "deferred facts must include the release before completion"
         );
         assert_eq!(deferred.complete(), Some(whole));
@@ -864,7 +998,7 @@ mod tests {
         fixture.write_checkpoint()?;
         fixture.journal.append(&events[resolution])?;
         fixture.append_incomplete_record()?;
-        fixture.assert_reservation_replay_parts(2 + super::CHECKPOINT_PART_COUNT)?;
+        fixture.assert_reservation_replay_parts(super::CHECKPOINT_PART_COUNT)?;
         Ok(())
     }
 
@@ -911,6 +1045,283 @@ mod tests {
             assert_eq!(fixture.load(&checkpoint)?, None, "{invalidation:?}");
             fixture.assert_replays_equal_whole_journal_replays(&checkpoint)?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn the_gate_replay_keeps_unreleased_reservations_only() -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        let (events, _) = previous_fold_events()?;
+        fixture.journal.append_events(&events)?;
+        let whole = fixture.write_checkpoint()?;
+        let whole = whole.reservations?;
+        assert!(whole.iter().any(|reservation| matches!(
+            reservation.lifecycle(),
+            crate::reservation::ReservationLifecycle::Released { .. }
+        )));
+        assert!(LiveReservationFacts::try_from(whole.checkpoint().clone()).is_err());
+        fixture.assert_reservation_replay_parts(2)?;
+        let claim = events.first().ok_or("expected a claim")?;
+        fixture.append_claim(claim, ReservationId::new())?;
+        fixture.assert_reservation_replay_parts(2)?;
+        let (live, _) = fixture
+            .kept_checkpoint()
+            .replay_reservations(&fixture.journal_path)?;
+        assert!(
+            live.into_reservations()?
+                .iter()
+                .all(|reservation| !matches!(
+                    reservation.lifecycle(),
+                    crate::reservation::ReservationLifecycle::Released { .. }
+                ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_tail_claim_cannot_reuse_a_settled_id() -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        let (events, released_id) = previous_fold_events()?;
+        let released_id: ReservationId = serde_json::from_value(released_id)?;
+        fixture.journal.append_events(&events)?;
+        fixture.write_checkpoint()?;
+        fixture.append_claim(events.first().ok_or("expected a claim")?, released_id)?;
+
+        let checkpoint = fixture.kept_checkpoint();
+        assert!(
+            checkpoint
+                .deferred_edit_start(&fixture.journal_path)?
+                .is_none()
+        );
+        let (partial, _) = checkpoint.replay_reservations(&fixture.journal_path)?;
+        let whole = Journal::replay_read_only(&fixture.journal_path)?;
+        assert_eq!(
+            whole.reservations,
+            Err(ReservationReplayError::DuplicateClaim(released_id))
+        );
+        assert_eq!(
+            partial.reservations,
+            super::ReservationReplay::from(whole).reservations
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn settled_evidence_in_the_tail_requires_complete_replay() -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        let (events, released_id) = previous_fold_events()?;
+        let released_id: ReservationId = serde_json::from_value(released_id)?;
+        let release = events
+            .iter()
+            .position(|event| matches!(
+                event.operation,
+                JournalOperation::Release { reservation_id, .. } if reservation_id == released_id
+            ))
+            .ok_or("expected a settled reservation")?;
+        let first_revalidation = release + 1;
+        assert!(matches!(
+            events[first_revalidation].operation,
+            JournalOperation::EvidenceRevalidated { reservation_id, .. }
+                if reservation_id == released_id
+        ));
+        let (prefix, tail) = events.split_at(first_revalidation);
+        fixture.journal.append_events(prefix)?;
+        let before = fixture.write_checkpoint()?.reservations?;
+        let reservation = before.reservation(released_id)?;
+        assert!(matches!(
+            reservation.lifecycle(),
+            crate::reservation::ReservationLifecycle::Released { .. }
+        ));
+        fixture.journal.append_events(tail)?;
+
+        let checkpoint = fixture.kept_checkpoint();
+        assert!(
+            checkpoint
+                .deferred_edit_start(&fixture.journal_path)?
+                .is_none(),
+            "settled evidence must go to complete replay before scoped validation"
+        );
+        let replay =
+            fixture.assert_replays_equal_whole_journal_replays(&fixture.rewritten_checkpoint())?;
+        let after = replay.reservations?;
+        let updated = after.reservation(released_id)?;
+        assert_ne!(reservation, updated);
+        Ok(())
+    }
+
+    #[test]
+    fn ordering_claims_require_exactly_one_id_each() -> Result<(), Box<dyn Error>> {
+        let events = journal::fold_sequence_events()?;
+        for expected_extra in [-1_i8, 1] {
+            let fixture = CheckpointFixture::new()?;
+            fixture.journal.append_events(&events)?;
+            fixture.write_checkpoint()?;
+            fixture.edit_core(|core| {
+                let ids = core["claim_ids"]
+                    .as_array_mut()
+                    .ok_or("expected claim IDs")?;
+                if expected_extra < 0 {
+                    ids.pop().ok_or("expected a claim ID")?;
+                } else {
+                    ids.push(serde_json::to_value(ReservationId::new())?);
+                }
+                Ok(())
+            })?;
+            let checkpoint = fixture.kept_checkpoint();
+            let (mut deferred, _) = checkpoint
+                .deferred_edit_start(&fixture.journal_path)?
+                .ok_or("expected the live reservation parts to be readable")?;
+            assert!(deferred.read_ordering_graph().is_none());
+            assert!(deferred.complete().is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn scoped_ordering_replay_skips_the_other_coordination_records() -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        let events = journal::fold_sequence_events()?;
+        let [first, second, ..] = events.as_slice() else {
+            return Err("expected two claims".into());
+        };
+        let (
+            JournalOperation::Claim {
+                reservation_id: predecessor,
+                scopes,
+                ..
+            },
+            JournalOperation::Claim {
+                reservation_id: successor,
+                ..
+            },
+        ) = (&first.operation, &second.operation)
+        else {
+            return Err("expected two claims".into());
+        };
+        let bypass = events
+            .iter()
+            .find(|event| matches!(event.operation, JournalOperation::Bypass { .. }))
+            .ok_or("expected a bypass record")?;
+        let ordering = JournalEvent::for_operation(
+            second.actor.clone(),
+            handle::next_projection_generation(bypass.projection_generation())?,
+            JournalOperation::Sequence {
+                predecessor: *predecessor,
+                successor:   *successor,
+                edge_id:     crate::ids::EdgeId::new(),
+                scopes:      scopes.clone(),
+                reason:      "The predecessor must integrate first.".parse()?,
+            },
+        );
+        fixture.journal.append_events(&[
+            first.clone(),
+            second.clone(),
+            bypass.clone(),
+            ordering,
+        ])?;
+        let whole = fixture.write_checkpoint()?;
+        let path = fixture.checkpoint().path;
+        let mut contents = std::fs::read(path)?;
+        let header_end = contents
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or("expected a checkpoint header")?
+            + 1;
+        let lengths = fixture.header()?.part_lengths;
+        let coordination = lengths.len() - 2;
+        let offset = header_end + usize::try_from(lengths[..coordination].iter().sum::<u64>())?;
+        contents[offset] = b'!';
+        std::fs::write(path, contents)?;
+
+        let (mut deferred, _) = fixture
+            .checkpoint()
+            .deferred_edit_start(&fixture.journal_path)?
+            .ok_or("expected the reservation parts to remain readable")?;
+        assert_eq!(
+            deferred
+                .read_ordering_graph()
+                .ok_or("expected a readable ordering part")??,
+            crate::edge::OrderingGraph::replay(&whole.coordination_events)?
+        );
+        assert!(deferred.complete().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn an_unsplit_checkpoint_is_rebuilt() -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        let events = journal::fold_sequence_events()?;
+        fixture.journal.append_events(&events)?;
+        let whole = fixture.write_checkpoint()?;
+        let reservations = whole.reservations.as_ref();
+        let incidents = reservations.as_ref().map_or_else(
+            |_| Vec::new(),
+            |set| set.incursion_incidents().collect::<Vec<_>>(),
+        );
+        let mut body = Vec::new();
+        let lengths = [
+            super::write_part(&mut body, &super::ReplayCore::from(&whole))?,
+            super::write_part(
+                &mut body,
+                &reservations.map(RetainedReservationSet::checkpoint),
+            )?,
+            super::write_part(&mut body, &incidents)?,
+            super::write_part(&mut body, &whole.coordination_events)?,
+            super::write_part(
+                &mut body,
+                &super::Maintenance {
+                    superseded:       &whole.superseded,
+                    finished_history: &whole.finished_history,
+                },
+            )?,
+        ];
+        let mut header = serde_json::to_value(fixture.header()?)?;
+        header["fold_format_version"] = json!(5);
+        header["part_lengths"] = json!(lengths);
+        let mut bytes = serde_json::to_vec(&header)?;
+        bytes.push(b'\n');
+        bytes.extend(body);
+        std::fs::write(fixture.checkpoint().path, bytes)?;
+
+        assert_eq!(fixture.load(&fixture.kept_checkpoint())?, None);
+        assert_eq!(
+            fixture.assert_replays_equal_whole_journal_replays(&fixture.rewritten_checkpoint())?,
+            whole
+        );
+        assert_eq!(fixture.header()?.fold_format_version, 6);
+        Ok(())
+    }
+
+    #[test]
+    fn a_version_six_checkpoint_without_claim_ids_is_rebuilt() -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        fixture
+            .journal
+            .append_events(&journal::fold_sequence_events()?)?;
+        let whole = fixture.write_checkpoint()?;
+        fixture.edit_core(|core| {
+            core.as_object_mut()
+                .ok_or("expected a checkpoint core object")?
+                .remove("claim_ids")
+                .ok_or("expected a claim_ids field")?;
+            Ok(())
+        })?;
+
+        assert_eq!(fixture.header()?.fold_format_version, 6);
+        assert!(
+            fixture
+                .kept_checkpoint()
+                .deferred_edit_start(&fixture.journal_path)?
+                .is_none(),
+            "the partial reader must reject the old version 6 core before publication"
+        );
+        assert_eq!(fixture.load(&fixture.kept_checkpoint())?, None);
+        assert_eq!(
+            fixture.assert_replays_equal_whole_journal_replays(&fixture.rewritten_checkpoint())?,
+            whole
+        );
+        assert_eq!(fixture.header()?.fold_format_version, 6);
+        assert_eq!(fixture.load(&fixture.kept_checkpoint())?, Some(whole));
         Ok(())
     }
 
@@ -1413,6 +1824,50 @@ mod tests {
                 partial.reservations, whole.reservations,
                 "the partial replay must fold the appended reservation state"
             );
+            Ok(())
+        }
+
+        fn append_claim(
+            &self,
+            claim: &JournalEvent,
+            id: ReservationId,
+        ) -> Result<(), Box<dyn Error>> {
+            let mut operation = claim.operation.clone();
+            let JournalOperation::Claim { reservation_id, .. } = &mut operation else {
+                return Err("expected a claim prototype".into());
+            };
+            *reservation_id = id;
+            let generation = Journal::replay_read_only(&self.journal_path)?.generation;
+            self.journal.append(&JournalEvent::for_operation(
+                claim.actor.clone(),
+                handle::next_projection_generation(generation)?,
+                operation,
+            ))?;
+            Ok(())
+        }
+
+        fn edit_core(
+            &self,
+            edit: impl FnOnce(&mut Value) -> Result<(), Box<dyn Error>>,
+        ) -> Result<(), Box<dyn Error>> {
+            let checkpoint = fs::read(&self.checkpoint_path)?;
+            let mut lines = checkpoint.splitn(3, |byte| *byte == b'\n');
+            let mut header: CheckpointHeader =
+                serde_json::from_slice(lines.next().ok_or("expected a header")?)?;
+            let mut core: Value =
+                serde_json::from_slice(lines.next().ok_or("expected the checkpoint core")?)?;
+            edit(&mut core)?;
+            let mut body = Vec::new();
+            header.part_lengths[0] = super::write_part(&mut body, &core)?;
+            body.extend(
+                lines
+                    .next()
+                    .ok_or("expected the remaining checkpoint parts")?,
+            );
+            let mut bytes = serde_json::to_vec(&header)?;
+            bytes.push(b'\n');
+            bytes.extend(body);
+            fs::write(&self.checkpoint_path, bytes)?;
             Ok(())
         }
 

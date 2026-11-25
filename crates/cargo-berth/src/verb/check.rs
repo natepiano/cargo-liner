@@ -888,7 +888,16 @@ mod cost_tests {
                 let fixture = EditCheckFixture::new()?;
                 fixture.integrate_holder()?;
 
-                let answer = edit_check(fixture.root(), UNRESERVED_PATH)?;
+                Ledger::open(fixture.root())?.write_replay_checkpoint_for_test()?;
+                let (answer, parts) = ledger::count_checkpoint_part_decodes(|| {
+                    edit_check(fixture.root(), UNRESERVED_PATH)
+                });
+                let answer = answer?;
+                assert_eq!(
+                    parts, 3,
+                    "read the core, reservations, and ordering records"
+                );
+
                 assert_eq!(answer.exit_code(), BerthExit::Clear, "{answer:?}");
                 fixture.assert_holder_not_released()?;
 
@@ -946,7 +955,7 @@ mod cost_tests {
                 );
                 let ledger = Ledger::open(fixture.root())?;
                 let holder = fixture.holder_reservation_id()?;
-                let reservations = ledger.read_validated_reservations()??;
+                let reservations = ledger.read_validated_live_reservations()??;
                 let reservation = reservations
                     .iter()
                     .find(|reservation| reservation.id() == holder)
@@ -1181,7 +1190,7 @@ mod cost_tests {
             let ledger = Ledger::open(self.root())?;
             let reservation_id = self.holder_reservation_id()?;
             let holder = ledger
-                .read_validated_reservations()??
+                .read_validated_live_reservations()??
                 .into_iter()
                 .find(|reservation| reservation.id() == reservation_id)
                 .ok_or("expected holder")?;

@@ -138,15 +138,31 @@ fn reservation_integration_subject(snapshot: &RepositoryReservationSnapshot) -> 
     }
 }
 
+/// One ordering input. A checkpoint claim carries only the fields ordering uses.
+pub(crate) enum OrderingReplayRecord<'a> {
+    Claim {
+        event_id:       EventId,
+        reservation_id: ReservationId,
+        authorization:  &'a ConflictAuthorization,
+    },
+    Event(&'a JournalEvent),
+}
+
 impl OrderingGraph {
     /// Rebuild vertices, unresolved deferrals, edges, and adjacency in append order.
     pub(crate) fn replay(events: &[JournalEvent]) -> Result<Self, EdgeReplayError> {
+        Self::replay_records(events.iter().map(OrderingReplayRecord::Event))
+    }
+
+    pub(crate) fn replay_records<'a>(
+        records: impl IntoIterator<Item = OrderingReplayRecord<'a>>,
+    ) -> Result<Self, EdgeReplayError> {
         #[cfg(test)]
         ORDERING_WORK.update(|mut work| {
             work.graph_replays += 1;
             work
         });
-        let graph = Self::replay_allowing_cycle(events)?;
+        let graph = Self::replay_allowing_cycle(records)?;
         if cycle::contains_cycle(&graph.adjacency) {
             return Err(EdgeReplayError::Cycle);
         }
@@ -158,7 +174,7 @@ impl OrderingGraph {
     pub(crate) fn cycle_repair_plan(
         events: &[JournalEvent],
     ) -> Result<OrderingCycleRepairPlan, EdgeReplayError> {
-        let graph = Self::replay_allowing_cycle(events)?;
+        let graph = Self::replay_allowing_cycle(events.iter().map(OrderingReplayRecord::Event))?;
         let mut adjacency: HashMap<ReservationId, Vec<ReservationId>> = HashMap::new();
         for edge in graph.edges {
             if cycle::would_create_cycle(&adjacency, edge.before, edge.after) {
@@ -174,10 +190,21 @@ impl OrderingGraph {
         Ok(OrderingCycleRepairPlan::Acyclic)
     }
 
-    fn replay_allowing_cycle(events: &[JournalEvent]) -> Result<Self, EdgeReplayError> {
+    fn replay_allowing_cycle<'a>(
+        records: impl IntoIterator<Item = OrderingReplayRecord<'a>>,
+    ) -> Result<Self, EdgeReplayError> {
         let mut graph = Self::default();
-        for event in events {
-            graph.apply_operation(&event.operation, event.event_id())?;
+        for record in records {
+            match record {
+                OrderingReplayRecord::Claim {
+                    event_id,
+                    reservation_id,
+                    authorization,
+                } => graph.apply_claim(reservation_id, authorization, event_id)?,
+                OrderingReplayRecord::Event(event) => {
+                    graph.apply_operation(&event.operation, event.event_id())?;
+                },
+            }
         }
         for edge in &graph.edges {
             if !graph.vertices.contains(&edge.before) {
@@ -210,10 +237,7 @@ impl OrderingGraph {
                     reservation_id,
                     authorization,
                     ..
-                } => {
-                    self.add_vertex(*reservation_id);
-                    self.apply_authorization(*reservation_id, authorization, event_id)?;
-                },
+                } => self.apply_claim(*reservation_id, authorization, event_id)?,
                 JournalOperation::Widen {
                     reservation_id,
                     authorization,
@@ -657,6 +681,20 @@ impl OrderingGraph {
             }
         }
         Ok(predecessors)
+    }
+
+    fn apply_claim(
+        &mut self,
+        reservation_id: ReservationId,
+        authorization: &ConflictAuthorization,
+        event_id: EventId,
+    ) -> Result<(), EdgeReplayError> {
+        self.add_vertex(reservation_id);
+        self.apply_authorization(reservation_id, authorization, event_id)
+    }
+
+    pub(crate) fn has_claim(&self, reservation_id: ReservationId) -> bool {
+        self.vertices.contains(&reservation_id)
     }
 
     fn add_vertex(&mut self, reservation_id: ReservationId) {

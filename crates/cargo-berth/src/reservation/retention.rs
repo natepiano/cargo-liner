@@ -62,6 +62,7 @@ use crate::ids::WorktreeId;
 use crate::ledger::BlockedIncursionPath;
 use crate::ledger::BlockedIncursionPathSet;
 use crate::ledger::CanonicalWorktreeRoot;
+use crate::ledger::CheckpointReservationParts;
 use crate::ledger::EditAuthorization;
 use crate::ledger::EnteringWriteProgress;
 use crate::ledger::IncursionCoverageEvidence;
@@ -122,6 +123,18 @@ pub(crate) struct ReservationFacts {
     /// and callers narrow it afterwards through [`Self::with_acting_head_containment`].
     #[serde(skip)]
     acting_head_containment: ForeignProtectionPolicy,
+}
+
+/// The reservation fold with settled reservations omitted.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(try_from = "ReservationFacts")]
+pub(crate) struct LiveReservationFacts(ReservationFacts);
+
+/// The reservation facts that edit checks and gate selection need.
+#[derive(Serialize)]
+pub(crate) struct LiveReservationCheckpoint<'a> {
+    reservations:   Vec<&'a Reservation>,
+    answer_records: &'a [AnswerRecord],
 }
 
 /// One holder's representative `Reservation` and its complete `ConflictProtection` scopes, as
@@ -421,17 +434,10 @@ impl Deref for RetainedReservationSet {
 impl RetainedReservationSet {
     pub(crate) const fn checkpoint(&self) -> &ReservationFacts { &self.facts }
 
-    pub(crate) const fn from_checkpoint(
-        facts: ReservationFacts,
-        incursion_incidents: Vec<IncursionIncident>,
-    ) -> Self {
-        Self {
-            facts,
-            incursion_incidents,
-        }
-    }
+    /// Iterate over every reservation retained for constraints or audit history.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Reservation> { self.facts.iter() }
 
-    pub(crate) fn into_facts(self) -> ReservationFacts { self.facts }
+    pub(crate) fn into_live(self) -> LiveReservationFacts { self.facts.into_live() }
 
     /// Apply an incident operation or advance the reservation facts.
     pub(crate) fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
@@ -474,22 +480,20 @@ impl RetainedReservationSet {
         operations: &[JournalOperation],
     ) -> Result<Self, ReservationReplayError> {
         let mut settled = self.clone();
-        for operation in operations {
-            match operation {
-                JournalOperation::EvidenceRevalidated {
-                    reservation_id,
-                    status,
-                    ..
-                } => settled.facts.apply_evidence(*reservation_id, status)?,
-                JournalOperation::Release {
-                    reservation_id,
-                    disposition,
-                    ..
-                } => settled.facts.apply_release(*reservation_id, disposition)?,
-                _ => {},
-            }
-        }
+        settled.facts.apply_pending_settlements(operations)?;
         Ok(settled)
+    }
+
+    /// Project settlements and keep the edit's repository observation.
+    pub(crate) fn with_pending_settlement_facts(
+        &self,
+        operations: &[JournalOperation],
+        observed: ReservationFacts,
+    ) -> Result<ReservationFacts, ReservationReplayError> {
+        let mut facts = self.facts.clone();
+        facts.acting_head_containment = observed.acting_head_containment;
+        facts.apply_pending_settlements(operations)?;
+        Ok(facts)
     }
 
     /// Project accepted rewrite anchors before constructing repository observations.
@@ -534,9 +538,139 @@ impl RetainedReservationSet {
         }
         Ok(projected)
     }
+
+    /// Split settled reservations by their positions in the complete fold.
+    pub(crate) fn checkpoint_parts(
+        &self,
+    ) -> (LiveReservationCheckpoint<'_>, Vec<(usize, &Reservation)>) {
+        let mut reservations = Vec::new();
+        let mut settled = Vec::new();
+        for (index, reservation) in self.iter().enumerate() {
+            if matches!(
+                reservation.lifecycle(),
+                ReservationLifecycle::Released { .. }
+            ) {
+                settled.push((index, reservation));
+            } else {
+                reservations.push(reservation);
+            }
+        }
+        (
+            LiveReservationCheckpoint {
+                reservations,
+                answer_records: &self.facts.answer_records,
+            },
+            settled,
+        )
+    }
+
+    /// Rejoin the parts in the original fold order.
+    pub(crate) fn from_checkpoint_parts(parts: CheckpointReservationParts) -> Option<Self> {
+        let (LiveReservationFacts(mut facts), settled, incursion_incidents) = parts.into_parts();
+        if !settled.is_empty() {
+            let count = facts.reservations.len().checked_add(settled.len())?;
+            let mut live = facts.reservations.into_iter();
+            let mut settled = settled.into_iter().peekable();
+            facts.reservations = (0..count)
+                .map(|index| {
+                    if settled
+                        .peek()
+                        .is_some_and(|(position, _)| *position == index)
+                    {
+                        settled.next().map(|(_, reservation)| reservation)
+                    } else {
+                        live.next()
+                    }
+                })
+                .collect::<Option<Vec<_>>>()?;
+        }
+        Some(Self {
+            facts,
+            incursion_incidents,
+        })
+    }
 }
 
 impl ReservationFacts {
+    /// Keep the reservations that still participate in edit and gate decisions.
+    fn into_live(mut self) -> LiveReservationFacts {
+        self.reservations.retain(is_unreleased);
+        LiveReservationFacts(self)
+    }
+}
+
+impl TryFrom<ReservationFacts> for LiveReservationFacts {
+    type Error = &'static str;
+
+    fn try_from(facts: ReservationFacts) -> Result<Self, Self::Error> {
+        if facts.iter().all(is_unreleased) {
+            Ok(Self(facts))
+        } else {
+            Err("the live checkpoint part contains a settled reservation")
+        }
+    }
+}
+
+const fn is_unreleased(reservation: &Reservation) -> bool {
+    !matches!(
+        reservation.lifecycle(),
+        ReservationLifecycle::Released { .. }
+    )
+}
+
+impl LiveReservationFacts {
+    /// Read the facts shared by live and complete edit decisions.
+    pub(crate) const fn edit_facts(&self) -> &ReservationFacts { &self.0 }
+
+    /// Return the unreleased reservations in replay order.
+    pub(crate) fn into_reservations(self) -> Vec<Reservation> { self.0.into_reservations() }
+
+    /// Keep tail records visible until the entire tail has been replayed.
+    pub(crate) fn into_tail_fold(self) -> LiveReservationTailFold {
+        LiveReservationTailFold(Some(self.0))
+    }
+}
+
+/// A partial tail fold. A failed fold needs complete replay.
+pub(crate) struct LiveReservationTailFold(Option<ReservationFacts>);
+
+impl LiveReservationTailFold {
+    pub(crate) fn apply(&mut self, event: &JournalEvent) {
+        if let Some(facts) = &mut self.0
+            && facts.apply(event).is_err()
+        {
+            self.0 = None;
+        }
+    }
+
+    pub(crate) fn finish(self) -> Option<LiveReservationFacts> {
+        self.0.map(ReservationFacts::into_live)
+    }
+}
+
+impl ReservationFacts {
+    fn apply_pending_settlements(
+        &mut self,
+        operations: &[JournalOperation],
+    ) -> Result<(), ReservationReplayError> {
+        for operation in operations {
+            match operation {
+                JournalOperation::EvidenceRevalidated {
+                    reservation_id,
+                    status,
+                    ..
+                } => self.apply_evidence(*reservation_id, status)?,
+                JournalOperation::Release {
+                    reservation_id,
+                    disposition,
+                    ..
+                } => self.apply_release(*reservation_id, disposition)?,
+                _ => {},
+            }
+        }
+        Ok(())
+    }
+
     /// Narrow foreign protection to work the acting HEAD does not already contain.
     pub(crate) fn with_acting_head_containment(
         mut self,
@@ -853,7 +987,7 @@ impl ReservationFacts {
         }
     }
 
-    /// Iterate over every reservation retained for constraints or audit history.
+    /// Iterate over the reservations in these facts. Live facts hold only unreleased reservations.
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Reservation> { self.reservations.iter() }
 
     /// Return the only active ordinary reservation in this worktree.
@@ -875,8 +1009,7 @@ impl ReservationFacts {
         })
     }
 
-    /// Find one retained reservation by its non-recyclable identity.
-    pub(crate) fn reservation(
+    fn reservation(
         &self,
         reservation_id: ReservationId,
     ) -> Result<&Reservation, ReservationReplayError> {
@@ -884,6 +1017,16 @@ impl ReservationFacts {
             .iter()
             .find(|reservation| reservation.id == reservation_id)
             .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
+    }
+}
+
+impl RetainedReservationSet {
+    /// Find one retained reservation by its non-recyclable identity.
+    pub(crate) fn reservation(
+        &self,
+        reservation_id: ReservationId,
+    ) -> Result<&Reservation, ReservationReplayError> {
+        self.facts.reservation(reservation_id)
     }
 
     /// Return the recorded integration branch, interpreting an old unrecorded claim at trunk.
@@ -913,9 +1056,6 @@ impl ReservationFacts {
             })
             .collect()
     }
-}
-
-impl RetainedReservationSet {
     /// Find one retained incursion by its durable identity.
     pub(crate) fn incursion_incident(
         &self,
@@ -1224,7 +1364,7 @@ impl ReservationFacts {
     pub(crate) fn into_reservations(self) -> Vec<Reservation> { self.reservations }
 
     /// Dispatch one journal operation to the replay step that owns it.
-    pub(crate) fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
+    fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
         match &event.operation {
             JournalOperation::MergeExtentObserved {
                 reservation_id,

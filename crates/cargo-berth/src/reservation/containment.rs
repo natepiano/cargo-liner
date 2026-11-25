@@ -126,10 +126,7 @@ impl ActingHeadContainment {
             })
             .last();
         let target = if let Some(reservation) = acting_reservation {
-            match reservations.target_of(reservation.id(), &repository_trunk) {
-                Ok(target) => target,
-                Err(_) => return Self::unavailable(acting_worktree),
-            }
+            reservation.target().or_trunk(&repository_trunk).clone()
         } else {
             let Ok(head) = fs::read_to_string(context.administrative_directory().join("HEAD"))
             else {

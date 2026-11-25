@@ -91,6 +91,7 @@ use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ActingHeadContainment;
 use crate::reservation::KeptWorkReason;
+use crate::reservation::LiveReservationFacts;
 use crate::reservation::RecordedTarget;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::Reservation;
@@ -627,7 +628,7 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
     /// belonging to the acting run — so a mapping written by another run can never redirect this
     /// widen onto that run's reservation.
     fn from_locked_session_mapping(
-        reservations: &'reservation RetainedReservationSet,
+        reservations: &'reservation ReservationFacts,
         session_reservation_identity: SessionReservationIdentity,
         ledger_directory: &Path,
         coordination_run_id: CoordinationRunId,
@@ -653,7 +654,7 @@ impl<'reservation> FirstTouchReservationSelection<'reservation> {
     }
 
     fn from_unmapped_active_run_reservations(
-        reservations: &'reservation RetainedReservationSet,
+        reservations: &'reservation ReservationFacts,
         ledger_directory: &Path,
         coordination_run_id: CoordinationRunId,
         worktree_id: WorktreeId,
@@ -1316,6 +1317,43 @@ fn transact_first_touch(
     let coordination_run_id = validation_context.coordination_run_id;
     let reservation_selection = validation_context.reservation_selection;
     let worktree_context = validation_context.worktree_context.clone();
+    if let Some(proof) = validation_context.scoped_proof
+        && let Some(output) = ledger
+            .try_append_scoped_claim(
+                validation_context.worktree_id,
+                coordination_run_id,
+                |reservations, position| {
+                    if !proof.matches_replay(position) {
+                        return None;
+                    }
+                    match validate_first_touch_reservations(
+                        FirstTouchReplay::Live(reservations),
+                        prepared_claim.clone(),
+                        validation_context,
+                    ) {
+                        CommittedActionValidation::Append { operation, action } => {
+                            Some((*operation, action))
+                        },
+                        _ => None,
+                    }
+                },
+                |output, session_mapping_publication| {
+                    first_touch_execution_from_outcome(
+                        LedgerCommittedActionOutcome::Appended {
+                            output,
+                            session_mapping_publication,
+                        },
+                        coordination_run_id,
+                        reservation_selection,
+                        &worktree_context,
+                        PreparedSessionMappingPublication::Unchanged,
+                    )
+                },
+            )
+            .map_err(ClaimError::Transaction)?
+    {
+        return output;
+    }
     let selection = std::cell::RefCell::new(PreparedSessionMappingPublication::Unchanged);
     let execution = ledger.transact_with_committed_action_and_consume_locked_outcome(
         validation_context.worktree_id,
@@ -1827,6 +1865,51 @@ fn validate_first_touch_transaction(
     prepared_claim: PreparedClaim,
     context: &FirstTouchValidationContext,
 ) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
+    let reservations = match state.reservations() {
+        Ok(reservations) => reservations,
+        Err(error) => {
+            return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
+        },
+    };
+    if let Some(proof) = context.scoped_proof
+        && (!proof.matches_replay(state.replay_position()) || state.ordering_graph().is_err())
+    {
+        return CommittedActionValidation::Reject(
+            FirstTouchClaimRejection::FullReconciliationRequired,
+        );
+    }
+    validate_first_touch_reservations(
+        FirstTouchReplay::Complete(reservations),
+        prepared_claim,
+        context,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum FirstTouchReplay<'a> {
+    Complete(&'a RetainedReservationSet),
+    Live(&'a LiveReservationFacts),
+}
+
+impl<'a> FirstTouchReplay<'a> {
+    const fn edit_facts(self) -> &'a ReservationFacts {
+        match self {
+            Self::Complete(reservations) => reservations.checkpoint(),
+            Self::Live(reservations) => reservations.edit_facts(),
+        }
+    }
+}
+
+struct FirstTouchObservations<'a> {
+    reservations: ReservationFacts,
+    replay:       FirstTouchReplay<'a>,
+}
+
+fn validate_first_touch_reservations(
+    replay: FirstTouchReplay<'_>,
+    prepared_claim: PreparedClaim,
+    context: &FirstTouchValidationContext,
+) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
     let FirstTouchValidationContext {
         ref repository,
         run_validation,
@@ -1841,20 +1924,7 @@ fn validate_first_touch_transaction(
         ref repository_trunk,
         ..
     } = *context;
-    let reservations = match state.reservations() {
-        Ok(reservations) => reservations,
-        Err(error) => {
-            return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
-        },
-    };
-    if let Some(proof) = context.scoped_proof
-        && (!proof.matches_replay(state.replay_position()) || state.ordering_graph().is_err())
-    {
-        return CommittedActionValidation::Reject(
-            FirstTouchClaimRejection::FullReconciliationRequired,
-        );
-    }
-    let reservations = reservations.clone();
+    let reservations = replay.edit_facts().clone();
     let acting_head_containment = ActingHeadContainment::observe_for_claim(
         &reservations,
         repository,
@@ -1903,7 +1973,10 @@ fn validate_first_touch_transaction(
         },
     };
     append_or_reuse_first_touch(
-        &reservations,
+        FirstTouchObservations {
+            reservations,
+            replay,
+        },
         repository_trunk,
         prepared_claim,
         protected_scopes,
@@ -1922,7 +1995,7 @@ fn validate_first_touch_transaction(
 
 /// Reuse an eligible reservation or append a claim after all overlap checks pass.
 fn append_or_reuse_first_touch(
-    reservations: &RetainedReservationSet,
+    observations: FirstTouchObservations<'_>,
     repository_trunk: &IntegrationTarget,
     prepared_claim: PreparedClaim,
     protected_scopes: ReservationScopeSet,
@@ -1930,14 +2003,18 @@ fn append_or_reuse_first_touch(
     context: FirstTouchReservationReuseContext<'_>,
     maximum_reservations: u32,
 ) -> CommittedActionValidation<FirstTouchClaimRejection, CommittedReservationAcquisition> {
+    let FirstTouchObservations {
+        reservations,
+        replay,
+    } = observations;
     let edit = matches!(
         context.check_reservation_selection,
         CheckReservationSelection::EditHook
             | CheckReservationSelection::SessionMappingOrSingleActive
     );
-    if edit && is_checkpoint_gap(reservations, context.worktree_id) {
+    if edit && is_checkpoint_gap(&reservations, context.worktree_id) {
         return acquire_checkpoint_gap_holds(
-            reservations,
+            &reservations,
             repository_trunk,
             prepared_claim,
             protected_scopes,
@@ -1952,7 +2029,7 @@ fn append_or_reuse_first_touch(
             .next()
             .is_none()
         && let [scope] = protected_scopes.as_slice()
-        && let Some(hold) = local_plan_holds(reservations, context.worktree_id)
+        && let Some(hold) = local_plan_holds(&reservations, context.worktree_id)
             .find(|hold| hold_covers(hold, scope, context.path_case))
     {
         return CommittedActionValidation::Reject(FirstTouchClaimRejection::AlreadyHeld {
@@ -1966,10 +2043,10 @@ fn append_or_reuse_first_touch(
         });
     }
 
-    let releases = plan_hold_transfers(reservations, &protected_scopes, context);
+    let releases = plan_hold_transfers(&reservations, &protected_scopes, context);
     let Some((last_release, other_releases)) = releases.split_last() else {
         return acquire_first_touch_phase(
-            reservations,
+            &reservations,
             repository_trunk,
             prepared_claim,
             protected_scopes,
@@ -1978,7 +2055,12 @@ fn append_or_reuse_first_touch(
             maximum_reservations,
         );
     };
-    let projected = match reservations.with_pending_settlements(&releases) {
+    let FirstTouchReplay::Complete(complete) = replay else {
+        return CommittedActionValidation::Reject(
+            FirstTouchClaimRejection::FullReconciliationRequired,
+        );
+    };
+    let projected = match complete.with_pending_settlement_facts(&releases, reservations) {
         Ok(projected) => projected,
         Err(error) => {
             return CommittedActionValidation::Reject(FirstTouchClaimRejection::Replay(error));
@@ -2002,7 +2084,7 @@ fn append_or_reuse_first_touch(
 }
 
 fn acquire_first_touch_phase(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
     prepared_claim: PreparedClaim,
     protected_scopes: ReservationScopeSet,
@@ -2121,7 +2203,7 @@ fn unclaimed_edit_hook_authorization(
 }
 
 fn locked_first_touch_selection(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     context: &FirstTouchValidationContext,
     scopes: &ReservationScopeSet,
 ) -> Result<CheckReservationSelection, FirstTouchClaimRejection> {
@@ -2174,7 +2256,7 @@ fn locked_first_touch_selection(
     }
 }
 
-fn is_checkpoint_gap(reservations: &RetainedReservationSet, worktree_id: WorktreeId) -> bool {
+fn is_checkpoint_gap(reservations: &ReservationFacts, worktree_id: WorktreeId) -> bool {
     reservations.active_phases(worktree_id).next().is_none()
         && reservations.iter().any(|reservation| {
             reservation.actor().worktree == worktree_id
@@ -2205,7 +2287,7 @@ fn hold_covers(hold: &Reservation, scope: &ReservationScope, path_case: PathCase
 
 /// Protect each free path in the checkpoint gap with a separate claim in the same append.
 fn acquire_checkpoint_gap_holds(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
     mut prepared_claim: PreparedClaim,
     scopes: ReservationScopeSet,
@@ -2289,7 +2371,7 @@ fn checkpoint_gap_claim(prepared: &PreparedClaim, scope: &ReservationScope) -> P
 
 /// Release a local hold only for a phase check that acquires its exact scope.
 fn plan_hold_transfers(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     scopes: &ReservationScopeSet,
     context: FirstTouchReservationReuseContext<'_>,
 ) -> Vec<JournalOperation> {
@@ -2388,7 +2470,7 @@ fn first_touch_claim_operation(
 }
 
 fn select_first_touch_reservation_reuse(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
     requested_scopes: ReservationScopeSet,
     protected_scopes: ReservationScopeSet,
@@ -2487,7 +2569,7 @@ enum FirstTouchProtectedScopeOwnership<'reservation> {
 
 /// Open a phase only for paths its active siblings do not already hold.
 fn append_unheld_first_touch_scopes(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
     protected_scopes: ReservationScopeSet,
     conflicts: FirstTouchConflictOutcome,
@@ -2543,7 +2625,7 @@ fn append_unheld_first_touch_scopes(
 
 /// Report the exact requested paths each active sibling already protects.
 fn sibling_held_scopes(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     protected_scopes: &ReservationScopeSet,
     coordination_run_id: CoordinationRunId,
     worktree_id: WorktreeId,
@@ -2578,7 +2660,7 @@ fn sibling_held_scopes(
 }
 
 fn reuse_first_touch_reservation(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
     requested_scopes: ReservationScopeSet,
     protected_scopes: ReservationScopeSet,
@@ -2647,7 +2729,7 @@ fn reuse_first_touch_reservation(
 }
 
 fn widen_first_touch_reservation(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
     requested_scopes: ReservationScopeSet,
     protected_scopes: ReservationScopeSet,
@@ -2867,7 +2949,7 @@ fn split_first_touch_scopes(
 
 fn validate_first_touch_run(
     run_validation: ClaimRunValidation,
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     worktree_context: &WorktreeContext,
     worktree_id: WorktreeId,
     recovery_command_line: &RecoveryCommandLine,

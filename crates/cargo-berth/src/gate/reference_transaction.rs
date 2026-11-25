@@ -452,7 +452,7 @@ fn evaluate_prepared_updates(
 
 fn read_gate_reservations(context: &WorktreeContext) -> Result<Vec<Reservation>, GateError> {
     Ledger::open_from_discovered_worktree(context)?
-        .read_validated_reservations()?
+        .read_validated_live_reservations()?
         .map_err(|error| GateError::Ledger(LedgerError::ReservationReplay(error)))
 }
 

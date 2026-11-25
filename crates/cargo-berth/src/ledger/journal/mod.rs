@@ -1,5 +1,7 @@
 //! The journal, append-only between compactions, and its complete version-one operation union.
 
+mod checkpoint_coordination;
+
 use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Display;
@@ -19,6 +21,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+pub(super) use checkpoint_coordination::CheckpointCoordinationRecord;
+pub(super) use checkpoint_coordination::CheckpointOrderingRecord;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde::Serialize;
@@ -67,12 +71,12 @@ use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProofSubjectRevision;
 use crate::reservation::IntegrationWitness;
+use crate::reservation::LiveReservationFacts;
 use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
-use crate::reservation::ReservationFacts;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::ReservationRunStatus;
 use crate::reservation::RetainedReservationSet;
@@ -2236,36 +2240,59 @@ impl From<&JournalReplay> for ReplayCore {
 #[derive(Clone)]
 pub(super) struct ReservationReplay {
     pub(super) core:         ReplayCore,
-    pub(super) reservations: Result<ReservationFacts, ReservationReplayError>,
+    pub(super) reservations: Result<LiveReservationFacts, ReservationReplayError>,
 }
 
 impl ReservationReplay {
     pub(super) fn into_reservations(self) -> Result<Vec<Reservation>, ReservationReplayError> {
-        self.reservations.map(ReservationFacts::into_reservations)
+        self.reservations
+            .map(LiveReservationFacts::into_reservations)
     }
 
     /// Fold the tail with the same reservation fold as `JournalReplay`.
     ///
     /// An incursion record needs the checkpointed incidents. Let the caller load those records.
-    pub(super) fn extended_over(mut self, appended: &[u8]) -> Result<Option<Self>, JournalError> {
+    pub(super) fn extended_over(self, appended: &[u8]) -> Result<Option<Self>, JournalError> {
+        self.extended_over_visiting(appended, |_| {})
+    }
+
+    pub(super) fn extended_over_visiting(
+        mut self,
+        appended: &[u8],
+        mut visit: impl FnMut(&JournalEvent),
+    ) -> Result<Option<Self>, JournalError> {
+        let mut reservations = self.reservations.map(LiveReservationFacts::into_tail_fold);
         let replayed_lines =
             usize::try_from(self.core.record_count).map_err(JournalError::JournalTooLarge)?;
         let mut needs_incidents = false;
         let complete_end = decode_complete_records(appended, replayed_lines + 1, |event, _| {
+            visit(&event);
             needs_incidents |= matches!(
                 event.operation,
                 JournalOperation::Incursion { .. } | JournalOperation::ResolveIncursion { .. }
             );
             if !needs_incidents {
-                fold_reservations(&mut self.reservations, &event, ReservationFacts::apply);
+                if let Ok(fold) = &mut reservations {
+                    fold.apply(&event);
+                }
                 self.core.repositories.insert(event.actor.repository);
                 self.core.record_count += 1;
                 self.core.generation = event.projection_generation;
             }
         })?;
+        // A tail operation can refer to a settled reservation outside this fold.
         if needs_incidents {
             return Ok(None);
         }
+        self.reservations = match reservations {
+            Ok(fold) => {
+                let Some(facts) = fold.finish() else {
+                    return Ok(None);
+                };
+                Ok(facts)
+            },
+            Err(error) => Err(error),
+        };
         let length = u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?;
         self.core.end_offset = JournalByteOffset::from(u64::from(self.core.end_offset) + length);
         self.core.fingerprint = self.core.fingerprint.continued(&appended[..complete_end]);
@@ -2277,7 +2304,7 @@ impl From<JournalReplay> for ReservationReplay {
     fn from(replay: JournalReplay) -> Self {
         Self {
             core:         ReplayCore::from(&replay),
-            reservations: replay.reservations.map(RetainedReservationSet::into_facts),
+            reservations: replay.reservations.map(RetainedReservationSet::into_live),
         }
     }
 }

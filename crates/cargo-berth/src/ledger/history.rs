@@ -118,7 +118,7 @@ impl FinishedHistory {
         replay
             .reservations
             .iter()
-            .flat_map(|reservations| reservations.iter())
+            .flat_map(RetainedReservationSet::iter)
             .filter_map(move |reservation| {
                 let id = reservation.id();
                 let finished = replay.finished_history.0.get(&id)?;
