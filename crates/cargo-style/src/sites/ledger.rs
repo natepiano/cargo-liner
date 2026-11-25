@@ -114,7 +114,9 @@ impl SitesLedger {
         let CommitResolution::Resolved(synced_tip) = source.resolve_commit(&revision)? else {
             return Err(SitesLedgerFailure::UnresolvedTip(revision));
         };
-        let history = if rule.is_regex() && legacy_markers(&snapshot, catalog, synced_tip)? {
+        let history = if rule.listing.enumerates_sites()
+            && legacy_markers(&snapshot, catalog, synced_tip)?
+        {
             let mut statement = snapshot.prepare(
                 "SELECT path,line,text FROM listed_sites WHERE rule=?1 AND tip=?2
                  ORDER BY path,line,text",
