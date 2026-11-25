@@ -1296,6 +1296,32 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - No changed test takes 1 s or more.
 
+### Phase 56e — a cargo-berth edit check of an unreserved file costs under about 150 ms  · status: todo
+
+#### Work Order
+
+**Goal:** the `pre-tool-use` edit check of a file no reservation holds costs under 150 ms CPU on the Mac release, median of 3, with the same hook answers. Source: the Phase 56d seeded measure (showrunner ruling, 2026-11-24).
+
+**Spec:**
+1. The baseline is the Phase 56d final seeded Mac release measure: 41 live worktrees, 123 reservations. Its report is `${SESSION_DIR}/phases/56d/impl_report.md`, section "Seeded Mac release measurements".
+2. In Phase 56d, a scoped edit cost about 290 ms: `acquire_first_touch` about 177 ms (it decodes incidents and coordination, about 61 ms and 14.9 MB), the first `decide` about 85 ms (reservation decode about 71 ms and 12.2 MB), and two `observe_edit_path` calls about 58 ms and 35 ms.
+3. The append transaction loads incidents and coordination only when the tail or the observation needs them. Use types, so that an unread part cannot be queried.
+4. Cut the other top costs at their cause: the second `observe_edit_path` call, and the reservation decode if it is still the largest cost. A checkpoint format change needs a design to the showrunner first.
+5. Report median CPU and read bytes for the scoped edit, the full-observation edit and the gate. Use three Mac release runs in alternating pairs on the seeded sample, before and after.
+
+**Constraints from prior phases:**
+- Keep the Phase 56b, 56c and 56d constraints. The Phase 56d As-built names them.
+- One reconciliation path. A path-limited observation never settles a holder. The allow or refuse answer equals the full-status answer.
+
+**Files:**
+- `crates/cargo-berth/src/` — files the profile identifies.
+
+**Workers:** 1 writer.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- No changed test takes 1 s or more.
+
 ### Phase 57 — mend --fix names each fix it applies  · status: todo
 
 #### Work Order
