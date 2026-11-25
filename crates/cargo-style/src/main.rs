@@ -11,6 +11,7 @@ mod binding;
 mod blob_reader;
 mod cache_constants;
 mod constants;
+mod coverage;
 mod declaration_reading;
 mod declaration_source;
 mod declarations;
@@ -68,6 +69,7 @@ use crate::sites::SITES_SUBCOMMAND;
 
 /// The operation selected by a direct call or the Cargo subcommand.
 enum ReaderCommand {
+    Coverage(IntoIter<OsString>),
     Facts,
     Finding(IntoIter<OsString>),
     Sites(IntoIter<OsString>),
@@ -84,6 +86,9 @@ impl From<Vec<OsString>> for ReaderCommand {
             first
         };
         match operation.as_deref() {
+            Some(argument) if argument == OsStr::new(constants::COVERAGE_SUBCOMMAND) => {
+                Self::Coverage(arguments)
+            },
             Some(argument) if argument == OsStr::new(VERSION_FLAG) => Self::Version,
             Some(argument) if argument == OsStr::new(FINDING_SUBCOMMAND) => {
                 Self::Finding(arguments)
@@ -100,6 +105,7 @@ impl From<Vec<OsString>> for ReaderCommand {
 )]
 fn main() -> ExitCode {
     match ReaderCommand::from(std::env::args_os().skip(1).collect::<Vec<_>>()) {
+        ReaderCommand::Coverage(arguments) => return coverage::run(arguments),
         ReaderCommand::Version => {
             println!(
                 "cargo-style {} protocol {PROTOCOL_VERSION}",
