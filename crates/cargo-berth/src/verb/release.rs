@@ -35,8 +35,11 @@ use crate::ledger::LedgerTransactionError;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReleaseSource;
 use crate::ledger::ReplayedLedgerState;
+use crate::ledger::ReservationJudgingBranch;
+use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 use crate::ledger::ReservationSnapshot;
+use crate::ledger::ScopeKind;
 use crate::ledger::WorktreeContext;
 use crate::output::CommandVerb;
 use crate::output::CoordinationRunMarkerRetirement;
@@ -47,6 +50,7 @@ use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation;
 use crate::reservation::AbandonmentReason;
+use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationWitness;
 use crate::reservation::KeptWorkReason;
@@ -62,6 +66,7 @@ use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
+use crate::scope::PathCase;
 use crate::session::SessionIdentityMappingPublication;
 
 /// A parsed request to checkpoint or explicitly end one reservation.
@@ -250,6 +255,12 @@ fn release_error_output(error: ReleaseError) -> OutputEnvelope {
                 "reservation {reservation_id} is active in another worktree and must be checkpointed from its holder"
             ),
         ),
+        ReleaseError::AmbiguousCheckpoint(reservation_id) => OutputEnvelope::invalid_input(
+            CommandVerb::Release,
+            &format!(
+                "Cannot prove a separate checkpoint for reservation {reservation_id}. The reservation remains active."
+            ),
+        ),
         ReleaseError::Transaction(error) => match error {
             LedgerTransactionError::CorrectableInput(error) => {
                 OutputEnvelope::invalid_input(CommandVerb::Release, &error.to_string())
@@ -356,6 +367,9 @@ fn execute_release(
         ),
         LedgerCommittedActionOutcome::Rejected(ReleaseRejection::ForeignActiveReservation) => Err(
             ReleaseError::ForeignActiveReservation(release_request.reservation_id),
+        ),
+        LedgerCommittedActionOutcome::Rejected(ReleaseRejection::AmbiguousCheckpoint) => Err(
+            ReleaseError::AmbiguousCheckpoint(release_request.reservation_id),
         ),
         LedgerCommittedActionOutcome::Rejected(ReleaseRejection::RequiresReconcileFirst) => {
             Err(ReleaseError::RequiresReconcileFirst)
@@ -498,8 +512,9 @@ fn release_operation_for_request(
             }
             return operation_for_state(
                 context.repository,
-                judging_branch.target().short_name(),
+                judging_branch,
                 context.invoking_worktree_id,
+                reservations,
                 reservation,
                 evidence,
             );
@@ -552,15 +567,16 @@ fn release_retention_deletions(
 
 fn operation_for_state(
     repository: &RepositorySnapshot,
-    target_branch: &str,
+    judging_branch: ReservationJudgingBranch<'_>,
     invoking_worktree_id: WorktreeId,
+    reservations: &RetainedReservationSet,
     reservation: &Reservation,
     evidence_state: ReservationEvidenceState,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
-    let reservation_id = reservation.id();
     let release_repository_context = ReleaseRepositoryContext {
         repository,
-        target_branch,
+        reservations,
+        judging_branch,
         holder_worktree: HolderWorktree::classify(
             invoking_worktree_id,
             reservation.actor().worktree,
@@ -571,19 +587,19 @@ fn operation_for_state(
     };
     match evidence_state {
         ReservationEvidenceState::Active { .. } => {
-            checkpoint_operation(&release_repository_context, reservation_id)
+            checkpoint_operation(&release_repository_context, reservation)
         },
         ReservationEvidenceState::Outstanding {
             protected_tip,
             trunk_snapshot,
             integration_status,
-        } => outstanding_operation(
+        } => Ok(outstanding_operation(
             &release_repository_context,
             reservation,
             &protected_tip,
             &trunk_snapshot,
             &integration_status,
-        ),
+        )),
         ReservationEvidenceState::Released {
             protected_tip,
             disposition,
@@ -605,17 +621,49 @@ fn operation_for_state(
 
 fn checkpoint_operation(
     release_repository_context: &ReleaseRepositoryContext<'_>,
-    reservation_id: ReservationId,
+    reservation: &Reservation,
 ) -> Result<ReleaseAppend, ReleaseRejection> {
     if release_repository_context.holder_worktree == HolderWorktree::Different {
         return Err(ReleaseRejection::ForeignActiveReservation);
     }
     let checkpoint_commits: ReservationCheckpointCommits = git::reservation_checkpoint_commits(
         release_repository_context.repository,
-        release_repository_context.target_branch,
+        release_repository_context
+            .judging_branch
+            .target()
+            .short_name(),
     )
     .map_err(ReleaseRejection::Git)?;
-    let protected_tip = ProtectedReservationTip::from(checkpoint_commits.protected_tip);
+    let repository = release_repository_context.repository;
+    let reservations = release_repository_context.reservations;
+    let tip = reservation::phase_boundary::first_checkpoint_tip(
+        repository.repository_root(),
+        repository.context().common_git_directory(),
+        reservations,
+        reservation,
+        &checkpoint_commits.protected_tip,
+    )
+    .map_err(|_| ReleaseRejection::AmbiguousCheckpoint)?;
+    if tip != &checkpoint_commits.protected_tip
+        && matches!(
+            release_repository_context.judging_branch,
+            ReservationJudgingBranch::MissingTargetFallback(_)
+        )
+    {
+        return Err(ReleaseRejection::AmbiguousCheckpoint);
+    }
+    if !reservation::phase_boundary::foreign_ranges_are_disjoint(
+        repository,
+        reservations,
+        reservation,
+        reservation.phase_start_head().as_ref(),
+        tip,
+        &checkpoint_commits.trunk,
+    ) {
+        return Err(ReleaseRejection::AmbiguousCheckpoint);
+    }
+    let reservation_id = reservation.id();
+    let protected_tip = ProtectedReservationTip::from(tip.clone());
     let trunk_oid = checkpoint_commits.trunk;
     Ok(ReleaseAppend::new(
         JournalOperation::Checkpoint {
@@ -640,20 +688,23 @@ fn outstanding_operation(
     protected_tip: &ProtectedReservationTip,
     trunk_snapshot: &GitObjectId,
     materialized_status: &IntegrationEvidenceStatus,
-) -> Result<ReleaseAppend, ReleaseRejection> {
+) -> ReleaseAppend {
     let reservation_id = reservation.id();
     let Ok(current_trunk) = reservation::current_trunk(
         &release_repository_context.repository.object_reader(),
-        release_repository_context.target_branch,
+        release_repository_context
+            .judging_branch
+            .target()
+            .short_name(),
     ) else {
-        return Ok(judged_evidence_operation(
+        return judged_evidence_operation(
             reservation,
             reservation::judge_integration(
                 &IntegrationEvidenceStatus::ObjectUnknown,
                 release_repository_context.merge_extent,
             ),
             protected_tip.clone(),
-        ));
+        );
     };
     let evidence = if matches!(
         materialized_status,
@@ -676,69 +727,50 @@ fn outstanding_operation(
         )
         .unwrap_or(IntegrationEvidenceStatus::ObjectUnknown)
     };
-    let judgment =
-        reservation::judge_integration(&evidence, release_repository_context.merge_extent);
-    match &judgment {
-        ReservationIntegrationJudgment::Integrated { witness, .. } => {
-            let mut append = integrated_release_operation(reservation_id, protected_tip, witness);
-            append
-                .prerequisites
-                .push(JournalOperation::EvidenceRevalidated {
-                    reservation_id,
-                    status: judgment.evidence_status(),
-                    edit_blocking_status: reservation.edit_blocking_status(),
-                });
-            return Ok(append);
-        },
-        ReservationIntegrationJudgment::Outstanding { .. } => {
-            // Advance a stale checkpoint when the holder has committed new pending work.
-            if !matches!(evidence, IntegrationEvidenceStatus::ObjectUnknown)
-                && release_repository_context.holder_worktree == HolderWorktree::Invoking
-                && release_repository_context
-                    .repository
-                    .head_object_id()
-                    .cloned()
-                    .is_ok_and(|head| head != *protected_tip.as_ref())
-            {
-                return resnapshot_operation(
-                    release_repository_context,
-                    reservation_id,
-                    &current_trunk,
-                );
-            }
-            return Ok(judged_evidence_operation(
-                reservation,
-                judgment,
-                protected_tip.clone(),
-            ));
-        },
-        ReservationIntegrationJudgment::NotIntegrated
-        | ReservationIntegrationJudgment::TrunkRewritten
-        | ReservationIntegrationJudgment::ObjectUnknown => {},
+    let observed_target_path_case = match release_repository_context.judging_branch {
+        ReservationJudgingBranch::MissingTargetFallback(_) => None,
+        ReservationJudgingBranch::RepositoryTrunk(_)
+        | ReservationJudgingBranch::ReservationTarget(_) => PathCase::read(
+            release_repository_context
+                .repository
+                .context()
+                .common_git_directory(),
+        )
+        .ok(),
+    };
+    let judgment = reservation::judge_checkpoint_integration(
+        &evidence,
+        release_repository_context.merge_extent,
+        protected_tip,
+        reservation.scopes(),
+        observed_target_path_case,
+    );
+    if let ReservationIntegrationJudgment::Integrated { witness, .. } = &judgment {
+        let mut append = integrated_release_operation(reservation_id, protected_tip, witness);
+        append
+            .prerequisites
+            .push(JournalOperation::EvidenceRevalidated {
+                reservation_id,
+                status: judgment.evidence_status(),
+                edit_blocking_status: EditBlockingStatus::Clear,
+            });
+        return append;
     }
-    // Work that has not reached trunk stays outstanding, and its checkpoint moves to the
-    // holder's current HEAD so commits and dirty paths added later stay protected until merged.
-    if !matches!(
+    if matches!(
+        evidence,
+        IntegrationEvidenceStatus::NotIntegrated | IntegrationEvidenceStatus::TrunkRewritten
+    ) && !matches!(
         materialized_status,
         IntegrationEvidenceStatus::Integrated { .. }
-    ) && release_repository_context.holder_worktree == HolderWorktree::Invoking
-        && matches!(
-            evidence,
-            IntegrationEvidenceStatus::NotIntegrated | IntegrationEvidenceStatus::TrunkRewritten
-        )
-        && release_repository_context
-            .repository
-            .head_object_id()
-            .cloned()
-            .is_ok_and(|current_head| current_head != *protected_tip.as_ref())
-    {
-        return resnapshot_operation(release_repository_context, reservation_id, &current_trunk);
-    }
-    Ok(judged_evidence_operation(
+    ) && let Some(append) = resnapshot_operation(
+        release_repository_context,
         reservation,
-        judgment,
-        protected_tip.clone(),
-    ))
+        protected_tip,
+        &current_trunk,
+    ) {
+        return append;
+    }
+    judged_evidence_operation(reservation, judgment, protected_tip.clone())
 }
 
 /// Settle integrated checkpoint work while retaining the commit that witnesses integration.
@@ -832,17 +864,71 @@ fn revalidate_integrated_evidence(
 
 fn resnapshot_operation(
     release_repository_context: &ReleaseRepositoryContext<'_>,
-    reservation_id: ReservationId,
+    reservation: &Reservation,
+    protected_tip: &ProtectedReservationTip,
     current_trunk: &GitObjectId,
-) -> Result<ReleaseAppend, ReleaseRejection> {
-    let replacement_tip = ProtectedReservationTip::from(
-        release_repository_context
-            .repository
-            .head_object_id()
-            .cloned()
-            .map_err(ReleaseRejection::Git)?,
-    );
-    Ok(ReleaseAppend::new(
+) -> Option<ReleaseAppend> {
+    if release_repository_context.holder_worktree == HolderWorktree::Different {
+        return None;
+    }
+    let repository = release_repository_context.repository;
+    let head = repository.head_object_id().ok()?;
+    let repository_root = repository.repository_root();
+    if head == protected_tip.as_ref()
+        || !matches!(
+            git::reachability(repository_root, protected_tip.as_ref(), head),
+            Ok(Reachability::Ancestor)
+        )
+    {
+        return None;
+    }
+    let path_case = PathCase::read(repository.context().common_git_directory()).ok()?;
+    let other_scopes: Vec<_> = release_repository_context
+        .reservations
+        .iter()
+        .filter(|other| {
+            other.id() != reservation.id()
+                && other.actor().worktree == reservation.actor().worktree
+                && (other.claimed_at() >= reservation.claimed_at()
+                    || !matches!(other.lifecycle(), ReservationLifecycle::Released { .. }))
+        })
+        .flat_map(|other| other.scopes().as_slice())
+        .collect();
+    if !git::commit_range_touches_only(repository_root, protected_tip.as_ref(), head, |path| {
+        let Some(path) = std::str::from_utf8(path)
+            .ok()
+            .and_then(|path| path.parse().ok())
+        else {
+            return false;
+        };
+        let file_scope = ReservationScope {
+            path,
+            kind: ScopeKind::File,
+        };
+        reservation
+            .scopes()
+            .as_slice()
+            .iter()
+            .any(|scope| scope.contains(&file_scope, path_case))
+            && !other_scopes
+                .iter()
+                .any(|scope| scope.overlaps(&file_scope, path_case))
+    }) {
+        return None;
+    }
+    if !reservation::phase_boundary::foreign_ranges_are_disjoint(
+        repository,
+        release_repository_context.reservations,
+        reservation,
+        protected_tip.as_ref(),
+        head,
+        current_trunk,
+    ) {
+        return None;
+    }
+    let reservation_id = reservation.id();
+    let replacement_tip = ProtectedReservationTip::from(head.clone());
+    Some(ReleaseAppend::new(
         JournalOperation::Resnapshot {
             reservation_id,
             snapshot: ReservationSnapshot::Outstanding {
@@ -877,7 +963,10 @@ fn released_evidence_operation(
     }
     let Ok(current_trunk) = reservation::current_trunk(
         &release_repository_context.repository.object_reader(),
-        release_repository_context.target_branch,
+        release_repository_context
+            .judging_branch
+            .target()
+            .short_name(),
     ) else {
         return Ok(already_settled_operation(
             reservation,
@@ -969,11 +1058,12 @@ fn already_settled_operation(
 
 struct ReleaseRepositoryContext<'repository> {
     repository:       &'repository RepositorySnapshot,
-    target_branch:    &'repository str,
+    reservations:     &'repository RetainedReservationSet,
+    judging_branch:   ReservationJudgingBranch<'repository>,
     holder_worktree:  HolderWorktree,
     phase_start_head: &'repository ProtectedPhaseStartHead,
     scopes:           &'repository ReservationScopeSet,
-    /// Only observed emptiness permits retiring this branch's merge protection.
+    /// The observed paths used when the target lacks the protected tip.
     merge_extent:     &'repository MergeExtent,
 }
 
@@ -1339,6 +1429,7 @@ enum ReleaseRejection {
     UnknownReservation,
     AlreadyReleased,
     ForeignActiveReservation,
+    AmbiguousCheckpoint,
     RequiresReconcileFirst,
     Replay(ReservationReplayError),
     Git(GitError),
@@ -1356,6 +1447,7 @@ enum ReleaseError {
     UnknownReservation(ReservationId),
     AlreadyReleased(ReservationId),
     ForeignActiveReservation(ReservationId),
+    AmbiguousCheckpoint(ReservationId),
     RequiresReconcileFirst,
     EdgeReplay(EdgeReplayError),
 }
@@ -1384,6 +1476,12 @@ impl Display for ReleaseError {
                 formatter,
                 "reservation {reservation_id} is active in another worktree"
             ),
+            Self::AmbiguousCheckpoint(reservation_id) => {
+                write!(
+                    formatter,
+                    "cannot prove a separate checkpoint for reservation {reservation_id}"
+                )
+            },
             Self::RequiresReconcileFirst => {
                 formatter.write_str("reservation lifecycle requires reconciliation")
             },

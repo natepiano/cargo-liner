@@ -271,11 +271,11 @@ fn open_sibling_phases(trunk: &Path, worktree_parent: &Path) -> SiblingPhases {
     let unit = worktree_parent.join("unit");
     GIT.add_worktree_without_hooks(trunk, &unit, "unit", "main");
     let first = open_phase(&unit, "file:a.rs", "dir-sid.phase-1");
-    let second = open_phase(&unit, "file:b.rs", "dir-sid.phase-2");
     fs::write(unit.join("a.rs"), "// phase A checkpoint\n").expect("phase A file");
     fs::write(unit.join("b.rs"), "// phase B work\n").expect("phase B file");
     GIT.run(&unit, ["add", "a.rs"]);
     GIT.run_without_hooks(&unit, ["commit", "--quiet", "-m", "phase A checkpoint"]);
+    let second = open_phase(&unit, "file:b.rs", "dir-sid.phase-2");
     SiblingPhases {
         unit,
         first,

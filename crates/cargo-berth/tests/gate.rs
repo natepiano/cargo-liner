@@ -6006,6 +6006,10 @@ fn prepared_gate_advances_each_subject_at_actual_and_proposed_targets() {
         assert_target_compared_each_reservation(&fixture, target);
     }
 
+    git(
+        fixture.repository.path(),
+        &["restore", "--worktree", "--", "src"],
+    );
     let board = run_berth(fixture.repository.path(), &["board", "--json"]);
     assert!(board.status.success());
     let data = &json_output(&board)["payload"]["data"];

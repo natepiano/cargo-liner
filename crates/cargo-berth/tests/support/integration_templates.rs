@@ -11,6 +11,7 @@ use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::SECOND_RUN;
 use cargo_berth_test_support::TemplateBuildTiming;
 use cargo_berth_test_support::assert_success;
+use cargo_berth_test_support::claim_id;
 use cargo_berth_test_support::json;
 
 pub(super) const STATE: &str = ".git/integration-preparation-id";
@@ -283,7 +284,7 @@ fn build_release_lane(root: &Path) {
     fs::write(root.join(STATE), id).expect("lane id should write");
 }
 
-/// A released checkpoint with a later commit before either commit lands.
+/// An outstanding checkpoint followed by an unmerged commit.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct CheckpointWithLaterWork {
     pub(super) reservation_id: String,
@@ -293,15 +294,250 @@ pub(super) struct CheckpointWithLaterWork {
 pub(super) const CHECKPOINT_WITH_LATER_WORK: LedgerTemplate = LedgerTemplate {
     repository: RepositoryTemplate {
         name: "checkpoint-with-later-work",
-        build: build_checkpoint_with_later_work,
+        build: |root| build_checkpoint_with_later_work(root, "integration"),
         ..ENDED_FIRST_COVER.repository
     },
     ..ENDED_FIRST_COVER
 };
 
-fn build_checkpoint_with_later_work(root: &Path) {
+pub(super) const TRUNK_CHECKPOINT_WITH_LATER_WORK: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "trunk-checkpoint-with-later-work",
+        build: |root| build_checkpoint_with_later_work(root, "main"),
+        ..CHECKPOINT_WITH_LATER_WORK.repository
+    },
+    ..CHECKPOINT_WITH_LATER_WORK
+};
+
+pub(super) const CHECKPOINT_LANE: &str = "partly-landed-lane";
+
+pub(super) const ACTIVE_BEFORE_LATER_PHASE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "active-before-later-phase",
+        build: |root| build_shared_phase_history(root, EarlierPhase::Active),
+        ..CHECKPOINT_WITH_LATER_WORK.repository
+    },
+    ..CHECKPOINT_WITH_LATER_WORK
+};
+
+pub(super) const ACTIVE_WITH_SHARED_PHASE_START: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "active-with-shared-phase-start",
+        build: |root| build_shared_phase_history(root, EarlierPhase::SharedStart),
+        ..CHECKPOINT_WITH_LATER_WORK.repository
+    },
+    ..CHECKPOINT_WITH_LATER_WORK
+};
+
+pub(super) const ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "active-with-later-phase-and-missing-target",
+        build: |root| build_shared_phase_history(root, EarlierPhase::MissingTarget),
+        ..CHECKPOINT_WITH_LATER_WORK.repository
+    },
+    ..CHECKPOINT_WITH_LATER_WORK
+};
+
+pub(super) const CHECKPOINT_BEFORE_BACKDATED_CLAIM: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "checkpoint-before-backdated-claim",
+        build: build_checkpoint_before_backdated_claim,
+        ..CHECKPOINT_WITH_LATER_WORK.repository
+    },
+    ..CHECKPOINT_WITH_LATER_WORK
+};
+
+pub(super) const CHECKPOINT_BEFORE_SAME_PATH_PHASE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "checkpoint-before-same-path-phase",
+        build: |root| build_shared_phase_history(root, EarlierPhase::Checkpointed),
+        ..CHECKPOINT_WITH_LATER_WORK.repository
+    },
+    ..CHECKPOINT_WITH_LATER_WORK
+};
+
+pub(super) const TWO_OUTSTANDING_IN_ONE_CHECKOUT: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "two-outstanding-in-one-checkout",
+        build: build_two_outstanding_in_one_checkout,
+        ..CHECKPOINT_WITH_LATER_WORK.repository
+    },
+    ..CHECKPOINT_WITH_LATER_WORK
+};
+
+fn build_two_outstanding_in_one_checkout(root: &Path) {
     let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
-    let lane = repo.lane("partly-landed-lane", "integration");
+    let holder = repo.main_lane(CHECKPOINT_LANE);
+    let _requester = repo.main_lane("conflict-requester");
+    let first = repo.claim(&holder, "file:first.rs", FIRST_RUN, None);
+    assert_success(&first);
+    let oldest = claim_id(&first);
+    repo.commit_file(
+        &holder,
+        "first.rs",
+        "first checkpoint\n",
+        "first checkpoint",
+    );
+    let first_tip = repo.git_stdout(&holder, &["rev-parse", "HEAD"]);
+    let second = repo.claim(&holder, "file:second.rs", FIRST_RUN, None);
+    assert_success(&second);
+    let newer = claim_id(&second);
+    repo.commit_file(
+        &holder,
+        "second.rs",
+        "second checkpoint\n",
+        "second checkpoint",
+    );
+    for id in [&oldest, &newer] {
+        let released = repo.run(&holder, &["release", id, "--json"]);
+        assert_success(&released);
+        assert_eq!(json(&released)["status"], "outstanding");
+    }
+    record_checkpoint_fixture(root, &repo, oldest, first_tip);
+}
+
+pub(super) const CHECKPOINT_WITH_FOREIGN_MERGE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "checkpoint-with-foreign-merge",
+        build: build_checkpoint_with_foreign_merge,
+        ..CHECKPOINT_WITH_LATER_WORK.repository
+    },
+    ..CHECKPOINT_WITH_LATER_WORK
+};
+
+#[derive(Clone, Copy)]
+enum EarlierPhase {
+    Active,
+    SharedStart,
+    MissingTarget,
+    Checkpointed,
+}
+
+fn build_shared_phase_history(root: &Path, earlier: EarlierPhase) {
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
+    repo.git(repo.root(), &["config", "core.hooksPath", "/dev/null"]);
+    let holder = if matches!(earlier, EarlierPhase::MissingTarget) {
+        repo.lane(CHECKPOINT_LANE, "integration")
+    } else {
+        repo.main_lane(CHECKPOINT_LANE)
+    };
+    let claim = repo.claim(&holder, "file:phase.rs", FIRST_RUN, None);
+    assert_success(&claim);
+    let reservation_id = claim_id(&claim);
+    if matches!(earlier, EarlierPhase::SharedStart) {
+        assert_success(&repo.claim(&holder, "file:later.rs", FIRST_RUN, None));
+    }
+    repo.commit_file(&holder, "phase.rs", "first phase\n", "first phase");
+    let checkpoint_tip = repo.git_stdout(&holder, &["rev-parse", "HEAD"]);
+    let later_path = match earlier {
+        EarlierPhase::Active | EarlierPhase::MissingTarget => {
+            assert_success(&repo.claim(&holder, "file:later.rs", FIRST_RUN, None));
+            "later.rs"
+        },
+        EarlierPhase::SharedStart => "later.rs",
+        EarlierPhase::Checkpointed => {
+            assert_success(&repo.run(&holder, &["release", &reservation_id, "--json"]));
+            assert_success(&repo.claim(&holder, "file:phase.rs", SECOND_RUN, None));
+            "phase.rs"
+        },
+    };
+    repo.commit_file(&holder, later_path, "second phase\n", "second phase");
+    if matches!(earlier, EarlierPhase::Checkpointed) {
+        repo.git(
+            repo.root(),
+            &["merge", "--quiet", "--ff-only", &checkpoint_tip],
+        );
+    }
+    record_checkpoint_fixture(root, &repo, reservation_id, checkpoint_tip);
+}
+
+fn build_checkpoint_before_backdated_claim(root: &Path) {
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
+    repo.git(repo.root(), &["config", "core.hooksPath", "/dev/null"]);
+    let holder = repo.main_lane(CHECKPOINT_LANE);
+    let claim = repo.claim(&holder, "file:phase.rs", FIRST_RUN, None);
+    assert_success(&claim);
+    let reservation_id = claim_id(&claim);
+    repo.commit_file(&holder, "phase.rs", "first phase\n", "first phase");
+    let checkpoint_tip = repo.git_stdout(&holder, &["rev-parse", "HEAD"]);
+    assert_success(&repo.run(&holder, &["release", &reservation_id, "--json"]));
+    repo.commit_file(
+        &holder,
+        "phase.rs",
+        "more first phase work\n",
+        "more first phase work",
+    );
+    assert_success(&repo.run(
+        &holder,
+        &[
+            "claim",
+            "file:phase.rs",
+            "--head",
+            &checkpoint_tip,
+            "--run",
+            SECOND_RUN,
+            "--json",
+        ],
+    ));
+    repo.git(
+        repo.root(),
+        &["merge", "--quiet", "--ff-only", &checkpoint_tip],
+    );
+    record_checkpoint_fixture(root, &repo, reservation_id, checkpoint_tip);
+}
+
+fn build_checkpoint_with_foreign_merge(root: &Path) {
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
+    repo.git(repo.root(), &["config", "core.hooksPath", "/dev/null"]);
+    repo.commit_file(
+        repo.root(),
+        "phase.rs",
+        "first line\n\n\n\n\nlast line\n",
+        "base",
+    );
+    let holder = repo.main_lane(CHECKPOINT_LANE);
+    let outsider = repo.main_lane("foreign-phase");
+    let claim = repo.claim(&holder, "file:phase.rs", FIRST_RUN, None);
+    assert_success(&claim);
+    let reservation_id = claim_id(&claim);
+    repo.commit_file(
+        &holder,
+        "phase.rs",
+        "first phase\n\n\n\n\nlast line\n",
+        "first phase",
+    );
+    let checkpoint_tip = repo.git_stdout(&holder, &["rev-parse", "HEAD"]);
+    assert_success(&repo.run(&holder, &["release", &reservation_id, "--json"]));
+    assert_success(&repo.run(
+        &outsider,
+        &[
+            "claim",
+            "file:phase.rs",
+            "--run",
+            SECOND_RUN,
+            "--override",
+            &reservation_id,
+            "--overlap-why",
+            "reviewed phase overlap",
+            "--json",
+        ],
+    ));
+    repo.commit_file(
+        &outsider,
+        "phase.rs",
+        "first line\n\n\n\n\nforeign phase\n",
+        "foreign phase",
+    );
+    repo.git(
+        &holder,
+        &["merge", "--quiet", "--no-ff", "--no-edit", "foreign-phase"],
+    );
+    record_checkpoint_fixture(root, &repo, reservation_id, checkpoint_tip);
+}
+
+fn build_checkpoint_with_later_work(root: &Path, target: &str) {
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
+    let lane = repo.lane(CHECKPOINT_LANE, target);
     let claimed = repo.claim(&lane, "file:checkpoint.txt", FIRST_RUN, None);
     assert_success(&claimed);
     let reservation_id = json(&claimed)["payload"]["data"]["reservation_id"]
@@ -312,6 +548,15 @@ fn build_checkpoint_with_later_work(root: &Path) {
     let checkpoint_tip = repo.git_stdout(&lane, &["rev-parse", "HEAD"]);
     assert_success(&repo.run(&lane, &["release", &reservation_id, "--json"]));
     repo.commit_file(&lane, "later.txt", "later\n", "later work");
+    record_checkpoint_fixture(root, &repo, reservation_id, checkpoint_tip);
+}
+
+fn record_checkpoint_fixture(
+    root: &Path,
+    repo: &IntegrationRepository,
+    reservation_id: String,
+    checkpoint_tip: String,
+) {
     repo.write_recorded_template(root);
     let state = CheckpointWithLaterWork {
         reservation_id,
