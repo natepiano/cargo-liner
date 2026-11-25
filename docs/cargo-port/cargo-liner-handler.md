@@ -1242,51 +1242,50 @@ The copies are deleted. No source changes.
 
 **Gotchas:** Journal replacement can require a second decode. The checkpoint reader releases its lock before it returns the source file. The answer fixture calls `execute_at` directly. Its child clears the launcher's session and run identity.
 
-### Phase 56c — a cargo-berth edit check of an unreserved file costs under about 100 ms  · status: todo
+### Phase 56c — a cargo-berth edit check of an unreserved file costs under about 0.5 s  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the `pre-tool-use` edit check of a file no reservation holds, and the gate, each cost under about 100 ms CPU in release. Source: the Phase 56b release measure.
-
-**Spec:**
-1. On the Mac release sample after Phase 56b, the unreserved edit costs 4,703.1 ms CPU and reads 267.4 MB. The read-only gate costs 173.7 ms CPU. Each hook decodes the checkpoint once. Use the median of three runs in `${SESSION_DIR}/phases/56b/measure_reply.md` as the baseline.
-2. First profile the unreserved edit on the Mac release sample. Name the top costs by function, with CPU ms and read bytes. Cut the top cost at its cause. Preserve each hook answer.
-3. If either hook still costs more than about 100 ms CPU, apply the lazy decode in section 3 of `${SESSION_DIR}/phases/56/design.md`. Give `incursion_incidents` its own part and include it in the header's part lengths. Start from `Ledger::for_edit_check` and `Ledger::with_validated_reservations`. Apply the reservation reader changes in `crates/cargo-berth/src/gate/reference_transaction.rs` and `crates/cargo-berth/src/session/reservation_command.rs`.
-4. Report median CPU and read bytes for the gate and the unreserved edit. Use three Mac release runs on the same sample before and after the change.
-
-**Constraints from prior phases:**
-- Phase 56b shares one `JournalReplay` across the edit decision, reconciliation, retry, first-touch acquisition, default answer, and refusal audit. Keep that reuse when a transaction needs the full replay.
-- Keep the journal source file open while its replay can be reused. Reload after replacement or shortening. Advance the tail and validate the generation and session mapping under the mutation lock.
-- Version 4 has one header line and one `JournalReplay` line. Increase `FOLD_FORMAT_VERSION` from 4 when the layout changes. Reject old headers before decoding the replay and rebuild from byte 0.
-- Keep `AnswerRecord`'s `worktree` and `Vec<OverlapCoverage>`. Keep coverage rules and bindings in the reservation fold. Keep the full `ConflictAuthorization` values in the answer events in `JournalReplay::coordination_events`.
-- Keep one checkpoint writer per journal file, the `write_temporary` test seam, and the checkpoint for a compacted journal. Apply the ratio of 8 to the total checkpoint bytes.
-- Keep path-owner selection, ambiguity recovery, and named `check --reservation` behavior. `edit_hook_authorization` selects by the declared path. `locked_first_touch_selection` validates that selection under the lock.
-- Use the Mac sample at `/tmp/claude/scratch/p53-probe-4406cc`. The probes are `${SESSION_DIR}/tmp/p56-measure/measure-decode.py` and `${SESSION_DIR}/tmp/phase53-measure.5mA6ShQL/measure-hook.py`.
-- If the format changes, test that a version-4 checkpoint rebuilds. Compare the partial reservation replay with a whole-journal replay. Keep `edit_hook_first_touch_decodes_checkpoint_once` and `retained_edit_replay_reloads_a_longer_compacted_replacement` passing.
+- Cause of the 4.5 s edit: a compaction attempt that removed nothing rescanned the 240 MB journal every 15 minutes.
+- A no-progress compaction now saves its result with the journal identity and retention facts. The 15-minute retry is removed. The 16 MiB growth threshold stays.
+- A small append that keeps the same retention roots reuses the saved result. The reuse check reads only the tail. A new candidate or a changed final-record protection permits a fresh plan.
+- The edit and ref hooks defer due compaction to the next ordinary ledger mutation.
+- Checkpoint format version 5 stores five parts: core, reservations, incursion incidents, coordination events and maintenance. The header records all five lengths. A version-4 checkpoint rebuilds from byte 0.
+- The gate and reservation selection decode only the core and reservations, through `ReservationFacts`, which has no incident query. Edit preparation reads incidents. A transaction loads the other parts from the same open checkpoint.
+- Mac release, median of 3: the unreserved edit fell from 4,513.0 to 474.4 ms CPU. The gate fell from 176.7 to 77.8 ms. A check 16 minutes after a no-progress compaction fell from 3,685.7 to 466.2 ms.
 
 **Files:**
-- `crates/cargo-berth/src/` — files the profile identifies.
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs` — version 5 parts and partial reads.
+- `crates/cargo-berth/src/ledger/compaction/maintenance.rs` — saved no-progress result and its reuse check.
+- `crates/cargo-berth/src/ledger/compaction/journal_compaction.rs` — records the scanned journal identity and retention facts.
+- `crates/cargo-berth/src/ledger/history.rs` — retention tests for the schedule, the full plan and the tail.
+- `crates/cargo-berth/src/ledger/handle.rs` — compaction deferral in the hooks and the partial edit replay.
+- `crates/cargo-berth/src/reservation/retention.rs` — `ReservationFacts` and the incident split.
+- `crates/cargo-berth/src/gate/reference_transaction.rs`, `crates/cargo-berth/src/session/reservation_command.rs` — reservation-only readers.
+- `crates/cargo-berth/src/reconcile.rs` — borrows the replayed reservations when no rewrite changes them.
+- `crates/cargo-berth/src/verb/check.rs` — edit hook tests.
 
-**Workers:** 1 writer.
+**Binds later work:** Phase 56d owns the rest of the edit cost. In pass 2, reconciliation used about 320 ms: part decodes about 156 ms, `observe_repository_facts` about 99 ms, `PreparedReconciliationAppend::prepare` about 37 ms.
 
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- No changed test takes 1 s or more.
+**Gotchas:** The first ordinary check after a hook-deferred compaction pays the compaction once (3.6 s on the sample). An edit can still cross the superseded-byte threshold and need a full compaction.
 
 ### Phase 56d — a cargo-berth edit check of an unreserved file costs under about 100 ms  · status: todo
 
 #### Work Order
 
-**Goal:** the `pre-tool-use` edit check of a file no reservation holds costs under about 100 ms CPU in release. Phase 56c cut it from about 4.5 s to about 0.5 s and moved the rest here.
+**Goal:** the `pre-tool-use` edit check of a file no reservation holds costs under about 100 ms CPU in release. Phase 56c cut it from 4,513.0 to 474.4 ms and moved the rest here.
 
 **Spec:**
-1. Use the Phase 56c final Mac release measure as the baseline. Its report is `${SESSION_DIR}/phases/56c/impl_report.md`.
+1. The baseline is the Phase 56c final Mac release measure: edit 474.4 ms, gate 77.8 ms CPU, median of 3. The report is `${SESSION_DIR}/phases/56c/fix_reply_1.md`.
 2. In Phase 56c pass 2, `reconcile_for_check` used about 320 ms CPU of the edit: checkpoint part decodes about 156 ms, `observe_repository_facts` about 99 ms, and `PreparedReconciliationAppend::prepare` about 37 ms.
 3. Profile the edit on the Mac release sample. Cut the top costs at their cause. Preserve each hook answer.
 4. Report median CPU and read bytes for the gate and the unreserved edit. Use three Mac release runs on the same sample before and after the change.
 
 **Constraints from prior phases:**
 - Keep the Phase 56b and Phase 56c constraints of the replay checkpoint and compaction. The Phase 56c As-built names them.
+- Keep the version 5 part layout and `ReservationFacts` for the gate and reservation selection. Increase `FOLD_FORMAT_VERSION` when the layout changes.
+- Keep the saved no-progress compaction result, its tail-only reuse check and the 16 MiB growth threshold. Hooks defer compaction to the next ordinary mutation.
+- Keep `edit_hook_first_touch_decodes_checkpoint_once` and its compaction checks passing.
 
 **Files:**
 - `crates/cargo-berth/src/` — files the profile identifies.
