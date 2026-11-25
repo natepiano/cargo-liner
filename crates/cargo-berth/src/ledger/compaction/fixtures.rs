@@ -204,7 +204,7 @@ pub(super) fn renewal_and_observation(
 }
 
 /// The superseded record bytes of `ledger`'s journal.
-pub(super) fn superseded_bytes(ledger: &Ledger) -> Result<u64, Box<dyn Error>> {
+pub(crate) fn superseded_bytes(ledger: &Ledger) -> Result<u64, Box<dyn Error>> {
     let droppable = Journal::replay_read_only(&ledger.paths.journal)?
         .superseded
         .droppable_bytes;

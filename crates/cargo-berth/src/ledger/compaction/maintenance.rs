@@ -1,11 +1,13 @@
 //! Periodic journal compaction and temporary file cleanup.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::File;
 use std::fs::FileTimes;
 use std::fs::Metadata;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
+use std::io::Read;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
@@ -26,13 +28,15 @@ use super::journal_compaction::OriginalJournalLock;
 use super::journal_compaction::OriginalJournalLockAttempt;
 use super::journal_compaction::replays_agree;
 use crate::ids::RecordedAt;
+use crate::ids::ReservationId;
 use crate::ledger::constants::HISTORY_COMPACTION_CHECK_FILE_NAME;
 use crate::ledger::constants::HISTORY_COMPACTION_CHECK_INTERVAL;
-use crate::ledger::constants::HISTORY_COMPACTION_NO_PROGRESS_INTERVAL;
 use crate::ledger::constants::JOURNAL_COMPACTION_TEMPORARY_FILE_NAME;
 use crate::ledger::constants::JOURNAL_COMPACTION_TEMPORARY_GRACE;
 use crate::ledger::constants::REPLAY_CHECKPOINT_FILE_NAME;
 use crate::ledger::handle::Ledger;
+use crate::ledger::history::FinishedHistory;
+use crate::ledger::history::HistoryCompactionBasis;
 use crate::ledger::identity;
 use crate::ledger::journal::JournalReplay;
 use crate::ledger::lock::MutationLock;
@@ -53,39 +57,82 @@ struct CompactionRefusalMarker {
     cause:      String,
 }
 
-/// The journal that the last history plan found had no records to remove.
+/// The journal and candidates that produced a history plan with no removable records.
 #[derive(Debug, Deserialize, Serialize)]
-struct HistoryCompactionNoProgress {
+pub(super) struct HistoryCompactionNoProgress {
     device:     u64,
     inode:      u64,
     end_offset: u64,
-    planned_at: SystemTime,
+    modified:   SystemTime,
+    basis:      HistoryCompactionBasis,
 }
 
 impl HistoryCompactionNoProgress {
-    fn retry_decision(&self, journal: &Metadata, threshold: u64) -> HistoryRetry {
-        if self.device != journal.dev()
-            || self.inode != journal.ino()
-            || journal.len() < self.end_offset
-            || journal.len() - self.end_offset >= threshold
-            || !self
-                .planned_at
-                .elapsed()
-                .is_ok_and(|age| age < HISTORY_COMPACTION_NO_PROGRESS_INTERVAL)
-        {
-            HistoryRetry::Plan
-        } else {
-            HistoryRetry::Defer
-        }
+    /// Store a plan only for the complete file it inspected.
+    pub(super) fn for_source(
+        before: &Metadata,
+        after: &Metadata,
+        end_offset: u64,
+        basis: HistoryCompactionBasis,
+    ) -> Option<Self> {
+        let modified = before.modified().ok()?;
+        (before.len() == end_offset
+            && after.len() == end_offset
+            && after.modified().ok()? == modified)
+            .then_some(Self {
+                device: before.dev(),
+                inode: before.ino(),
+                end_offset,
+                modified,
+                basis,
+            })
     }
-}
 
-/// Whether a maintenance check plans expired history again after a plan that removed nothing.
-enum HistoryRetry {
-    /// The journal changed, grew by the compaction threshold, or the last plan is old: plan again.
-    Plan,
-    /// The last plan still describes the journal: skip this check.
-    Defer,
+    /// The bytes appended after the plan, if the journal and candidates still match it.
+    fn covered_growth(
+        &self,
+        journal: &Metadata,
+        candidates: &BTreeSet<ReservationId>,
+        threshold: u64,
+    ) -> Option<u64> {
+        let growth = journal.len().checked_sub(self.end_offset)?;
+        (self.device == journal.dev()
+            && self.inode == journal.ino()
+            && candidates.is_subset(&self.basis.candidates)
+            && growth < threshold
+            && (growth != 0 || journal.modified().ok()? == self.modified))
+            .then_some(growth)
+    }
+
+    /// Reuse the plan unless an append can remove a root or create a superseded record.
+    fn still_applies(
+        &self,
+        path: &Path,
+        replay: &JournalReplay,
+        candidates: &BTreeSet<ReservationId>,
+        threshold: u64,
+    ) -> Option<bool> {
+        if replay.superseded.droppable_bytes != 0 {
+            return Some(false);
+        }
+        let mut journal = File::open(path).ok()?;
+        let metadata = journal.metadata().ok()?;
+        if metadata.len() != u64::from(replay.end_offset) {
+            return Some(false);
+        }
+        let growth = self.covered_growth(&metadata, candidates, threshold)?;
+        if growth == 0 {
+            return Some(true);
+        }
+        journal.seek(SeekFrom::Start(self.end_offset)).ok()?;
+        let mut appended = Vec::new();
+        journal.take(growth).read_to_end(&mut appended).ok()?;
+        Some(
+            u64::try_from(appended.len()).ok()? == growth
+                && appended.ends_with(b"\n")
+                && self.basis.appends_keep_roots(&appended, replay, candidates),
+        )
+    }
 }
 
 /// A temporary file that a compaction or a replay checkpoint write leaves in the ledger directory.
@@ -151,20 +198,39 @@ impl TryFrom<&str> for TemporaryFile {
 impl Ledger {
     /// Check for abandoned files and compact the journal when the transaction found work.
     pub(in crate::ledger) fn maintain_compaction(&self, replay: &JournalReplay) {
+        self.maintain_compaction_with_clock(replay, RecordedAt::now);
+    }
+
+    fn maintain_compaction_with_clock(
+        &self,
+        replay: &JournalReplay,
+        now: impl FnOnce() -> RecordedAt,
+    ) {
         let mut check = self.begin_compaction_check();
         if check.is_some() {
             std::mem::drop(self.remove_abandoned_compaction_files());
         }
 
         let droppable_bytes = replay.superseded.droppable_bytes;
+        if check.is_none() && droppable_bytes < self.compaction_threshold_bytes {
+            return;
+        }
+        let now = now();
+        let mut candidates = FinishedHistory::compaction_candidates(replay, &now);
         if droppable_bytes >= self.compaction_threshold_bytes {
-            if check.is_some() || !replay.finished_history.is_due(&RecordedAt::now()) {
-                std::mem::drop(self.attempt_due_compaction(droppable_bytes, replays_agree));
+            if check.is_some() || candidates.next().is_none() {
+                std::mem::drop(self.attempt_due_compaction(
+                    droppable_bytes,
+                    replays_agree,
+                    None,
+                    &now,
+                ));
             }
-        } else if let Some(check) = &mut check
-            && replay.finished_history.is_due(&RecordedAt::now())
-        {
-            self.compact_expired_history(check);
+        } else if let Some(check) = &mut check {
+            let candidates: BTreeSet<_> = candidates.collect();
+            if !candidates.is_empty() {
+                self.compact_expired_history(check, replay, &candidates, &now);
+            }
         }
     }
 
@@ -201,32 +267,32 @@ impl Ledger {
         Some(marker)
     }
 
-    /// Skip a history plan when the prior plan found nothing and the journal barely changed.
-    fn compact_expired_history(&self, marker: &mut File) {
-        let Ok(journal) = fs::metadata(&self.paths.journal) else {
-            return;
-        };
+    /// Use the saved plan if the journal tail and candidates keep its retention roots.
+    fn compact_expired_history(
+        &self,
+        marker: &mut File,
+        replay: &JournalReplay,
+        candidates: &BTreeSet<ReservationId>,
+        now: &RecordedAt,
+    ) {
         if serde_json::from_reader::<_, HistoryCompactionNoProgress>(&mut *marker).is_ok_and(
             |plan| {
-                matches!(
-                    plan.retry_decision(&journal, self.compaction_threshold_bytes),
-                    HistoryRetry::Defer
-                )
+                plan.still_applies(
+                    &self.paths.journal,
+                    replay,
+                    candidates,
+                    self.compaction_threshold_bytes,
+                ) == Some(true)
             },
         ) {
             return;
         }
-        let compaction =
-            self.attempt_due_compaction(self.compaction_threshold_bytes, replays_agree);
-        if matches!(compaction, Ok(Some(JournalCompaction::NothingToCompact))) {
-            let plan = HistoryCompactionNoProgress {
-                device:     journal.dev(),
-                inode:      journal.ino(),
-                end_offset: journal.len(),
-                planned_at: SystemTime::now(),
-            };
-            std::mem::drop(write_history_compaction_plan(marker, &plan));
-        }
+        std::mem::drop(self.attempt_due_compaction(
+            self.compaction_threshold_bytes,
+            replays_agree,
+            Some(marker),
+            now,
+        ));
     }
 
     /// Try a due compaction without waiting for the mutation lock.
@@ -234,11 +300,13 @@ impl Ledger {
         &self,
         droppable_bytes: u64,
         agree: fn(&JournalReplay, &JournalReplay) -> bool,
+        marker: Option<&mut File>,
+        now: &RecordedAt,
     ) -> Result<Option<JournalCompaction>, JournalCompactionError> {
         if droppable_bytes < self.compaction_threshold_bytes || self.compaction_held_back() {
             return Ok(None);
         }
-        let compaction = self.prepare_due_compaction(agree);
+        let compaction = self.prepare_due_compaction(agree, marker, now);
         if let Err(error) = &compaction {
             std::mem::drop(self.record_refusal(error));
         }
@@ -250,12 +318,18 @@ impl Ledger {
     pub(super) fn prepare_due_compaction(
         &self,
         agree: fn(&JournalReplay, &JournalReplay) -> bool,
+        marker: Option<&mut File>,
+        now: &RecordedAt,
     ) -> Result<Option<JournalCompaction>, JournalCompactionError> {
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
-        let CompactionPreparation::Ready(mut prepared) =
-            self.prepare_compaction(repo_instance_id, agree)?
-        else {
-            return Ok(Some(JournalCompaction::NothingToCompact));
+        let mut prepared = match self.prepare_compaction(repo_instance_id, agree, now)? {
+            CompactionPreparation::Ready(prepared) => prepared,
+            CompactionPreparation::Unchanged(plan) => {
+                if let (Some(marker), Some(plan)) = (marker, plan) {
+                    std::mem::drop(write_history_compaction_plan(marker, &plan));
+                }
+                return Ok(Some(JournalCompaction::NothingToCompact));
+            },
         };
         let lock = match MutationLock::acquire(&self.paths.lock, Duration::ZERO) {
             Ok(lock) => lock,
@@ -402,8 +476,6 @@ mod tests {
     use uuid::Uuid;
 
     use super::CompactionRefusalMarker;
-    use super::HistoryCompactionNoProgress;
-    use super::HistoryRetry;
     use super::replays_agree;
     use crate::ids::ProjectionGeneration;
     use crate::ids::RecordedAt;
@@ -419,6 +491,7 @@ mod tests {
     use crate::ledger::constants::MUTATING_VERB_CONTENTION_TOLERANCE;
     use crate::ledger::constants::REPLAY_CHECKPOINT_FILE_NAME;
     use crate::ledger::handle::Ledger;
+    use crate::ledger::history::FinishedHistory;
     use crate::ledger::journal::Journal;
     use crate::ledger::journal::JournalReplay;
     use crate::ledger::lock::MutationLock;
@@ -434,7 +507,11 @@ mod tests {
         let ledger = &fixture.ledger;
         let original = fixture.journal()?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
-        assert!(replay.finished_history.is_due(&RecordedAt::now()));
+        assert!(
+            FinishedHistory::compaction_candidates(&replay, &RecordedAt::now())
+                .next()
+                .is_some()
+        );
         assert_eq!(replay.superseded.droppable_bytes, 0);
 
         let holder = MutationLock::acquire(&ledger.paths.lock, Duration::ZERO)?;
@@ -479,7 +556,11 @@ mod tests {
         let ledger = &fixture.ledger;
         let original = fixture.journal()?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
-        assert!(replay.finished_history.is_due(&RecordedAt::now()));
+        assert!(
+            FinishedHistory::compaction_candidates(&replay, &RecordedAt::now())
+                .next()
+                .is_some()
+        );
         assert!(replay.superseded.droppable_bytes >= ledger.compaction_threshold_bytes);
 
         let holder = ledger
@@ -519,40 +600,129 @@ mod tests {
     }
 
     #[test]
-    fn an_unchanged_history_plan_waits_for_growth_or_age() -> Result<(), Box<dyn Error>> {
-        let fixture = CompactionFixture::round_trip()?;
-        let stamp = fs::metadata(&fixture.ledger.paths.journal)?;
-        let mut plan = HistoryCompactionNoProgress {
-            device:     stamp.dev(),
-            inode:      stamp.ino(),
-            end_offset: stamp.len(),
-            planned_at: SystemTime::now(),
-        };
-        let threshold = fixture.ledger.compaction_threshold_bytes;
-        assert!(matches!(
-            plan.retry_decision(&stamp, threshold),
-            HistoryRetry::Defer
-        ));
-        plan.planned_at = SystemTime::UNIX_EPOCH;
-        assert!(matches!(
-            plan.retry_decision(&stamp, threshold),
-            HistoryRetry::Plan
-        ));
+    fn compaction_retries_only_when_history_conditions_change() -> Result<(), Box<dyn Error>> {
+        let (mut events, _, _) = fixtures::finished_history_events()?;
+        events.pop().ok_or("the fixture has a live claim")?;
+        let fixture = CompactionFixture::holding(events)?;
+        let ledger = &fixture.ledger;
+        let original = fixture.journal()?;
+        let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+        ledger.maintain_compaction(&replay);
+        assert_eq!(fixture.journal()?, original);
 
-        plan.planned_at = SystemTime::now();
-        let journal = File::options()
-            .write(true)
-            .open(&fixture.ledger.paths.journal)?;
-        journal.set_len(stamp.len() + threshold - 1)?;
-        assert!(matches!(
-            plan.retry_decision(&journal.metadata()?, threshold),
-            HistoryRetry::Defer
-        ));
-        journal.set_len(stamp.len() + threshold)?;
-        assert!(matches!(
-            plan.retry_decision(&journal.metadata()?, threshold),
-            HistoryRetry::Plan
-        ));
+        let marker = ledger
+            .paths
+            .directory
+            .join(HISTORY_COMPACTION_CHECK_FILE_NAME);
+        let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&marker)?)?;
+        assert!(saved.is_object());
+        if let Some(planned_at) = saved.get_mut("planned_at") {
+            *planned_at = serde_json::to_value(SystemTime::UNIX_EPOCH)?;
+        }
+        saved["test_sentinel"] = serde_json::Value::Bool(true);
+        let saved = serde_json::to_vec(&saved)?;
+        fs::write(&marker, &saved)?;
+        age_file(&marker, HISTORY_COMPACTION_CHECK_INTERVAL)?;
+        ledger.maintain_compaction(&replay);
+        assert_eq!(fs::read(&marker)?, saved, "skip the unchanged plan");
+
+        assert_eq!(fixture.journal()?, original);
+        Ok(())
+    }
+
+    #[test]
+    fn a_small_append_can_reuse_the_history_plan() -> Result<(), Box<dyn Error>> {
+        let (mut events, expired, _) = fixtures::finished_history_events()?;
+        events.pop().ok_or("the fixture has a live claim")?;
+        let fixture = CompactionFixture::holding(events)?;
+        let ledger = &fixture.ledger;
+        let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+        ledger.maintain_compaction(&replay);
+
+        let marker = ledger
+            .paths
+            .directory
+            .join(HISTORY_COMPACTION_CHECK_FILE_NAME);
+        let mut saved: serde_json::Value = serde_json::from_slice(&fs::read(&marker)?)?;
+        assert!(saved.is_object());
+        saved["test_sentinel"] = serde_json::Value::Bool(true);
+        let saved = serde_json::to_vec(&saved)?;
+        fs::write(&marker, &saved)?;
+        age_file(&marker, HISTORY_COMPACTION_CHECK_INTERVAL)?;
+
+        let operation = crate::ledger::journal::JournalOperation::Renew {
+            reservation_id: expired,
+        };
+        fixtures::append(ledger, &operation)?;
+        assert_eq!(
+            fs::read(&marker)?,
+            saved,
+            "reuse the plan while the final record still keeps the same reservation"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn compaction_retries_when_the_final_record_releases_history() -> Result<(), Box<dyn Error>> {
+        let (mut events, _, _) = fixtures::finished_history_events()?;
+        let live_claim = events.pop().ok_or("the fixture has a live claim")?;
+        let fixture = CompactionFixture::holding(events)?;
+        let ledger = &fixture.ledger;
+        let inode = fs::metadata(&ledger.paths.journal)?.ino();
+        let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+        ledger.maintain_compaction(&replay);
+        assert_eq!(fs::metadata(&ledger.paths.journal)?.ino(), inode);
+
+        let marker = ledger
+            .paths
+            .directory
+            .join(HISTORY_COMPACTION_CHECK_FILE_NAME);
+        age_file(&marker, HISTORY_COMPACTION_CHECK_INTERVAL)?;
+        fixtures::append(ledger, &live_claim.operation)?;
+        assert_ne!(fs::metadata(&ledger.paths.journal)?.ino(), inode);
+        Ok(())
+    }
+
+    #[test]
+    fn a_history_plan_needs_a_new_scan_when_another_reservation_expires()
+    -> Result<(), Box<dyn Error>> {
+        let (mut older, anchored, _) = fixtures::finished_history_events()?;
+        older.pop().ok_or("expected a live claim")?;
+        let (mut events, expires, _) = fixtures::finished_history_events()?;
+        events.pop().ok_or("expected a live claim")?;
+        for event in &mut events {
+            event.at = "2020-01-02T00:00:00.000Z".parse()?;
+        }
+        events.extend(older);
+        for (index, event) in events.iter_mut().enumerate() {
+            event.projection_generation = ProjectionGeneration::from(u64::try_from(index)? + 1);
+        }
+
+        let fixture = CompactionFixture::holding(events)?;
+        let ledger = &fixture.ledger;
+        let marker = ledger
+            .paths
+            .directory
+            .join(HISTORY_COMPACTION_CHECK_FILE_NAME);
+        let replay = Journal::replay_read_only(&ledger.paths.journal)?;
+        let original = fixture.journal()?;
+        let before_expiry = "2020-01-03T00:00:00.000Z".parse()?;
+        ledger.maintain_compaction_with_clock(&replay, || before_expiry);
+        assert_eq!(fixture.journal()?, original);
+        assert!(
+            fs::read(&marker)?.starts_with(b"{"),
+            "save the unchanged plan"
+        );
+
+        age_file(&marker, HISTORY_COMPACTION_CHECK_INTERVAL)?;
+        let after_expiry = "2020-01-03T00:00:00.001Z".parse()?;
+        ledger.maintain_compaction_with_clock(&replay, || after_expiry);
+        assert!(fixture.journal()?.len() < original.len());
+        let compacted = Journal::replay_read_only(&ledger.paths.journal)?
+            .reservations
+            .map_err(|error| error.to_string())?;
+        assert!(compacted.reservation(anchored).is_ok());
+        assert!(compacted.reservation(expires).is_err());
         Ok(())
     }
 
@@ -681,9 +851,12 @@ mod tests {
         )?;
 
         let started_at = Instant::now();
-        let compaction = fixture
-            .ledger
-            .attempt_due_compaction(droppable, replays_agree)?;
+        let compaction = fixture.ledger.attempt_due_compaction(
+            droppable,
+            replays_agree,
+            None,
+            &RecordedAt::now(),
+        )?;
         // A compaction that waited for the lock would spend the whole contention tolerance.
         assert!(started_at.elapsed() < Duration::from_secs(1));
         assert_eq!(compaction, None);
@@ -713,9 +886,12 @@ mod tests {
         locked.recv()?;
 
         let started_at = Instant::now();
-        let compaction = fixture
-            .ledger
-            .attempt_due_compaction(droppable, replays_agree);
+        let compaction = fixture.ledger.attempt_due_compaction(
+            droppable,
+            replays_agree,
+            None,
+            &RecordedAt::now(),
+        );
         let elapsed = started_at.elapsed();
         let _ = release.send(());
         holder
@@ -743,7 +919,7 @@ mod tests {
         let original = fixture.journal()?;
         let disagree = |_: &JournalReplay, _: &JournalReplay| false;
 
-        let refusal = ledger.attempt_due_compaction(droppable, disagree);
+        let refusal = ledger.attempt_due_compaction(droppable, disagree, None, &RecordedAt::now());
         assert!(
             matches!(
                 refusal,
@@ -758,7 +934,7 @@ mod tests {
         assert!(!ledger.paths.compaction_refusal.exists());
 
         ledger
-            .attempt_due_compaction(droppable, disagree)
+            .attempt_due_compaction(droppable, disagree, None, &RecordedAt::now())
             .err()
             .ok_or("the disagreeing compaction completed")?;
         let refused = fs::metadata(&ledger.paths.journal)?;
@@ -770,7 +946,7 @@ mod tests {
             (refused.dev(), refused.ino(), refused.len())
         );
         assert_eq!(
-            ledger.attempt_due_compaction(droppable, replays_agree)?,
+            ledger.attempt_due_compaction(droppable, replays_agree, None, &RecordedAt::now())?,
             None
         );
         assert_eq!(fixture.journal()?, original);

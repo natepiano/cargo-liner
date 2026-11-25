@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use super::maintenance;
+use super::maintenance::HistoryCompactionNoProgress;
 use crate::ids::RecordedAt;
 use crate::ids::RepoInstanceId;
 use crate::ledger::constants::JOURNAL_COMPACTION_TEMPORARY_FILE_NAME;
@@ -26,6 +27,7 @@ use crate::ledger::constants::MUTATING_VERB_CONTENTION_TOLERANCE;
 use crate::ledger::error::LedgerError;
 use crate::ledger::handle::Ledger;
 use crate::ledger::history::ExpiredHistory;
+use crate::ledger::history::HistoryCompactionBasis;
 use crate::ledger::identity;
 use crate::ledger::journal::Journal;
 use crate::ledger::journal::JournalError;
@@ -109,6 +111,12 @@ struct CompactionPlan {
     source_changes: CompactionSourceChanges,
 }
 
+/// A plan to replace the journal or the facts that ruled out a replacement.
+enum CompactionPlanning {
+    Rewrite(Box<CompactionPlan>),
+    Unchanged(HistoryCompactionBasis),
+}
+
 /// Which source changes preserve a verified compaction prefix.
 #[derive(Clone, Copy)]
 enum CompactionSourceChanges {
@@ -134,7 +142,7 @@ pub(super) struct PreparedJournalCompaction {
 /// Whether the journal has a verified rewrite ready for publication.
 pub(super) enum CompactionPreparation {
     /// No observation or expired history can be removed.
-    Unchanged,
+    Unchanged(Option<HistoryCompactionNoProgress>),
     /// A verified replacement bound to its source journal.
     Ready(Box<PreparedJournalCompaction>),
 }
@@ -266,20 +274,21 @@ impl Ledger {
         self.require_existing()?;
         self.remove_abandoned_compaction_files()?;
         let repo_instance_id = identity::read_repo_instance_id(&self.paths.repo_instance_id)?;
+        let now = RecordedAt::now();
         let (lock, (), preparation) = preparation::prepare_with_lock(
             &self.paths.lock,
             MUTATING_VERB_CONTENTION_TOLERANCE,
             (),
-            |()| self.prepare_compaction(repo_instance_id, replays_agree),
+            |()| self.prepare_compaction(repo_instance_id, replays_agree, &now),
             |(), preparation| match preparation {
-                CompactionPreparation::Unchanged => Ok(true),
+                CompactionPreparation::Unchanged(_) => Ok(true),
                 CompactionPreparation::Ready(prepared) => {
                     prepared.include_committed_tail(&self.paths.journal)
                 },
             },
         )?;
         let result = match preparation {
-            CompactionPreparation::Unchanged => Ok(JournalCompaction::NothingToCompact),
+            CompactionPreparation::Unchanged(_) => Ok(JournalCompaction::NothingToCompact),
             CompactionPreparation::Ready(prepared) => {
                 OriginalJournalLock::acquire(&self.paths.journal)
                     .map_err(JournalCompactionError::from)
@@ -303,12 +312,25 @@ impl Ledger {
         &self,
         repo_instance_id: RepoInstanceId,
         agree: fn(&JournalReplay, &JournalReplay) -> bool,
+        now: &RecordedAt,
     ) -> Result<CompactionPreparation, JournalCompactionError> {
-        let source = fs::metadata(&self.paths.journal)?;
-        let Some(plan) = CompactionPlan::of(&fs::read(&self.paths.journal)?, repo_instance_id)?
-        else {
-            return Ok(CompactionPreparation::Unchanged);
+        let mut journal = File::open(&self.paths.journal)?;
+        let source = journal.metadata()?;
+        let mut bytes = Vec::new();
+        journal.read_to_end(&mut bytes)?;
+        let plan = match CompactionPlan::of(&bytes, repo_instance_id, now)? {
+            CompactionPlanning::Rewrite(plan) => plan,
+            CompactionPlanning::Unchanged(basis) => {
+                let marker = HistoryCompactionNoProgress::for_source(
+                    &source,
+                    &journal.metadata()?,
+                    u64::try_from(bytes.len()).map_err(std::io::Error::other)?,
+                    basis,
+                );
+                return Ok(CompactionPreparation::Unchanged(marker));
+            },
         };
+        drop(bytes);
         let journal_path = self.paths.directory.join(format!(
             "{JOURNAL_COMPACTION_TEMPORARY_FILE_NAME}.{}",
             Uuid::now_v7()
@@ -383,12 +405,12 @@ impl Ledger {
 }
 
 impl CompactionPlan {
-    /// The plan for compacting `journal`, the whole journal of the ledger of `repo_instance_id`,
-    /// or `None` when no observation or finished history can be removed.
+    /// Plan a replacement or record why the journal has no records to remove.
     fn of(
         journal: &[u8],
         repo_instance_id: RepoInstanceId,
-    ) -> Result<Option<Self>, JournalCompactionError> {
+        now: &RecordedAt,
+    ) -> Result<CompactionPlanning, JournalCompactionError> {
         let mut merge_extent_observations = Vec::new();
         let (replay, complete_end) =
             JournalReplay::empty().extended_over_visiting(journal, |operation| {
@@ -412,10 +434,10 @@ impl CompactionPlan {
             .zip(0_u64..)
             .map(|(observation, ordinal)| replay.superseded.keeps(ordinal, observation))
             .collect::<Vec<_>>();
-        let expired = ExpiredHistory::of(&replay, &events, &kept_extents, &RecordedAt::now())
+        let expired = ExpiredHistory::of(&replay, &events, &kept_extents, now)
             .map_err(LedgerError::JournalEncoding)?;
         if replay.superseded.droppable_bytes == 0 && expired.is_empty() {
-            return Ok(None);
+            return Ok(CompactionPlanning::Unchanged(expired.basis));
         }
         let original = JournalRecords {
             records: replay.record_count,
@@ -436,12 +458,12 @@ impl CompactionPlan {
         expired
             .prune(&mut replay)
             .map_err(LedgerError::JournalEncoding)?;
-        Ok(Some(Self {
+        Ok(CompactionPlanning::Rewrite(Box::new(Self {
             replay,
             kept,
             original,
             source_changes,
-        }))
+        })))
     }
 }
 
@@ -522,6 +544,7 @@ mod tests {
     use serde_json::Value;
 
     use super::CompactionPlan;
+    use super::CompactionPlanning;
     use super::CompactionRefusal;
     use super::JOURNAL_COMPACTION_TEMPORARY_FILE_NAME;
     use super::JournalCompaction;
@@ -790,7 +813,7 @@ mod tests {
         assert!(
             before
                 .finished_history
-                .is_due(&crate::ids::RecordedAt::now())
+                .has_expired_record(id, &crate::ids::RecordedAt::now())
         );
         assert!(matches!(
             fixture.ledger.compact_journal()?,
@@ -818,7 +841,9 @@ mod tests {
         for mut events in journals {
             fixtures::name_repository(&mut events, repository);
             let (bytes, _) = fixtures::journal_bytes(&events)?;
-            let Some(plan) = CompactionPlan::of(&bytes, repository)? else {
+            let CompactionPlanning::Rewrite(plan) =
+                CompactionPlan::of(&bytes, repository, &RecordedAt::now())?
+            else {
                 assert_eq!(fixtures::superseded_record_bytes(&events)?, 0);
                 continue;
             };
@@ -845,15 +870,19 @@ mod tests {
     fn an_event_after_compaction_preparation_invalidates_the_rewrite() -> Result<(), Box<dyn Error>>
     {
         let fixture = CompactionFixture::round_trip()?;
-        let super::CompactionPreparation::Ready(prepared) = fixture
-            .ledger
-            .prepare_compaction(fixture.repo_instance_id, replays_agree)?
+        let super::CompactionPreparation::Ready(prepared) = fixture.ledger.prepare_compaction(
+            fixture.repo_instance_id,
+            replays_agree,
+            &RecordedAt::now(),
+        )?
         else {
             return Err("round-trip fixture must supersede observations".into());
         };
-        let super::CompactionPreparation::Ready(overlapping) = fixture
-            .ledger
-            .prepare_compaction(fixture.repo_instance_id, replays_agree)?
+        let super::CompactionPreparation::Ready(overlapping) = fixture.ledger.prepare_compaction(
+            fixture.repo_instance_id,
+            replays_agree,
+            &RecordedAt::now(),
+        )?
         else {
             return Err("round-trip fixture must still supersede observations".into());
         };
@@ -940,13 +969,13 @@ mod tests {
         let (bytes, _) = fixtures::journal_bytes(&accepted)?;
         let incomplete = [bytes.as_slice(), b"{\"schema_version\""].concat();
         assert!(matches!(
-            CompactionPlan::of(&incomplete, repository),
+            CompactionPlan::of(&incomplete, repository, &RecordedAt::now()),
             Err(JournalCompactionError::Refused(
                 CompactionRefusal::IncompleteFinalRecord
             ))
         ));
         assert!(matches!(
-            CompactionPlan::of(&bytes, RepoInstanceId::new()),
+            CompactionPlan::of(&bytes, RepoInstanceId::new(), &RecordedAt::now()),
             Err(JournalCompactionError::Refused(
                 CompactionRefusal::RepositoryValidation(_)
             ))
@@ -962,8 +991,10 @@ mod tests {
         fixtures::name_repository(&mut events, repository);
         let (bytes, record_ends) = fixtures::journal_bytes(&events)?;
         let removed_bytes = |journal: &[u8]| -> Result<u64, Box<dyn Error>> {
-            let kept = CompactionPlan::of(journal, repository)?
-                .map_or(journal.len(), |plan| plan.kept.len());
+            let kept = match CompactionPlan::of(journal, repository, &RecordedAt::now())? {
+                CompactionPlanning::Rewrite(plan) => plan.kept.len(),
+                CompactionPlanning::Unchanged(_) => journal.len(),
+            };
             Ok(u64::try_from(journal.len() - kept)?)
         };
 
@@ -995,9 +1026,11 @@ mod tests {
         let fixture = CompactionFixture::holding(events[..rejected].to_vec())?;
         fixtures::append(&fixture.ledger, &observation)?;
         fixtures::append(&fixture.ledger, &observation)?;
-        let super::CompactionPreparation::Ready(mut prepared) = fixture
-            .ledger
-            .prepare_compaction(fixture.repo_instance_id, replays_agree)?
+        let super::CompactionPreparation::Ready(mut prepared) = fixture.ledger.prepare_compaction(
+            fixture.repo_instance_id,
+            replays_agree,
+            &RecordedAt::now(),
+        )?
         else {
             return Err("superseded observations must prepare a rewrite".into());
         };
@@ -1066,7 +1099,10 @@ mod tests {
         bytes.push(b'\n');
         APPEND.with(|append| *append.borrow_mut() = (fixture.ledger.paths.journal.clone(), bytes));
         fixture.ledger.compaction_threshold_bytes = 1;
-        let result = fixture.ledger.prepare_due_compaction(agree_and_append)?;
+        let result =
+            fixture
+                .ledger
+                .prepare_due_compaction(agree_and_append, None, &RecordedAt::now())?;
         assert!(
             matches!(result, Some(JournalCompaction::Compacted { .. })),
             "append must not starve automatic compaction: {result:?}"
@@ -1183,7 +1219,11 @@ mod tests {
             .position(|byte| *byte == b'\n')
             .ok_or("the checkpoint holds a header line")?;
         let header = serde_json::from_slice::<Value>(&contents[..header_end])?;
-        let checkpointed = serde_json::from_slice::<JournalReplay>(&contents[header_end + 1..])?;
+        let checkpoint = ReplayCheckpoint::new(&paths.replay_checkpoint, fixture.repo_instance_id);
+        let (deferred, _) = checkpoint
+            .deferred_edit_start(&paths.journal)?
+            .ok_or("compaction must checkpoint the replacement journal")?;
+        let checkpointed = deferred.complete().ok_or("checkpoint parts must decode")?;
         let journal = fs::metadata(&paths.journal)?;
 
         assert_eq!(header["journal"]["device"], journal.dev());

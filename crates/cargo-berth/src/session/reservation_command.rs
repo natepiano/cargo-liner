@@ -63,11 +63,9 @@ pub(crate) fn select_owned_reservation(
         &ledger_directory.join(SessionIdentityStore::FILE_NAME),
     )
     .map_err(|error| OutputEnvelope::ledger_unreadable(verb, &error.to_string()))?;
-    let journal = Ledger::open_from_discovered_worktree(&context)
-        .and_then(|ledger| ledger.read_validated_journal())
-        .map_err(|error| OutputEnvelope::ledger_error(verb, &error))?;
-    let reservations = journal
-        .into_reservations()
+    let reservations = Ledger::open_from_discovered_worktree(&context)
+        .and_then(|ledger| ledger.read_validated_reservations())
+        .map_err(|error| OutputEnvelope::ledger_error(verb, &error))?
         .map_err(|error| OutputEnvelope::replay_failure(verb, &error))?;
     // Let the existing validator report a stale current selection.
     if store
