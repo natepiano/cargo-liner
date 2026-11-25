@@ -103,17 +103,24 @@ struct AnswerRecord {
 /// Every retained reservation after replaying the journal in append order.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct RetainedReservationSet {
-    reservations:            Vec<Reservation>,
+    #[serde(flatten)]
+    facts:                   ReservationFacts,
     incursion_incidents:     Vec<IncursionIncident>,
-    /// Answers recorded by `--defer` claims; absent from checkpoints written before them.
-    #[serde(default)]
-    answer_records:          Vec<AnswerRecord>,
     /// Whether foreign protection excludes work already present in the acting HEAD.
     ///
     /// Never serialized: a replayed set always holds [`ForeignProtectionPolicy::FullProtection`],
     /// and callers narrow it afterwards through [`Self::with_acting_head_containment`].
     #[serde(skip)]
     acting_head_containment: ForeignProtectionPolicy,
+}
+
+/// The reservation fold without incident facts.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ReservationFacts {
+    reservations:   Vec<Reservation>,
+    /// Answers recorded by `--defer` claims.
+    #[serde(default)]
+    answer_records: Vec<AnswerRecord>,
 }
 
 /// One holder's representative `Reservation` and its complete `ConflictProtection` scopes, as
@@ -405,6 +412,31 @@ impl From<&ReservationSnapshot> for PhaseStartHeadUpdate {
 }
 
 impl RetainedReservationSet {
+    pub(crate) const fn checkpoint(&self) -> &ReservationFacts { &self.facts }
+
+    pub(crate) const fn from_checkpoint(
+        facts: ReservationFacts,
+        incursion_incidents: Vec<IncursionIncident>,
+    ) -> Self {
+        Self {
+            facts,
+            incursion_incidents,
+            acting_head_containment: ForeignProtectionPolicy::FullProtection,
+        }
+    }
+
+    pub(crate) fn into_facts(self) -> ReservationFacts { self.facts }
+
+    /// Apply an incident operation or advance the reservation facts.
+    pub(crate) fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
+        match &event.operation {
+            JournalOperation::Incursion { .. } | JournalOperation::ResolveIncursion { .. } => {
+                self.apply_incursion_journal_event(event)
+            },
+            _ => self.facts.apply(event),
+        }
+    }
+
     /// Replay journal operations into the current retained reservation set.
     ///
     /// Production reads the set the journal replay folds record by record; this whole-slice
@@ -441,12 +473,12 @@ impl RetainedReservationSet {
                     reservation_id,
                     status,
                     ..
-                } => settled.apply_evidence(*reservation_id, status)?,
+                } => settled.facts.apply_evidence(*reservation_id, status)?,
                 JournalOperation::Release {
                     reservation_id,
                     disposition,
                     ..
-                } => settled.apply_release(*reservation_id, disposition)?,
+                } => settled.facts.apply_release(*reservation_id, disposition)?,
                 _ => {},
             }
         }
@@ -465,7 +497,9 @@ impl RetainedReservationSet {
                 snapshot,
             } = operation
             {
-                projected.apply_resnapshot(*reservation_id, snapshot, snapshot.into())?;
+                projected
+                    .facts
+                    .apply_resnapshot(*reservation_id, snapshot, snapshot.into())?;
             }
         }
         Ok(projected)
@@ -713,7 +747,7 @@ impl RetainedReservationSet {
                 coordination_run_id,
                 reservation_id,
                 worktree_id,
-            } => self.reservations.iter().any(|reservation| {
+            } => self.facts.reservations.iter().any(|reservation| {
                 reservation.id == reservation_id
                     && reservation.is_active_for_coordination_run_and_worktree(
                         coordination_run_id,
@@ -734,7 +768,7 @@ impl RetainedReservationSet {
                 coordination_run_id,
                 worktree_id,
                 ..
-            } => self.reservations.iter().any(|reservation| {
+            } => self.facts.reservations.iter().any(|reservation| {
                 reservation
                     .is_active_for_coordination_run_and_worktree(coordination_run_id, worktree_id)
             }),
@@ -781,7 +815,9 @@ impl RetainedReservationSet {
     }
 
     /// Iterate over every reservation retained for constraints or audit history.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &Reservation> { self.reservations.iter() }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Reservation> {
+        self.facts.reservations.iter()
+    }
 
     /// Return the only active ordinary reservation in this worktree.
     pub(crate) fn sole_active_phase(&self, worktree_id: WorktreeId) -> Option<&Reservation> {
@@ -807,7 +843,8 @@ impl RetainedReservationSet {
         &self,
         reservation_id: ReservationId,
     ) -> Result<&Reservation, ReservationReplayError> {
-        self.reservations
+        self.facts
+            .reservations
             .iter()
             .find(|reservation| reservation.id == reservation_id)
             .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
@@ -828,14 +865,16 @@ impl RetainedReservationSet {
 
     /// Whether any legacy claim still lacks a durable integration branch.
     pub(crate) fn has_unrecorded_targets(&self) -> bool {
-        self.reservations
+        self.facts
+            .reservations
             .iter()
             .any(|reservation| matches!(reservation.target(), RecordedTarget::Unrecorded))
     }
 
     /// Identities that initialization will pin in its next journal operation.
     pub(crate) fn unrecorded_target_ids(&self) -> Vec<ReservationId> {
-        self.reservations
+        self.facts
+            .reservations
             .iter()
             .filter_map(|reservation| {
                 matches!(reservation.target(), RecordedTarget::Unrecorded)
@@ -998,6 +1037,7 @@ impl RetainedReservationSet {
     ) -> impl Iterator<Item = &IncursionIncident> {
         let (worktree, run) = (reservation.actor.worktree, reservation.actor.run);
         let reservation_ids = self
+            .facts
             .reservations
             .iter()
             .filter(|charged| {
@@ -1047,7 +1087,8 @@ impl RetainedReservationSet {
         worktree_id: WorktreeId,
         acting_run: PresentedCoordinationRun,
     ) -> WorktreeOccupancy<'_> {
-        self.reservations
+        self.facts
+            .reservations
             .iter()
             .find(|reservation| {
                 reservation.occupies_worktree_for_another_coordination_run(
@@ -1068,11 +1109,87 @@ impl RetainedReservationSet {
         coordination_run_id: CoordinationRunId,
         excluded_reservation_id: ReservationId,
     ) -> bool {
-        self.reservations.iter().any(|reservation| {
+        self.facts.reservations.iter().any(|reservation| {
             reservation.id != excluded_reservation_id
                 && reservation.is_active_for_coordination_run(coordination_run_id)
         })
     }
+
+    fn apply_incursion_journal_event(
+        &mut self,
+        event: &JournalEvent,
+    ) -> Result<(), ReservationReplayError> {
+        match &event.operation {
+            JournalOperation::Incursion {
+                incident_id,
+                reservation_id,
+                blocked_paths,
+            } => self.apply_incursion(*incident_id, *reservation_id, blocked_paths.blocked_paths()),
+            JournalOperation::ResolveIncursion { incident_id } => self.apply_incursion_resolution(
+                *incident_id,
+                &event.actor,
+                event.event_id(),
+                event.recorded_at(),
+            ),
+            _ => Ok(()),
+        }
+    }
+
+    fn apply_incursion(
+        &mut self,
+        incident_id: IncursionIncidentId,
+        reservation_id: ReservationId,
+        blocked_paths: &BlockedIncursionPathSet,
+    ) -> Result<(), ReservationReplayError> {
+        self.reservation(reservation_id)?;
+        if self
+            .incursion_incidents
+            .iter()
+            .any(|incident| incident.id == incident_id)
+        {
+            return Err(ReservationReplayError::DuplicateIncursionIncident(
+                incident_id,
+            ));
+        }
+        self.incursion_incidents.push(IncursionIncident {
+            id: incident_id,
+            reservation_id,
+            blocked_paths: blocked_paths.clone(),
+            status: IncursionIncidentStatus::Outstanding,
+        });
+        Ok(())
+    }
+
+    fn apply_incursion_resolution(
+        &mut self,
+        incident_id: IncursionIncidentId,
+        resolving_actor: &JournalActor,
+        resolution_event_id: EventId,
+        resolved_at: &RecordedAt,
+    ) -> Result<(), ReservationReplayError> {
+        let incident = self
+            .incursion_incidents
+            .iter_mut()
+            .find(|incident| incident.id == incident_id)
+            .ok_or(ReservationReplayError::UnknownIncursionIncident(
+                incident_id,
+            ))?;
+        if matches!(incident.status, IncursionIncidentStatus::Resolved { .. }) {
+            return Err(ReservationReplayError::IncursionIncidentAlreadyResolved(
+                incident_id,
+            ));
+        }
+        incident.status = IncursionIncidentStatus::Resolved {
+            resolving_actor: resolving_actor.clone(),
+            resolution_event_id,
+            resolved_at: resolved_at.clone(),
+        };
+        Ok(())
+    }
+}
+
+impl ReservationFacts {
+    pub(crate) fn into_reservations(self) -> Vec<Reservation> { self.reservations }
 
     /// Dispatch one journal operation to the replay step that owns it.
     pub(crate) fn apply(&mut self, event: &JournalEvent) -> Result<(), ReservationReplayError> {
@@ -1118,9 +1235,6 @@ impl RetainedReservationSet {
             JournalOperation::RebindWorktree { .. } | JournalOperation::RelocateWorktree { .. } => {
                 self.apply_worktree_binding_journal_event(event)
             },
-            JournalOperation::Incursion { .. } | JournalOperation::ResolveIncursion { .. } => {
-                self.apply_incursion_journal_event(event)
-            },
             JournalOperation::Answer { authorizations, .. } => {
                 self.answer_records.push(AnswerRecord {
                     worktree:         event.actor.worktree,
@@ -1130,7 +1244,9 @@ impl RetainedReservationSet {
                 });
                 Ok(())
             },
-            JournalOperation::OverlapRefused { .. }
+            JournalOperation::Incursion { .. }
+            | JournalOperation::ResolveIncursion { .. }
+            | JournalOperation::OverlapRefused { .. }
             | JournalOperation::ResolveDefer { .. }
             | JournalOperation::Sequence { .. }
             | JournalOperation::RetireCyclicOrderingEdge { .. }
@@ -1335,78 +1451,6 @@ impl RetainedReservationSet {
             ),
             _ => Ok(()),
         }
-    }
-
-    fn apply_incursion_journal_event(
-        &mut self,
-        event: &JournalEvent,
-    ) -> Result<(), ReservationReplayError> {
-        match &event.operation {
-            JournalOperation::Incursion {
-                incident_id,
-                reservation_id,
-                blocked_paths,
-            } => self.apply_incursion(*incident_id, *reservation_id, blocked_paths.blocked_paths()),
-            JournalOperation::ResolveIncursion { incident_id } => self.apply_incursion_resolution(
-                *incident_id,
-                &event.actor,
-                event.event_id(),
-                event.recorded_at(),
-            ),
-            _ => Ok(()),
-        }
-    }
-
-    fn apply_incursion(
-        &mut self,
-        incident_id: IncursionIncidentId,
-        reservation_id: ReservationId,
-        blocked_paths: &BlockedIncursionPathSet,
-    ) -> Result<(), ReservationReplayError> {
-        self.reservation(reservation_id)?;
-        if self
-            .incursion_incidents
-            .iter()
-            .any(|incident| incident.id == incident_id)
-        {
-            return Err(ReservationReplayError::DuplicateIncursionIncident(
-                incident_id,
-            ));
-        }
-        self.incursion_incidents.push(IncursionIncident {
-            id: incident_id,
-            reservation_id,
-            blocked_paths: blocked_paths.clone(),
-            status: IncursionIncidentStatus::Outstanding,
-        });
-        Ok(())
-    }
-
-    fn apply_incursion_resolution(
-        &mut self,
-        incident_id: IncursionIncidentId,
-        resolving_actor: &JournalActor,
-        resolution_event_id: EventId,
-        resolved_at: &RecordedAt,
-    ) -> Result<(), ReservationReplayError> {
-        let incident = self
-            .incursion_incidents
-            .iter_mut()
-            .find(|incident| incident.id == incident_id)
-            .ok_or(ReservationReplayError::UnknownIncursionIncident(
-                incident_id,
-            ))?;
-        if matches!(incident.status, IncursionIncidentStatus::Resolved { .. }) {
-            return Err(ReservationReplayError::IncursionIncidentAlreadyResolved(
-                incident_id,
-            ));
-        }
-        incident.status = IncursionIncidentStatus::Resolved {
-            resolving_actor: resolving_actor.clone(),
-            resolution_event_id,
-            resolved_at: resolved_at.clone(),
-        };
-        Ok(())
     }
 
     fn apply_worktree_rebinding(
@@ -1923,7 +1967,9 @@ impl RetainedReservationSet {
             .find(|reservation| reservation.id == reservation_id)
             .ok_or(ReservationReplayError::UnknownReservation(reservation_id))
     }
+}
 
+impl RetainedReservationSet {
     fn conflicts(
         &self,
         candidate: &ReservationScopeSet,
@@ -1972,7 +2018,8 @@ impl RetainedReservationSet {
         overlap_scope: &ReservationScope,
         path_case: PathCase,
     ) -> bool {
-        self.answer_records
+        self.facts
+            .answer_records
             .iter()
             .filter(|answer_record| answer_record.worktree == worktree)
             .flat_map(|answer_record| &answer_record.overlap_coverage)
@@ -2010,7 +2057,7 @@ impl RetainedReservationSet {
                 },
             };
         }
-        let mut protected_holders = self.reservations.iter().filter_map(|reservation| {
+        let mut protected_holders = self.facts.reservations.iter().filter_map(|reservation| {
             if reservation.actor.worktree != holder.actor.worktree
                 || reservation.edit_blocking_status() != EditBlockingStatus::Blocking
             {
@@ -2070,7 +2117,8 @@ impl RetainedReservationSet {
         holder_is_foreign: impl Fn(&Reservation) -> bool,
     ) -> Vec<ProtectedConflictHolder<'_>> {
         let mut represented_merge_worktrees = HashSet::new();
-        self.reservations
+        self.facts
+            .reservations
             .iter()
             .filter(|holder| holder.edit_blocking_status() == EditBlockingStatus::Blocking)
             .filter(|holder| holder_is_foreign(holder))
@@ -2099,7 +2147,8 @@ impl RetainedReservationSet {
 
     /// Count reservations that have not received a terminal disposition.
     pub(crate) fn nonterminal_count(&self) -> usize {
-        self.reservations
+        self.facts
+            .reservations
             .iter()
             .filter(|reservation| !reservation.is_terminal())
             .count()
@@ -3244,6 +3293,7 @@ mod tests {
         let candidate_pool = indexed_coverage_candidates()?;
         for path_case in [PathCase::Sensitive, PathCase::Insensitive] {
             let holders = reservations
+                .facts
                 .reservations
                 .iter()
                 .zip(&held_scopes)
@@ -3979,9 +4029,9 @@ mod tests {
     fn incursion_observation_scans_reservations_once_for_hundreds_of_incidents()
     -> Result<(), Box<dyn std::error::Error>> {
         let reservations = hundreds_of_incursion_incidents()?;
-        assert_eq!(reservations.reservations.len(), 600);
+        assert_eq!(reservations.facts.reservations.len(), 600);
         assert_eq!(reservations.incursion_incidents.len(), 600);
-        let entering = &reservations.reservations[0];
+        let entering = &reservations.facts.reservations[0];
         let holders = ForeignReservationIdSet::try_from(vec![FOREIGN_RESERVATION_ID.parse()?])?;
         let observed = BlockedIncursionPathSet::try_from(
             (0..64)

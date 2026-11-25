@@ -30,6 +30,8 @@ pub(crate) use authorization::ResolvedEditAuthorization;
 pub(crate) use authorization::ResolvedJournalMutationActor;
 pub(crate) use compaction::JournalCompaction;
 pub(crate) use compaction::JournalCompactionError;
+#[cfg(test)]
+pub(crate) use compaction::superseded_bytes;
 pub(crate) use constants::CLAUDE_CODE_SESSION_ENVIRONMENT;
 pub(crate) use constants::GATE_DEADLINE_ENVIRONMENT;
 pub(crate) use constants::GATE_TARGETS_FILE_NAME;

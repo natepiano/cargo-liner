@@ -1,5 +1,6 @@
 //! The non-recyclable identities stored beside the journal and in each worktree.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::ErrorKind;
@@ -36,8 +37,14 @@ pub(super) fn validate_journal_repository(
     repo_instance_id: RepoInstanceId,
     replay: &JournalReplay,
 ) -> Result<(), LedgerError> {
-    if replay
-        .repositories
+    validate_repositories(repo_instance_id, &replay.repositories)
+}
+
+pub(super) fn validate_repositories(
+    repo_instance_id: RepoInstanceId,
+    repositories: &BTreeSet<RepoInstanceId>,
+) -> Result<(), LedgerError> {
+    if repositories
         .iter()
         .any(|repository| *repository != repo_instance_id)
     {

@@ -16,6 +16,7 @@ use super::constants::CURRENT_PROJECTION_SCHEMA_VERSION;
 use super::constants::PROJECTION_TEMPORARY_FILE_NAME;
 use super::journal::JournalFingerprint;
 use super::journal::JournalReplay;
+use super::journal::ReplayCore;
 use crate::ids::JournalByteOffset;
 use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
@@ -62,6 +63,34 @@ pub(super) fn read_position(
             Ok(JournalPosition::Undecodable { byte_offset })
         },
         Err(error) => Err(error),
+    }
+}
+
+/// The journal position that a replay proves.
+#[derive(Clone, Copy)]
+pub(super) struct ReplayPosition {
+    generation:  ProjectionGeneration,
+    end_offset:  JournalByteOffset,
+    fingerprint: JournalFingerprint,
+}
+
+impl From<&JournalReplay> for ReplayPosition {
+    fn from(replay: &JournalReplay) -> Self {
+        Self {
+            generation:  replay.generation,
+            end_offset:  replay.end_offset,
+            fingerprint: replay.fingerprint,
+        }
+    }
+}
+
+impl From<&ReplayCore> for ReplayPosition {
+    fn from(core: &ReplayCore) -> Self {
+        Self {
+            generation:  core.generation,
+            end_offset:  core.end_offset,
+            fingerprint: core.fingerprint,
+        }
     }
 }
 
@@ -125,10 +154,10 @@ impl Projection {
     }
 
     /// Verify that this cache does not claim facts the journal cannot replay.
-    pub(super) fn validate_against(
+    fn validate_against(
         &self,
         repo_instance_id: RepoInstanceId,
-        replay: &JournalReplay,
+        replay: ReplayPosition,
     ) -> Result<(), ProjectionError> {
         validate_projection_schema_version(self.schema_version)?;
         if self.repo_instance_id != repo_instance_id {
@@ -144,7 +173,7 @@ impl Projection {
         Ok(())
     }
 
-    fn has_newer_generation_than(&self, replay: &JournalReplay) -> bool {
+    fn has_newer_generation_than(&self, replay: ReplayPosition) -> bool {
         self.generation > replay.generation
     }
 
@@ -152,17 +181,17 @@ impl Projection {
         self.schema_version == SchemaVersion::from(CURRENT_PROJECTION_SCHEMA_VERSION)
     }
 
-    fn claims_more_journal_bytes_than(&self, replay: &JournalReplay) -> bool {
+    fn claims_more_journal_bytes_than(&self, replay: ReplayPosition) -> bool {
         self.journal_end_offset > replay.end_offset
     }
 
-    fn matches_replay_point(&self, replay: &JournalReplay) -> bool {
+    fn matches_replay_point(&self, replay: ReplayPosition) -> bool {
         let generation_matches = self.generation == replay.generation;
         let byte_offset_matches = self.journal_end_offset == replay.end_offset;
         generation_matches && byte_offset_matches
     }
 
-    fn has_different_journal_fingerprint_than(&self, replay: &JournalReplay) -> bool {
+    fn has_different_journal_fingerprint_than(&self, replay: ReplayPosition) -> bool {
         self.journal_fingerprint != replay.fingerprint
     }
 }
@@ -194,6 +223,14 @@ pub(super) fn read_validated(
     projection_path: &Path,
     repo_instance_id: RepoInstanceId,
     replay: &JournalReplay,
+) -> Result<ProjectionSynchronization, ProjectionError> {
+    read_validated_at(projection_path, repo_instance_id, replay.into())
+}
+
+pub(super) fn read_validated_at(
+    projection_path: &Path,
+    repo_instance_id: RepoInstanceId,
+    replay: ReplayPosition,
 ) -> Result<ProjectionSynchronization, ProjectionError> {
     match read_once(projection_path) {
         Ok(ProjectionRead::Present(projection)) => {

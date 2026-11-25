@@ -103,19 +103,124 @@ impl FinishedHistory {
         changes
     }
 
-    /// Whether there is audit history old enough to attempt a dependency-checked compaction.
-    pub(super) fn is_due(&self, now: &RecordedAt) -> bool {
+    #[cfg(test)]
+    pub(super) fn has_expired_record(&self, id: ReservationId, now: &RecordedAt) -> bool {
         self.0
-            .values()
-            .any(|finished| finished.elapsed_until(now) > FINISHED_HISTORY_RETENTION)
+            .get(&id)
+            .is_some_and(|finished| finished.elapsed_until(now) > FINISHED_HISTORY_RETENTION)
+    }
+
+    /// Expired reservations that do not directly protect evidence.
+    pub(super) fn compaction_candidates<'a>(
+        replay: &'a JournalReplay,
+        now: &'a RecordedAt,
+    ) -> impl Iterator<Item = ReservationId> + 'a {
+        replay
+            .reservations
+            .iter()
+            .flat_map(RetainedReservationSet::iter)
+            .filter_map(move |reservation| {
+                let id = reservation.id();
+                let finished = replay.finished_history.0.get(&id)?;
+                (finished.elapsed_until(now) > FINISHED_HISTORY_RETENTION
+                    && !keeps_evidence(reservation))
+                .then_some(id)
+            })
+    }
+}
+
+/// Whether compaction must keep the reservation's evidence.
+fn keeps_evidence(reservation: &Reservation) -> bool {
+    match reservation.evidence_state() {
+        // An outstanding checkpoint may be needed for an orphan alert.
+        Ok(ReservationEvidenceState::Outstanding { .. }) | Err(_) => true,
+        Ok(ReservationEvidenceState::Released {
+            disposition,
+            integration_status,
+            ..
+        }) => {
+            !matches!(
+                disposition.revalidation_subject(),
+                ReleaseRevalidationSubject::None
+            ) && !matches!(
+                integration_status,
+                IntegrationEvidenceStatus::Integrated { .. }
+            )
+        },
+        Ok(ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
+            integration_status,
+            ..
+        }) => !matches!(
+            integration_status,
+            IntegrationEvidenceStatus::Integrated { .. }
+        ),
+        Ok(
+            ReservationEvidenceState::Active { .. }
+            | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. },
+        ) => false,
+    }
+}
+
+/// The retention facts used by a compaction plan.
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct HistoryCompactionBasis {
+    /// The expired reservations that could be removed if no dependency keeps them.
+    pub(super) candidates:  BTreeSet<ReservationId>,
+    /// The candidates that the final record can keep as the generation anchor.
+    pub(super) final_roots: BTreeSet<ReservationId>,
+}
+
+impl HistoryCompactionBasis {
+    /// Check that appends keep the roots from the previous plan.
+    pub(super) fn appends_keep_roots(
+        &self,
+        bytes: &[u8],
+        replay: &JournalReplay,
+        candidates: &BTreeSet<ReservationId>,
+    ) -> bool {
+        let Ok(reservations) = &replay.reservations else {
+            return false;
+        };
+        let mut last = None;
+        for record in bytes.split_inclusive(|byte| *byte == b'\n') {
+            let Ok(event) = serde_json::from_slice::<JournalEvent>(record) else {
+                return false;
+            };
+            if let JournalOperation::ResolveIncursion { incident_id } = &event.operation {
+                let Some(incident) = reservations
+                    .incursion_incidents()
+                    .find(|incident| incident.id() == *incident_id)
+                else {
+                    return false;
+                };
+                let Ok(value) = serde_json::to_value(incident) else {
+                    return false;
+                };
+                if !reservation_references(&value, candidates).is_empty() {
+                    return false;
+                }
+            }
+            last = Some(event.operation);
+        }
+        if self.final_roots.is_disjoint(candidates) {
+            return true;
+        }
+        last.and_then(|operation| serde_json::to_value(operation).ok())
+            .is_some_and(|value| {
+                let refs = reservation_references(&value, candidates);
+                self.final_roots
+                    .intersection(candidates)
+                    .all(|id| refs.contains(id))
+            })
     }
 }
 
 /// Expired reservation identities proven unnecessary to the remaining journal.
 pub(super) struct ExpiredHistory {
-    ids:        BTreeSet<ReservationId>,
+    ids:              BTreeSet<ReservationId>,
+    pub(super) basis: HistoryCompactionBasis,
     /// The reservation references of each complete record, in journal order.
-    references: Vec<BTreeSet<ReservationId>>,
+    references:       Vec<BTreeSet<ReservationId>>,
 }
 
 impl ExpiredHistory {
@@ -131,6 +236,10 @@ impl ExpiredHistory {
         let Ok(reservations) = &replay.reservations else {
             return Ok(Self {
                 ids:        BTreeSet::new(),
+                basis:      HistoryCompactionBasis {
+                    candidates:  BTreeSet::new(),
+                    final_roots: BTreeSet::new(),
+                },
                 references: Vec::new(),
             });
         };
@@ -138,54 +247,12 @@ impl ExpiredHistory {
             .iter()
             .map(Reservation::id)
             .collect::<BTreeSet<_>>();
+        let candidates =
+            FinishedHistory::compaction_candidates(replay, now).collect::<BTreeSet<_>>();
         let mut retained = known
-            .iter()
+            .difference(&candidates)
             .copied()
-            .filter(|id| {
-                replay.finished_history.0.get(id).is_none_or(|finished| {
-                    finished.elapsed_until(now) <= FINISHED_HISTORY_RETENTION
-                })
-            })
             .collect::<BTreeSet<_>>();
-        for reservation in reservations.iter() {
-            match reservation.evidence_state() {
-                // The journal cannot establish worktree liveness. Even an empty extent
-                // can leave a checkpoint needed by for_orphaned_outstanding's recovery alert.
-                Ok(ReservationEvidenceState::Outstanding { .. }) | Err(_) => {
-                    retained.insert(reservation.id());
-                },
-                Ok(ReservationEvidenceState::Released {
-                    disposition,
-                    integration_status,
-                    ..
-                }) if !matches!(
-                    disposition.revalidation_subject(),
-                    ReleaseRevalidationSubject::None
-                ) && !matches!(
-                    integration_status,
-                    IntegrationEvidenceStatus::Integrated { .. }
-                ) =>
-                {
-                    retained.insert(reservation.id());
-                },
-                Ok(ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
-                    integration_status,
-                    ..
-                }) if !matches!(
-                    integration_status,
-                    IntegrationEvidenceStatus::Integrated { .. }
-                ) =>
-                {
-                    retained.insert(reservation.id());
-                },
-                Ok(
-                    ReservationEvidenceState::Active { .. }
-                    | ReservationEvidenceState::Released { .. }
-                    | ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint { .. }
-                    | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. },
-                ) => {},
-            }
-        }
         let mut incident_references = HashMap::new();
         for incident in reservations.incursion_incidents() {
             let refs = reservation_references(&serde_json::to_value(incident)?, &known);
@@ -213,6 +280,12 @@ impl ExpiredHistory {
             })
             .collect::<Result<Vec<_>, Error>>()?;
         // Keep the final record to preserve the monotonic generation even if its owner expired.
+        // A record that refers to a root is already kept by the dependency closure.
+        let final_roots = references
+            .last()
+            .filter(|last| last.is_disjoint(&retained))
+            .cloned()
+            .unwrap_or_default();
         if let Some(last) = references.last() {
             retained.extend(last);
         }
@@ -229,6 +302,10 @@ impl ExpiredHistory {
         }
         Ok(Self {
             ids: known.difference(&retained).copied().collect(),
+            basis: HistoryCompactionBasis {
+                candidates,
+                final_roots,
+            },
             references,
         })
     }

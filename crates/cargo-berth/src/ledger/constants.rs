@@ -25,8 +25,6 @@ pub(super) const DELETE_CONTROL_BYTE: u8 = 0x7f;
 /// Start at most one maintenance check per interval. A check removes abandoned temporary files and
 /// compacts expired history, also when superseded bytes make compaction due at the same time.
 pub(super) const HISTORY_COMPACTION_CHECK_INTERVAL: Duration = Duration::from_secs(60);
-/// Recheck an unchanged history plan as records age, even when the journal grows slowly.
-pub(super) const HISTORY_COMPACTION_NO_PROGRESS_INTERVAL: Duration = Duration::from_mins(15);
 /// Allow time for writers to create and lock their temporary files.
 pub(super) const JOURNAL_COMPACTION_TEMPORARY_GRACE: Duration = Duration::from_hours(24);
 /// Start compaction when the replay has this many superseded bytes.
@@ -108,7 +106,7 @@ pub(super) const CURRENT_SCHEMA_VERSION: u32 = 2;
 /// checkpoint written by another build is ignored instead of decoded.
 ///
 /// [`JournalReplay`]: super::journal::JournalReplay
-pub(super) const FOLD_FORMAT_VERSION: u32 = 4;
+pub(super) const FOLD_FORMAT_VERSION: u32 = 5;
 
 /// Shorten a supplied duration using unsigned milliseconds from a debug-only test hook.
 pub(crate) fn shortened_by_environment(variable: &str, supplied: Duration) -> Duration {

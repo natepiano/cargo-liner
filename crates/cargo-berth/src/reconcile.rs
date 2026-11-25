@@ -1,5 +1,6 @@
 //! Shared liveness, evidence, retention-ref, and marker reconciliation.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -2052,20 +2053,22 @@ impl RewriteReconciliationPreflight {
     }
 
     /// Check each preflight proof against the preparation generation before projecting facts.
-    fn project(
+    fn project<'replay>(
         &self,
-        reservations: &RetainedReservationSet,
-    ) -> Result<RetainedReservationSet, RewriteProjectionError> {
-        let mut projected = reservations.clone();
+        reservations: &'replay RetainedReservationSet,
+    ) -> Result<Cow<'replay, RetainedReservationSet>, RewriteProjectionError> {
+        let mut projected = Cow::Borrowed(reservations);
         for (validation, operation) in self.validations.iter().zip(&self.operations) {
             if !validation.accepts(&projected) {
                 return Err(RewriteProjectionError::RewriteSubjectChanged(
                     validation.reservation_id,
                 ));
             }
-            projected = projected
-                .with_pending_resnapshots(std::slice::from_ref(operation))
-                .map_err(RewriteProjectionError::Reservation)?;
+            projected = Cow::Owned(
+                projected
+                    .with_pending_resnapshots(std::slice::from_ref(operation))
+                    .map_err(RewriteProjectionError::Reservation)?,
+            );
         }
         for subject in &self.deferred_subjects {
             if !subject.validation.accepts(&projected) {
@@ -3847,7 +3850,7 @@ pub(crate) fn prepare_gate_reconciliation(
         GateReconciliationPurpose::PreparedDecision => reservations
             .with_pending_settlements(&reconciliation.operations)
             .map_err(GateReconciliationError::Reservation)?,
-        GateReconciliationPurpose::CommittedAudit => reservations,
+        GateReconciliationPurpose::CommittedAudit => reservations.into_owned(),
     };
     let proposed_observation = observe_proposed_target(
         &reservations,
@@ -7433,7 +7436,11 @@ mod tests {
             }],
             ..super::RewriteReconciliationPreflight::default()
         };
-        assert!(preflight.project(&outstanding).is_ok());
+        assert!(matches!(
+            preflight.project(&outstanding),
+            Ok(std::borrow::Cow::Borrowed(projected))
+                if std::ptr::eq(projected, &raw const outstanding)
+        ));
         for operation in [
             json!({
                 "op": "resnapshot", "reservation_id": RESERVATION_ID,

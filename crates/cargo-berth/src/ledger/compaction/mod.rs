@@ -13,6 +13,8 @@ mod journal_compaction;
 mod maintenance;
 mod superseded_extents;
 
+#[cfg(test)]
+pub(crate) use fixtures::superseded_bytes;
 pub(crate) use journal_compaction::JournalCompaction;
 pub(crate) use journal_compaction::JournalCompactionError;
 pub(super) use maintenance::remove_refusal;

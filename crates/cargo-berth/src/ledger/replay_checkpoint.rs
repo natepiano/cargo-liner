@@ -1,13 +1,13 @@
 //! The disposable replay checkpoint, so a replay decodes only the records appended after it.
 //!
-//! `replay-checkpoint.json` holds two JSON lines: a [`CheckpointHeader`], then the
-//! [`JournalReplay`] of the journal's first [`CheckpointHeader::end_offset`] bytes, which always
-//! end at a complete record. The header is decoded first, and the replay line only when the header
-//! still describes the journal: this build's [`FOLD_FORMAT_VERSION`], this repository, the same
-//! journal file by device and inode, a journal at least `end_offset` bytes long, and an unchanged
-//! last checkpointed record, compared by the FNV-1a digest of its bytes at its offset. A checkpoint
-//! that is missing, unreadable, or undecodable, or that describes anything else, is ignored and the
-//! journal replays from byte 0.
+//! The checkpoint holds a header and five JSON lines for the replay parts.
+//! The header records the byte length of each part. The parts describe the journal
+//! through the last complete record at [`CheckpointHeader::end_offset`]. The parts decode only when
+//! the header still describes the journal: this build's [`FOLD_FORMAT_VERSION`], this repository,
+//! the same journal file by device and inode, a journal at least `end_offset` bytes long, and an
+//! unchanged last checkpointed record, compared by the FNV-1a digest of its bytes at its offset. A
+//! checkpoint that is missing, unreadable, or undecodable, or that describes anything else, is
+//! ignored and the journal replays from byte 0.
 //!
 //! A replay can refresh the checkpoint after the byte or record interval. The write
 //! budget grows with the complete journal bytes appended since the checkpoint.
@@ -36,19 +36,31 @@ use std::path::Path;
 
 use serde::Deserialize;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
+use super::compaction::SupersededExtents;
 use super::constants::FOLD_FORMAT_VERSION;
 use super::constants::REPLAY_CHECKPOINT_INTERVAL_BYTES;
 use super::constants::REPLAY_CHECKPOINT_INTERVAL_RECORDS;
 use super::constants::REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO;
+use super::history::FinishedHistory;
 use super::journal::JournalError;
+use super::journal::JournalEvent;
 use super::journal::JournalFileIdentity;
 use super::journal::JournalFingerprint;
 use super::journal::JournalReplay;
 use super::journal::JournalReplaySource;
+use super::journal::ReplayCore;
+use super::journal::ReservationReplay;
 use crate::ids::JournalByteOffset;
 use crate::ids::RepoInstanceId;
+use crate::reservation::IncursionIncident;
+use crate::reservation::ReservationFacts;
+use crate::reservation::ReservationReplayError;
+use crate::reservation::RetainedReservationSet;
+
+const CHECKPOINT_PART_COUNT: usize = 5;
 
 /// A ledger's replay checkpoint file and the repository it belongs to.
 pub(super) struct ReplayCheckpoint<'a> {
@@ -123,6 +135,85 @@ struct CheckpointHeader {
     last_record_offset:  JournalByteOffset,
     /// The FNV-1a digest of the last checkpointed record's bytes, newline included.
     last_record_digest:  JournalFingerprint,
+    /// Lengths of the core, reservations, incidents, coordination, and maintenance lines.
+    #[serde(default)]
+    part_lengths:        [u64; CHECKPOINT_PART_COUNT],
+}
+
+struct CheckpointBody {
+    reader:  BufReader<File>,
+    lengths: [u64; CHECKPOINT_PART_COUNT],
+}
+
+/// The edit facts and the unread transaction parts from their open checkpoint.
+pub(super) struct DeferredReplay {
+    pub(super) core:         ReplayCore,
+    pub(super) reservations: Result<RetainedReservationSet, ReservationReplayError>,
+    body:                    CheckpointBody,
+}
+
+#[derive(Deserialize, Serialize)]
+struct Maintenance<Superseded, History> {
+    superseded:       Superseded,
+    finished_history: History,
+}
+
+impl CheckpointBody {
+    fn read_part<T: DeserializeOwned>(&mut self, length: u64) -> Option<T> {
+        let mut bytes = vec![0; usize::try_from(length).ok()?];
+        self.reader.read_exact(&mut bytes).ok()?;
+        let part = serde_json::from_slice(bytes.strip_suffix(b"\n")?).ok()?;
+        #[cfg(test)]
+        CHECKPOINT_PART_DECODES.update(|decodes| decodes + 1);
+        Some(part)
+    }
+
+    fn decode_reservations(&mut self, end_offset: JournalByteOffset) -> Option<ReservationReplay> {
+        let [core_length, reservations_length, ..] = self.lengths;
+        let core: ReplayCore = self.read_part(core_length)?;
+        if core.end_offset != end_offset {
+            return None;
+        }
+        let reservations: Result<ReservationFacts, ReservationReplayError> =
+            self.read_part(reservations_length)?;
+        #[cfg(test)]
+        CHECKPOINT_DECODES.update(|decodes| decodes + 1);
+        Some(ReservationReplay { core, reservations })
+    }
+
+    fn defer(mut self, end_offset: JournalByteOffset) -> Option<DeferredReplay> {
+        let ReservationReplay { core, reservations } = self.decode_reservations(end_offset)?;
+        let incidents: Vec<IncursionIncident> = self.read_part(self.lengths[2])?;
+        Some(DeferredReplay {
+            core,
+            reservations: reservations
+                .map(|facts| RetainedReservationSet::from_checkpoint(facts, incidents)),
+            body: self,
+        })
+    }
+}
+
+impl DeferredReplay {
+    pub(super) fn complete(mut self) -> Option<JournalReplay> {
+        let [_, _, _, coordination_length, maintenance_length] = self.body.lengths;
+        let coordination_events: Vec<JournalEvent> = self.body.read_part(coordination_length)?;
+        let maintenance: Maintenance<SupersededExtents, FinishedHistory> =
+            self.body.read_part(maintenance_length)?;
+        let Self {
+            core, reservations, ..
+        } = self;
+        Some(JournalReplay {
+            reservations,
+            coordination_events,
+            repositories: core.repositories,
+            record_count: core.record_count,
+            end_offset: core.end_offset,
+            fingerprint: core.fingerprint,
+            generation: core.generation,
+            superseded: maintenance.superseded,
+            finished_history: maintenance.finished_history,
+        })
+    }
 }
 
 impl<'a> ReplayCheckpoint<'a> {
@@ -187,78 +278,163 @@ impl<'a> ReplayCheckpoint<'a> {
         Ok((replay, JournalReplaySource::new(journal_file, journal)))
     }
 
-    /// The replay to start from and where it starts: the checkpointed replay when the checkpoint
-    /// describes `journal_file`, or else the empty replay. Keep an invalid checkpoint's header
-    /// so the writer can repair that file.
+    /// Read the reservation fold. A refresh or an incursion in the tail needs every part.
+    pub(super) fn replay_reservations(
+        &self,
+        journal_path: &Path,
+    ) -> Result<(ReservationReplay, JournalReplaySource), JournalError> {
+        let mut file = File::open(journal_path)?;
+        let metadata = file.metadata()?;
+        let identity = JournalFileIdentity::from(&metadata);
+        let (body, start) = self.open_parts(&mut file, identity, metadata.len());
+        if let (Some(mut body), ReplayStart::Checkpoint { header, .. }) = (body, &start) {
+            file.seek(SeekFrom::Start(u64::from(header.end_offset)))?;
+            let mut appended = Vec::new();
+            file.read_to_end(&mut appended)?;
+            let complete_end = appended
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |index| index + 1);
+            let growth = u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?;
+            let refresh = !matches!(
+                start.write_budget(growth, self.interval.maximum_write_ratio),
+                WriteBudget::Exceeded
+            ) && (growth >= self.interval.bytes
+                || appended[..complete_end]
+                    .split_inclusive(|byte| *byte == b'\n')
+                    .take(usize::try_from(self.interval.records).unwrap_or(usize::MAX))
+                    .count()
+                    >= usize::try_from(self.interval.records).unwrap_or(usize::MAX));
+            if !refresh
+                && let Some(decoded) = body.decode_reservations(header.end_offset)
+                && let Some(replay) = decoded.extended_over(&appended)?
+            {
+                return Ok((replay, JournalReplaySource::new(file, identity)));
+            }
+        }
+        let (replay, source) = self.replay_journal(journal_path)?;
+        Ok((ReservationReplay::from(replay), source))
+    }
+
+    /// Start an edit check from a current checkpoint. A later transaction can load the rest.
+    pub(super) fn deferred_edit_start(
+        &self,
+        journal_path: &Path,
+    ) -> Result<Option<(DeferredReplay, JournalReplaySource)>, JournalError> {
+        let mut file = File::open(journal_path)?;
+        let metadata = file.metadata()?;
+        let identity = JournalFileIdentity::from(&metadata);
+        let (body, start) = self.open_parts(&mut file, identity, metadata.len());
+        let (Some(body), ReplayStart::Checkpoint { header, .. }) = (body, start) else {
+            return Ok(None);
+        };
+        if metadata.len() != u64::from(header.end_offset) {
+            return Ok(None);
+        }
+        Ok(body
+            .defer(header.end_offset)
+            .map(|replay| (replay, JournalReplaySource::new(file, identity))))
+    }
+
     fn load(
         &self,
         journal_file: &mut File,
         journal: JournalFileIdentity,
         journal_length: u64,
     ) -> (JournalReplay, ReplayStart) {
-        let beginning = |observed_header| {
-            (
-                JournalReplay::empty(),
-                ReplayStart::Beginning { observed_header },
-            )
-        };
-        let Ok(contents) = fs::read(self.path) else {
-            return beginning(ObservedHeader::Absent);
-        };
-        let Some(header_end) = contents.iter().position(|byte| *byte == b'\n') else {
-            return beginning(ObservedHeader::Absent);
-        };
-        let Ok(header) = serde_json::from_slice::<CheckpointHeader>(&contents[..header_end]) else {
-            return beginning(ObservedHeader::Absent);
-        };
-        match self.decode_replay(
-            journal_file,
-            journal,
-            journal_length,
-            &header,
-            &contents[header_end + 1..],
-        ) {
-            Some(replay) => (
-                replay,
-                ReplayStart::Checkpoint {
-                    header,
-                    bytes: u64::try_from(contents.len()).unwrap_or(u64::MAX),
-                },
-            ),
-            None => beginning(ObservedHeader::Present(header)),
+        let (body, start) = self.open_parts(journal_file, journal, journal_length);
+        if let (Some(body), ReplayStart::Checkpoint { header, .. }) = (body, &start)
+            && let Some(replay) = body
+                .defer(header.end_offset)
+                .and_then(DeferredReplay::complete)
+        {
+            return (replay, start);
         }
+        (
+            JournalReplay::empty(),
+            ReplayStart::Beginning {
+                observed_header: start.into_observed_header(),
+            },
+        )
     }
 
-    fn decode_replay(
+    /// Check the header before reading any replay part.
+    fn open_parts(
         &self,
         journal_file: &mut File,
         journal: JournalFileIdentity,
         journal_length: u64,
-        header: &CheckpointHeader,
-        contents: &[u8],
-    ) -> Option<JournalReplay> {
-        let end_offset = u64::from(header.end_offset);
+    ) -> (Option<CheckpointBody>, ReplayStart) {
+        let absent = (
+            None,
+            ReplayStart::Beginning {
+                observed_header: ObservedHeader::Absent,
+            },
+        );
+        let Ok(file) = File::open(self.path) else {
+            return absent;
+        };
+        let Ok(metadata) = file.metadata() else {
+            return absent;
+        };
+        let mut reader = BufReader::new(file);
+        let Ok(buffer) = reader.fill_buf() else {
+            return absent;
+        };
+        let Some(header_end) = buffer.iter().position(|byte| *byte == b'\n') else {
+            return absent;
+        };
+        let Ok(header) = serde_json::from_slice::<CheckpointHeader>(&buffer[..header_end]) else {
+            return absent;
+        };
+        let header_length = header_end + 1;
+        let total_length = header.part_lengths.iter().try_fold(
+            u64::try_from(header_length).unwrap_or(u64::MAX),
+            |total, part| total.checked_add(*part),
+        );
         if header.fold_format_version != FOLD_FORMAT_VERSION
             || header.repo_instance_id != self.repo_instance_id
             || header.journal != journal
-            || journal_length < end_offset
+            || journal_length < u64::from(header.end_offset)
+            || total_length != Some(metadata.len())
+            || header.part_lengths.contains(&0)
+            || !Self::last_record_matches(journal_file, &header)
         {
-            return None;
+            return (
+                None,
+                ReplayStart::Beginning {
+                    observed_header: ObservedHeader::Present(header),
+                },
+            );
         }
+        reader.consume(header_length);
+        let body = CheckpointBody {
+            reader,
+            lengths: header.part_lengths,
+        };
+        (
+            Some(body),
+            ReplayStart::Checkpoint {
+                header,
+                bytes: metadata.len(),
+            },
+        )
+    }
+
+    fn last_record_matches(journal_file: &mut File, header: &CheckpointHeader) -> bool {
         let last_record_offset = u64::from(header.last_record_offset);
-        let last_record_length = end_offset.checked_sub(last_record_offset)?;
-        let mut last_record = vec![0; usize::try_from(last_record_length).ok()?];
+        let length = u64::from(header.end_offset)
+            .checked_sub(last_record_offset)
+            .and_then(|length| usize::try_from(length).ok());
+        let Some(length) = length else {
+            return false;
+        };
+        let mut last_record = vec![0; length];
         journal_file
             .seek(SeekFrom::Start(last_record_offset))
-            .ok()?;
-        journal_file.read_exact(&mut last_record).ok()?;
-        if JournalFingerprint::EMPTY.continued(&last_record) != header.last_record_digest {
-            return None;
-        }
-        #[cfg(test)]
-        CHECKPOINT_DECODES.update(|decodes| decodes + 1);
-        let replay = serde_json::from_slice::<JournalReplay>(contents).ok()?;
-        (replay.end_offset == header.end_offset).then_some(replay)
+            .is_ok()
+            && journal_file.read_exact(&mut last_record).is_ok()
+            && JournalFingerprint::EMPTY.continued(&last_record) == header.last_record_digest
     }
 
     /// Check the journal path and the published header while the writer holds the file lock.
@@ -331,6 +507,28 @@ impl<'a> ReplayCheckpoint<'a> {
             .map_or(0, |index| index + 1);
         let last_record = &folded[last_record_start..];
         let last_record_length = u64::try_from(last_record.len()).map_err(io::Error::other)?;
+        let mut body = Vec::new();
+        let reservations = replay.reservations.as_ref();
+        let incidents = reservations.as_ref().map_or_else(
+            |_| Vec::new(),
+            |set| set.incursion_incidents().collect::<Vec<_>>(),
+        );
+        let lengths = [
+            write_part(&mut body, &ReplayCore::from(replay))?,
+            write_part(
+                &mut body,
+                &reservations.map(RetainedReservationSet::checkpoint),
+            )?,
+            write_part(&mut body, &incidents)?,
+            write_part(&mut body, &replay.coordination_events)?,
+            write_part(
+                &mut body,
+                &Maintenance {
+                    superseded:       &replay.superseded,
+                    finished_history: &replay.finished_history,
+                },
+            )?,
+        ];
         let header = CheckpointHeader {
             fold_format_version: FOLD_FORMAT_VERSION,
             repo_instance_id: self.repo_instance_id,
@@ -340,14 +538,16 @@ impl<'a> ReplayCheckpoint<'a> {
                 u64::from(replay.end_offset) - last_record_length,
             ),
             last_record_digest: JournalFingerprint::EMPTY.continued(last_record),
+            part_lengths: lengths,
         };
         let mut contents = serde_json::to_vec(&header)?;
         contents.push(b'\n');
-        serde_json::to_writer(&mut contents, replay)?;
-        contents.push(b'\n');
-        if !write_budget.admits(u64::try_from(contents.len()).map_err(io::Error::other)?) {
+        if !write_budget
+            .admits(u64::try_from(contents.len() + body.len()).map_err(io::Error::other)?)
+        {
             return Ok(());
         }
+        contents.extend(body);
 
         let mut temporary_path = self.path.as_os_str().to_owned();
         temporary_path.push(format!(".{}.tmp", Uuid::now_v7()));
@@ -366,9 +566,17 @@ impl<'a> ReplayCheckpoint<'a> {
     }
 }
 
+fn write_part(contents: &mut Vec<u8>, part: &impl Serialize) -> io::Result<u64> {
+    let start = contents.len();
+    serde_json::to_writer(&mut *contents, part)?;
+    contents.push(b'\n');
+    u64::try_from(contents.len() - start).map_err(io::Error::other)
+}
+
 #[cfg(test)]
 thread_local! {
     static CHECKPOINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static CHECKPOINT_PART_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -454,6 +662,7 @@ mod tests {
     use crate::ledger::constants::REPLAY_CHECKPOINT_INTERVAL_BYTES;
     use crate::ledger::constants::REPLAY_CHECKPOINT_INTERVAL_RECORDS;
     use crate::ledger::constants::REPLAY_CHECKPOINT_MAXIMUM_WRITE_RATIO;
+    use crate::ledger::handle;
     use crate::ledger::journal;
     use crate::ledger::journal::Journal;
     use crate::ledger::journal::JournalEvent;
@@ -506,6 +715,77 @@ mod tests {
             );
             fixture.assert_replays_equal_whole_journal_replays(&fixture.kept_checkpoint())?;
         }
+        Ok(())
+    }
+
+    #[test]
+    fn edit_preparation_reads_incidents_and_completes_from_its_open_checkpoint()
+    -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        let (events, rejected) = journal::round_trip_sequence_events()?;
+        fixture.journal.append_events(&events[..rejected])?;
+        let whole = fixture.write_checkpoint()?;
+        assert!(
+            whole
+                .reservations
+                .as_ref()
+                .map_err(ToString::to_string)?
+                .incursion_incidents()
+                .next()
+                .is_some()
+        );
+
+        let (deferred, _) = fixture
+            .checkpoint()
+            .deferred_edit_start(&fixture.journal_path)?
+            .ok_or("expected a deferred replay")?;
+        assert_eq!(deferred.reservations, whole.reservations);
+
+        let bypass = events[..rejected]
+            .iter()
+            .find(|event| matches!(event.operation, JournalOperation::Bypass { .. }))
+            .ok_or("expected a bypass record")?;
+        let appended = JournalEvent::for_operation(
+            bypass.actor.clone(),
+            handle::next_projection_generation(whole.generation)?,
+            bypass.operation.clone(),
+        );
+        fixture.journal.append(&appended)?;
+        let replacement = fixture.write_checkpoint()?;
+        assert_eq!(fixture.header()?.end_offset, replacement.end_offset);
+        assert_ne!(replacement.coordination_events, whole.coordination_events);
+        assert_eq!(
+            deferred.complete(),
+            Some(whole),
+            "completion must read the original checkpoint"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_reservation_replay_matches_whole_replay_after_an_append() -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        let (events, _) = journal::round_trip_sequence_events()?;
+        let resolution = events
+            .iter()
+            .position(|event| matches!(event.operation, JournalOperation::ResolveIncursion { .. }))
+            .ok_or("expected an incident resolution")?;
+        let release = events
+            .iter()
+            .position(|event| matches!(event.operation, JournalOperation::Release { .. }))
+            .ok_or("expected a release")?;
+        fixture.journal.append_events(&events[..release])?;
+        fixture.write_checkpoint()?;
+        fixture.journal.append(&events[release])?;
+        fixture.assert_reservation_replay_parts(2)?;
+
+        fixture
+            .journal
+            .append_events(&events[release + 1..resolution])?;
+        fixture.write_checkpoint()?;
+        fixture.journal.append(&events[resolution])?;
+        fixture.append_incomplete_record()?;
+        fixture.assert_reservation_replay_parts(2 + super::CHECKPOINT_PART_COUNT)?;
         Ok(())
     }
 
@@ -650,7 +930,7 @@ mod tests {
             .ok_or("the checkpoint should hold a header line")?;
         let mut header = serde_json::from_slice::<CheckpointHeader>(&contents[..header_end])?;
         header.fold_format_version = PREVIOUS_FOLD_FORMAT_VERSION;
-        let mut replay = serde_json::from_slice::<Value>(&contents[header_end + 1..])?;
+        let mut replay = serde_json::to_value(Journal::replay_read_only(&fixture.journal_path)?)?;
         let retained = &mut replay["reservations"]["Ok"];
         let released = retained["reservations"]
             .as_array_mut()
@@ -683,6 +963,35 @@ mod tests {
         rewritten.push(b'\n');
         fs::write(&fixture.checkpoint_path, rewritten)?;
         Ok(replay)
+    }
+
+    #[test]
+    fn a_version_four_checkpoint_rebuilds_from_the_journal() -> Result<(), Box<dyn Error>> {
+        let fixture = CheckpointFixture::new()?;
+        fixture
+            .journal
+            .append_events(&journal::fold_sequence_events()?)?;
+        let current = fixture.write_checkpoint()?;
+        let mut header = serde_json::to_value(fixture.header()?)?;
+        header["fold_format_version"] = json!(4);
+        header
+            .as_object_mut()
+            .ok_or("expected checkpoint header")?
+            .remove("part_lengths");
+        let previous = format!("{header}\n{}\n", serde_json::to_string(&current)?);
+        fs::write(&fixture.checkpoint_path, previous)?;
+
+        assert_eq!(fixture.load(&fixture.kept_checkpoint())?, None);
+        assert_eq!(
+            fixture
+                .rewritten_checkpoint()
+                .replay_journal(&fixture.journal_path)?
+                .0,
+            current
+        );
+        assert_eq!(fixture.header()?.fold_format_version, FOLD_FORMAT_VERSION);
+        assert_eq!(fixture.load(&fixture.kept_checkpoint())?, Some(current));
+        Ok(())
     }
 
     #[test]
@@ -1002,6 +1311,30 @@ mod tests {
                 &self.journal_path,
                 &self.rewritten_checkpoint(),
             )?)
+        }
+
+        fn assert_reservation_replay_parts(
+            &self,
+            expected_parts: usize,
+        ) -> Result<(), Box<dyn Error>> {
+            let before = super::CHECKPOINT_PART_DECODES.get();
+            let (partial, _) = self
+                .kept_checkpoint()
+                .replay_reservations(&self.journal_path)?;
+            assert_eq!(
+                super::CHECKPOINT_PART_DECODES.get() - before,
+                expected_parts
+            );
+
+            let whole = Journal::replay_read_only(&self.journal_path)?;
+            assert!(whole.reservations.is_ok());
+            let whole = super::ReservationReplay::from(whole);
+            assert_eq!(partial.core, whole.core);
+            assert_eq!(
+                partial.reservations, whole.reservations,
+                "the partial replay must fold the appended reservation state"
+            );
+            Ok(())
         }
 
         /// The replay `checkpoint` resumes from, or `None` when a replay starts at byte 0.
