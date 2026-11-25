@@ -1269,32 +1269,29 @@ The copies are deleted. No source changes.
 
 **Gotchas:** The first ordinary check after a hook-deferred compaction pays the compaction once (3.6 s on the sample). An edit can still cross the superseded-byte threshold and need a full compaction.
 
-### Phase 56d — a cargo-berth edit check of an unreserved file costs under about 100 ms  · status: todo
+### Phase 56d — a cargo-berth edit check of an unreserved file asks Git about the edited path only  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** the `pre-tool-use` edit check of a file no reservation holds costs under about 100 ms CPU in release. Phase 56c cut it from 4,513.0 to 474.4 ms and moved the rest here.
-
-**Spec:**
-1. The baseline is the Phase 56c final Mac release measure: edit 474.4 ms, gate 77.8 ms CPU, median of 3. The report is `${SESSION_DIR}/phases/56c/fix_reply_1.md`.
-2. In Phase 56c pass 2, `reconcile_for_check` used about 320 ms CPU of the edit: checkpoint part decodes about 156 ms, `observe_repository_facts` about 99 ms, and `PreparedReconciliationAppend::prepare` about 37 ms.
-3. Profile the edit on the Mac release sample. Cut the top costs at their cause. Preserve each hook answer.
-4. Report median CPU and read bytes for the gate and the unreserved edit. Use three Mac release runs on the same sample before and after the change.
-
-**Constraints from prior phases:**
-- Keep the Phase 56b and Phase 56c constraints of the replay checkpoint and compaction. The Phase 56c As-built names them.
-- Keep the version 5 part layout and `ReservationFacts` for the gate and reservation selection. Increase `FOLD_FORMAT_VERSION` when the layout changes.
-- Keep the saved no-progress compaction result, its tail-only reuse check and the 16 MiB growth threshold. Hooks defer compaction to the next ordinary mutation.
-- Keep `edit_hook_first_touch_decodes_checkpoint_once` and its compaction checks passing.
+- The edit hook first observes only the edited path in each foreign worktree. Git status runs with that one pathspec.
+- It falls back to full observation for overlap, uncertain identity or scope, a pending rewrite, a possible cover, exact-revision overlap answers, and non-ASCII paths in a case-insensitive repository.
+- It also falls back when the unreleased holder count reaches the reservation limit. A checkpointed holder with an empty recorded extent still counts.
+- ASCII paths in a case-insensitive repository use `:(top,literal,icase)`. Accepted risk: a non-ASCII foreign name that folds to ASCII (Kelvin sign, long s).
+- A scoped observation never settles a holder. Only a successful scoped observation constructs `DisjointEditProof`. The next full reconciliation auto-releases integrated holders, with no new notice.
+- The first `decide` reads only `ReservationFacts`. `DeferredReplay` loads incidents and coordination when the replay completes.
+- Mac release, default Git setting, median of 3 alternating pairs: the unreserved edit fell from 565.3 to 317.2 ms CPU. On the seeded sample (41 worktrees, 123 reservations) the gate fell from 100.8 to 92.8 ms.
 
 **Files:**
-- `crates/cargo-berth/src/` — files the profile identifies.
+- `crates/cargo-berth/src/reconcile.rs` — `observe_edit_path` and `DisjointEditProof`.
+- `crates/cargo-berth/src/git/snapshot.rs`, `crates/cargo-berth/src/git/read.rs` — one status reader for full and path-limited status.
+- `crates/cargo-berth/src/verb/claim/acquisition.rs` — scoped first-touch acquisition, its fallbacks and the capacity bound.
+- `crates/cargo-berth/src/reservation/retention.rs` — `ReservationFacts` conflict queries and the unreleased holder count.
+- `crates/cargo-berth/src/ledger/replay_checkpoint.rs`, `crates/cargo-berth/src/ledger/handle.rs` — `DeferredReplay`.
+- `crates/cargo-berth/src/verb/check.rs` — edit hook tests: dirty path, ASCII case, non-ASCII fallback, deferred settlement, capacity, exact answers.
 
-**Workers:** 1 writer.
+**Binds later work:** Phase 56e owns the rest of the edit cost. One reconciliation path stays. A path-limited observation never settles a holder, and the allow or refuse answer equals the full-status answer.
 
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- No changed test takes 1 s or more.
+**Gotchas:** Nextest flagged a process leak in the unchanged gate test `rewrite_marker_progress_preserves_completed_subjects_across_stale_preflights`. Review found no cause in Phase 56d.
 
 ### Phase 56e — a cargo-berth edit check of an unreserved file costs under about 150 ms  · status: todo
 
