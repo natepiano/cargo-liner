@@ -98,6 +98,7 @@ use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::RecoverableReconciliationAppendFailures;
 use crate::ledger::ReleaseSource;
+use crate::ledger::ReplayPosition;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
@@ -127,6 +128,7 @@ use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationEvidenceState;
+use crate::reservation::ReservationFacts;
 use crate::reservation::ReservationIntegrationJudgment;
 use crate::reservation::ReservationLifecycle;
 use crate::reservation::ReservationReplayError;
@@ -149,6 +151,8 @@ use crate::worktree::WorktreeLiveness;
 use crate::worktree::WorktreeMarkerSweepContext;
 use crate::worktree::WorktreeRegistry;
 use crate::worktree::WorktreeRelocation;
+use crate::worktree::liveness::WorktreeEnrollmentCandidate;
+use crate::worktree::liveness::WorktreeLivenessObservation;
 use crate::worktree::liveness::WorktreeRegistryError;
 
 /// Whether this reconciliation caller will announce recovered bypass markers.
@@ -1569,6 +1573,134 @@ pub(crate) fn reconcile_for_release(
             worktree_id,
         },
     )
+}
+
+/// Proof that full reconciliation cannot add or answer an overlap on the edited path.
+#[derive(Clone, Copy)]
+pub(crate) struct DisjointEditProof {
+    position: ReplayPosition,
+}
+
+impl DisjointEditProof {
+    pub(crate) fn matches_replay(self, position: ReplayPosition) -> bool {
+        self.position == position
+    }
+}
+
+/// Prove that whole-worktree reconciliation cannot add or answer an overlap on this path.
+pub(crate) fn observe_edit_path(
+    repository: &git::RepositorySnapshot,
+    reservations: &ReservationFacts,
+    acting_worktree: WorktreeId,
+    repository_trunk: &IntegrationTarget,
+    edit_scope: &ReservationScope,
+    path_case: PathCase,
+    position: ReplayPosition,
+) -> Option<DisjointEditProof> {
+    if (path_case == PathCase::Insensitive && !edit_scope.path.as_str().is_ascii())
+        || reservations.foreign_protection_overlaps(edit_scope, acting_worktree, path_case)
+        || !permit::pending_branch_rewrite_markers(repository.common_directory())
+            .is_ok_and(|markers| markers.is_empty())
+    {
+        return None;
+    }
+    let live = || {
+        reservations.iter().filter(|reservation| {
+            !matches!(
+                reservation.lifecycle(),
+                ReservationLifecycle::Released { .. }
+            )
+        })
+    };
+    if live().any(|reservation| {
+        reservation.actor().worktree == acting_worktree
+            || reservation.target().or_trunk(repository_trunk) != repository_trunk
+            || matches!(
+                reservation.merge_extent(),
+                MergeExtent::NotDerived { .. } | MergeExtent::Unavailable { .. }
+            )
+    }) {
+        return None;
+    }
+
+    let registry = WorktreeRegistry::read(repository).ok()?;
+    let unproven_paths = registry
+        .enrollment_candidates()
+        .iter()
+        .filter(|candidate| match candidate {
+            WorktreeEnrollmentCandidate::Eligible(context)
+                if context.administrative_directory()
+                    == repository.context().administrative_directory() =>
+            {
+                false
+            },
+            WorktreeEnrollmentCandidate::Eligible(context) => !matches!(
+                git::RepositorySnapshot::edited_path_status_at(
+                    context.repository_root(),
+                    &edit_scope.path,
+                    path_case,
+                ),
+                Ok(git::EditedPathStatus::Clean)
+            ),
+            WorktreeEnrollmentCandidate::Unavailable { .. } => true,
+        })
+        .count();
+    if unproven_paths != 0 {
+        return None;
+    }
+
+    let object_reader = repository.object_reader();
+    let trunk = git::IntegrationProofRef::resolve(&object_reader, repository_trunk.short_name())
+        .and_then(|proof| proof.commit(&object_reader))
+        .ok()?;
+    for reservation in live() {
+        if !holder_commit_protection_is_disjoint(
+            repository,
+            &registry,
+            reservation,
+            &trunk,
+            edit_scope,
+            path_case,
+        ) {
+            return None;
+        }
+    }
+    Some(DisjointEditProof { position })
+}
+
+fn holder_commit_protection_is_disjoint(
+    repository: &git::RepositorySnapshot,
+    registry: &WorktreeRegistry,
+    reservation: &Reservation,
+    trunk: &GitObjectId,
+    edit_scope: &ReservationScope,
+    path_case: PathCase,
+) -> bool {
+    let WorktreeLivenessObservation {
+        liveness: WorktreeLiveness::Live,
+        relocation: WorktreeRelocation::Unchanged,
+        head: WorktreeHead::Resolved(head),
+    } = registry.classify(
+        reservation.actor().repository,
+        repository.common_directory(),
+        reservation,
+    )
+    else {
+        return false;
+    };
+    repository
+        .unmerged_branch_paths(reservation.worktree_root().as_ref(), trunk, &head)
+        .is_ok_and(|(paths, _)| {
+            paths.into_iter().all(|path| {
+                !edit_scope.overlaps(
+                    &ReservationScope {
+                        path,
+                        kind: ScopeKind::File,
+                    },
+                    path_case,
+                )
+            })
+        })
 }
 
 /// Retain immutable object evidence throughout check's decision and acquisition passes.
@@ -3493,24 +3625,24 @@ struct TargetReservationGroups {
 fn group_reservations_by_target(
     reservations: &RetainedReservationSet,
     repository_trunk: &IntegrationTarget,
-) -> Result<TargetReservationGroups, ReservationReplayError> {
+) -> TargetReservationGroups {
     let mut groups = BTreeMap::new();
     groups
         .entry(repository_trunk.clone())
         .or_insert_with(HashSet::new);
     let mut recorded_targets = HashMap::new();
     for reservation in reservations.iter() {
-        let target = reservations.target_of(reservation.id(), repository_trunk)?;
+        let target = reservation.target().or_trunk(repository_trunk).clone();
         groups
             .entry(target.clone())
             .or_default()
             .insert(reservation.id());
         recorded_targets.insert(reservation.id(), target);
     }
-    Ok(TargetReservationGroups {
+    TargetReservationGroups {
         groups,
         recorded_targets,
-    })
+    }
 }
 
 fn configured_repository_trunk(
@@ -3541,7 +3673,7 @@ fn observe_repository_facts(
         let TargetReservationGroups {
             mut groups,
             recorded_targets: reservation_targets,
-        } = group_reservations_by_target(reservations, &repository_trunk)?;
+        } = group_reservations_by_target(reservations, &repository_trunk);
         let mut target_jobs = Vec::new();
         for (target, selected) in &groups {
             if target == &repository_trunk {
@@ -3692,9 +3824,8 @@ fn observe_target_group_evidence(
             scoped_patch_evaluation_budget: budget,
         };
         indexed_evidence.extend(
-            scoped_patch_evaluation_order(reservations, &judged_commit)
+            scoped_patch_evaluation_order(reservations, selected, &judged_commit)
                 .into_iter()
-                .filter(|(_, reservation)| selected.contains(&reservation.id()))
                 .map(|(index, reservation)| {
                     let observation =
                         if evidence_read.includes(reservation, reservations, ordering_graph)? {
@@ -3769,9 +3900,14 @@ fn reconcile_observed_reservations(
 
 fn scoped_patch_evaluation_order<'reservation>(
     reservations: &'reservation RetainedReservationSet,
+    selected: &HashSet<ReservationId>,
     repository_trunk: &JudgedTargetTip,
 ) -> Vec<(usize, &'reservation Reservation)> {
-    let mut evaluation_order = reservations.iter().enumerate().collect::<Vec<_>>();
+    let mut evaluation_order = reservations
+        .iter()
+        .enumerate()
+        .filter(|(_, reservation)| selected.contains(&reservation.id()))
+        .collect::<Vec<_>>();
     if let JudgedTargetTip::Resolved(target) = repository_trunk {
         evaluation_order
             .sort_by_key(|(_, reservation)| reservation.scoped_patch_evaluation_priority(target));
@@ -3932,9 +4068,8 @@ fn observe_proposed_target(
         scoped_patch_evaluation_budget: reconciliation_evidence_context
             .scoped_patch_evaluation_budget,
     };
-    let mut indexed_evidence = scoped_patch_evaluation_order(reservations, &target_tip)
+    let mut indexed_evidence = scoped_patch_evaluation_order(reservations, &selected, &target_tip)
         .into_iter()
-        .filter(|(_, reservation)| selected.contains(&reservation.id()))
         .map(|(index, reservation)| {
             repository_evidence(reservation, &mut target_evidence_context)
                 .map(|observation| (index, reservation, observation))

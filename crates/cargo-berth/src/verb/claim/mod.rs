@@ -17,6 +17,7 @@ pub(crate) use acquisition::FirstTouchClaimExecution;
 pub(crate) use acquisition::FirstTouchClaimRequest;
 pub(crate) use acquisition::FirstTouchConflictHandling;
 pub(crate) use acquisition::FirstTouchConflictOutcome;
+pub(super) use acquisition::FirstTouchObservation;
 pub(crate) use acquisition::ReservationAcquisition;
 pub(crate) use acquisition::ReservationAcquisitionKind;
 pub(crate) use acquisition::SiblingHeldScopes;

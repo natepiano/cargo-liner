@@ -10,7 +10,7 @@ use super::conflict::ReservationConflict;
 use super::lifecycle::EditBlockingStatus;
 use super::record::ConflictProtection;
 use super::record::Reservation;
-use super::retention::RetainedReservationSet;
+use super::retention::ReservationFacts;
 use crate::answer::ConflictAuthorization;
 use crate::answer::OverlapScopeRevision;
 use crate::ids::CoordinationRunId;
@@ -117,7 +117,7 @@ impl AuthorizedEditingIdentity {
 
     pub(super) fn authorizes(
         self,
-        retained_reservation_set: &RetainedReservationSet,
+        retained_reservation_set: &ReservationFacts,
         holder_reservation: &Reservation,
         overlap_scope: &ReservationScope,
         path_case: PathCase,
@@ -156,7 +156,7 @@ impl AuthorizedEditingIdentity {
 
 /// Match answers against the same representative and complete protection the conflict reports.
 pub(super) fn reservations_authorize_scope(
-    reservations: &RetainedReservationSet,
+    reservations: &ReservationFacts,
     requester: &Reservation,
     holder: &Reservation,
     overlap_scope: &ReservationScope,

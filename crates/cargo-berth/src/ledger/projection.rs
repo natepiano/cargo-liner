@@ -67,11 +67,11 @@ pub(super) fn read_position(
 }
 
 /// The journal position that a replay proves.
-#[derive(Clone, Copy)]
-pub(super) struct ReplayPosition {
-    generation:  ProjectionGeneration,
-    end_offset:  JournalByteOffset,
-    fingerprint: JournalFingerprint,
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct ReplayPosition {
+    pub(super) generation: ProjectionGeneration,
+    pub(super) end_offset: JournalByteOffset,
+    fingerprint:           JournalFingerprint,
 }
 
 impl From<&JournalReplay> for ReplayPosition {
