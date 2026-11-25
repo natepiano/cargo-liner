@@ -141,7 +141,14 @@ fn execute_at(
         Ok(repository) => repository,
         Err(error) => return OutputEnvelope::ledger_error(CommandVerb::Check, &error),
     };
-    let ledger = Ledger::for_edit_check(repository.context());
+    let ledger = if matches!(
+        check_request.reservation_selection,
+        CheckReservationSelection::EditHook
+    ) {
+        Ledger::for_edit_check(repository.context())
+    } else {
+        Ledger::for_command_check(repository.context())
+    };
     let mut capacity_recovery = ClaimCapacityRecovery::default();
     let output = execute_with_capacity_recovery(
         &ledger,
@@ -514,6 +521,8 @@ fn check_repository_observation(repository: &RepositorySnapshot) -> RepositorySn
 #[cfg(test)]
 mod cost_tests {
     use std::error::Error;
+    use std::fs;
+    use std::os::unix::fs::MetadataExt as _;
     use std::path::Path;
     use std::path::PathBuf;
     use std::process::ExitCode;
@@ -532,14 +541,22 @@ mod cost_tests {
     use crate::exit::BerthExit;
     use crate::git::RepositorySnapshot;
     use crate::hook::pre_tool_use;
+    use crate::ids::CoordinationRunId;
+    use crate::ids::ReservationId;
+    use crate::ids::WorktreeId;
     use crate::ledger;
     use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
     use crate::ledger::JournalOperation;
     use crate::ledger::Ledger;
+    use crate::ledger::LedgerTransactionOutcome;
     use crate::ledger::ScopeKind;
+    use crate::ledger::TransactionValidation;
     use crate::output::OutputEnvelope;
+    use crate::reservation::MergeExtent;
+    use crate::reservation::ReservationRunStatus;
     use crate::scope::DeclaredReservationScopeSet;
 
+    const TEST_COMPACTION_THRESHOLD_BYTES: u64 = 1;
     const HELD_PATH: &str = "held.rs";
     const UNRESERVED_PATH: &str = "new.rs";
 
@@ -548,7 +565,10 @@ mod cost_tests {
         const CHILD_MODE: &str = "CARGO_BERTH_TEST_COUNT_PRE_TOOL_USE_DECODES";
         const TEST: &str = "verb::check::cost_tests::edit_hook_first_touch_decodes_checkpoint_once";
         if std::env::var_os(CHILD_MODE).is_some() {
-            let (exit_code, decodes) = ledger::count_checkpoint_decodes(pre_tool_use::execute);
+            let (exit_code, decodes) =
+                Ledger::with_compaction_threshold_for_test(TEST_COMPACTION_THRESHOLD_BYTES, || {
+                    ledger::count_checkpoint_decodes(pre_tool_use::execute)
+                });
             assert_eq!(exit_code, ExitCode::SUCCESS);
             assert_eq!(decodes, 1);
             return Ok(());
@@ -556,8 +576,33 @@ mod cost_tests {
 
         let fixture = EditCheckFixture::new()?;
         let ledger = Ledger::open(fixture.root())?;
+        let events = ledger.journal_events_for_test()?;
+        let (actor, reservation_id, scopes) = events
+            .iter()
+            .find_map(|event| match &event.operation {
+                JournalOperation::Claim {
+                    reservation_id,
+                    scopes,
+                    ..
+                } => Some((&event.actor, *reservation_id, scopes)),
+                _ => None,
+            })
+            .ok_or("expected the foreign claim")?;
+        let observation = JournalOperation::MergeExtentObserved {
+            reservation_id,
+            extent: MergeExtent::NotDerived {
+                protection: scopes.clone(),
+            },
+            run_status: ReservationRunStatus::default(),
+        };
+        ledger.append_legacy_journal_operation(actor.clone(), observation.clone())?;
+        ledger.append_legacy_journal_operation(actor.clone(), observation)?;
+        Ledger::repair_projection(fixture.root())?;
         ledger.write_replay_checkpoint_for_test()?;
-        let before_hook = ledger.journal_events_for_test()?.len();
+        let before_hook = ledger.journal_events_for_test()?;
+        let journal = fixture.root().join(".git/cargo-berth/journal.ndjson");
+        let original_bytes = fs::read(&journal)?;
+        let original_inode = fs::metadata(&journal)?.ino();
         let payload = serde_json::to_vec(&serde_json::json!({
             "tool_name": "Write",
             "cwd": fixture.root(),
@@ -577,8 +622,21 @@ mod cost_tests {
         let output = child.output_with_input(&payload)?;
         assert!(output.status.success(), "{output:?}");
 
+        assert!(
+            fs::read(&journal)?.starts_with(&original_bytes),
+            "the edit hook must preserve the journal byte prefix"
+        );
+        assert_eq!(
+            fs::metadata(&journal)?.ino(),
+            original_inode,
+            "the edit hook must keep the journal inode"
+        );
         let events = ledger.journal_events_for_test()?;
-        let appended = &events[before_hook..];
+        assert!(
+            events.starts_with(&before_hook),
+            "the edit hook must preserve due history"
+        );
+        let appended = &events[before_hook.len()..];
         assert!(appended.iter().any(|event| {
             matches!(
                 &event.operation,
@@ -591,6 +649,47 @@ mod cost_tests {
                 JournalOperation::Claim { scopes, .. } if scopes.covers_path(UNRESERVED_PATH.as_bytes())
             )
         }));
+        assert!(
+            ledger::superseded_bytes(&ledger)? >= TEST_COMPACTION_THRESHOLD_BYTES,
+            "compaction must still be due after the edit hook"
+        );
+        assert_ordinary_renewal_compacts_journal(
+            fixture.root(),
+            &ledger,
+            reservation_id,
+            events.len(),
+        )
+    }
+
+    fn assert_ordinary_renewal_compacts_journal(
+        root: &Path,
+        ledger: &Ledger,
+        reservation_id: ReservationId,
+        records_before_renewal: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let outcome =
+            Ledger::with_compaction_threshold_for_test(TEST_COMPACTION_THRESHOLD_BYTES, || {
+                Ledger::open(root)?.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
+                    TransactionValidation::<()>::Append(Box::new(JournalOperation::Renew {
+                        reservation_id,
+                    }))
+                })
+            })?;
+        assert!(matches!(outcome, LedgerTransactionOutcome::Appended { .. }));
+        let compacted = ledger.journal_events_for_test()?;
+        assert!(
+            compacted.len() < records_before_renewal + 1,
+            "the ordinary mutation must compact"
+        );
+        assert!(compacted.last().is_some_and(|event| {
+            matches!(event.operation, JournalOperation::Renew { reservation_id: renewed } if renewed == reservation_id)
+        }));
+        assert_eq!(
+            ledger::superseded_bytes(ledger)?,
+            0,
+            "the ordinary mutation must remove all superseded bytes"
+        );
+        ledger.read_validated_journal()?;
         Ok(())
     }
 

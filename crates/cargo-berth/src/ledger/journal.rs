@@ -70,7 +70,9 @@ use crate::reservation::IntegrationWitness;
 use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
 use crate::reservation::ReleaseDisposition;
+use crate::reservation::Reservation;
 use crate::reservation::ReservationConflict;
+use crate::reservation::ReservationFacts;
 use crate::reservation::ReservationReplayError;
 use crate::reservation::ReservationRunStatus;
 use crate::reservation::RetainedReservationSet;
@@ -2208,6 +2210,77 @@ pub(super) struct JournalReplay {
     pub(super) finished_history:    FinishedHistory,
 }
 
+/// The position and repository identities represented by a replay.
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(super) struct ReplayCore {
+    pub(super) repositories: BTreeSet<RepoInstanceId>,
+    pub(super) record_count: u64,
+    pub(super) end_offset:   JournalByteOffset,
+    pub(super) fingerprint:  JournalFingerprint,
+    pub(super) generation:   ProjectionGeneration,
+}
+
+impl From<&JournalReplay> for ReplayCore {
+    fn from(replay: &JournalReplay) -> Self {
+        Self {
+            repositories: replay.repositories.clone(),
+            record_count: replay.record_count,
+            end_offset:   replay.end_offset,
+            fingerprint:  replay.fingerprint,
+            generation:   replay.generation,
+        }
+    }
+}
+
+/// The reservation fold and its position. Other checkpoint parts are separate.
+pub(super) struct ReservationReplay {
+    pub(super) core:         ReplayCore,
+    pub(super) reservations: Result<ReservationFacts, ReservationReplayError>,
+}
+
+impl ReservationReplay {
+    pub(super) fn into_reservations(self) -> Result<Vec<Reservation>, ReservationReplayError> {
+        self.reservations.map(ReservationFacts::into_reservations)
+    }
+
+    /// Fold the tail with the same reservation fold as `JournalReplay`.
+    ///
+    /// An incursion record needs the checkpointed incidents. Let the caller load those records.
+    pub(super) fn extended_over(mut self, appended: &[u8]) -> Result<Option<Self>, JournalError> {
+        let replayed_lines =
+            usize::try_from(self.core.record_count).map_err(JournalError::JournalTooLarge)?;
+        let mut needs_incidents = false;
+        let complete_end = decode_complete_records(appended, replayed_lines + 1, |event, _| {
+            needs_incidents |= matches!(
+                event.operation,
+                JournalOperation::Incursion { .. } | JournalOperation::ResolveIncursion { .. }
+            );
+            if !needs_incidents {
+                fold_reservations(&mut self.reservations, &event, ReservationFacts::apply);
+                self.core.repositories.insert(event.actor.repository);
+                self.core.record_count += 1;
+                self.core.generation = event.projection_generation;
+            }
+        })?;
+        if needs_incidents {
+            return Ok(None);
+        }
+        let length = u64::try_from(complete_end).map_err(JournalError::JournalTooLarge)?;
+        self.core.end_offset = JournalByteOffset::from(u64::from(self.core.end_offset) + length);
+        self.core.fingerprint = self.core.fingerprint.continued(&appended[..complete_end]);
+        Ok(Some(self))
+    }
+}
+
+impl From<JournalReplay> for ReservationReplay {
+    fn from(replay: JournalReplay) -> Self {
+        Self {
+            core:         ReplayCore::from(&replay),
+            reservations: replay.reservations.map(RetainedReservationSet::into_facts),
+        }
+    }
+}
+
 /// A deterministic fingerprint over a journal's bytes.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(transparent)]
@@ -2468,7 +2541,11 @@ impl JournalReplay {
     ///
     /// Updates every field except the byte range, which [`Self::cover`] extends.
     fn apply_record(&mut self, event: JournalEvent, record_bytes: u64) {
-        fold_reservations(&mut self.reservations, &event);
+        fold_reservations(
+            &mut self.reservations,
+            &event,
+            RetainedReservationSet::apply,
+        );
         let history_changes = match &self.reservations {
             Ok(reservations) => self.finished_history.observe(&event, reservations),
             Err(_) => Vec::new(),
@@ -2602,12 +2679,13 @@ pub(super) fn complete_record_events(bytes: &[u8]) -> Result<Vec<JournalEvent>, 
 ///
 /// The first failure replaces the set and no later event is applied, so
 /// the fold stops at its first error.
-fn fold_reservations(
-    reservations: &mut Result<RetainedReservationSet, ReservationReplayError>,
+fn fold_reservations<Set>(
+    reservations: &mut Result<Set, ReservationReplayError>,
     event: &JournalEvent,
+    apply: impl FnOnce(&mut Set, &JournalEvent) -> Result<(), ReservationReplayError>,
 ) {
     if let Ok(retained) = reservations
-        && let Err(error) = retained.apply(event)
+        && let Err(error) = apply(retained, event)
     {
         *reservations = Err(error);
     }
