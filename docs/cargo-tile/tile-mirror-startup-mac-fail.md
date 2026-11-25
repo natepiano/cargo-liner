@@ -16,6 +16,7 @@
 ## Delegation Context
 
 - **Project:** cargo-tile — a terminal grid of the cargo processes on the machine. Its capture shim stands in for `cargo` and mirrors cargo's output streams.
+- **Project started:** 2026-11-25T14:11:07.087+00:00
 - **Stack:** Rust 2024; Linux (natedev) and macOS (the Mac).
 - **Layout:**
   - `crates/cargo-tile/tests/shim_modes.rs` — shim mode tests; `MirrorStartup`, `assert_mirror_startup`, `mirror_startup_command` (about lines 1279-1420).
