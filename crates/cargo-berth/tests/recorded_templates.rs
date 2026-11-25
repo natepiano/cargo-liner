@@ -34,6 +34,12 @@ use cargo_berth_test_support::LedgerTemplate;
 use cargo_berth_test_support::fixture_output_with_deadline;
 use hook_evidence_templates::INCURSION_ANSWERED_LOST_EVIDENCE;
 use hook_evidence_templates::REWRITTEN_TRUNK_LOST_EVIDENCE;
+use integration_templates::ACTIVE_BEFORE_LATER_PHASE;
+use integration_templates::ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET;
+use integration_templates::ACTIVE_WITH_SHARED_PHASE_START;
+use integration_templates::CHECKPOINT_BEFORE_BACKDATED_CLAIM;
+use integration_templates::CHECKPOINT_BEFORE_SAME_PATH_PHASE;
+use integration_templates::CHECKPOINT_WITH_FOREIGN_MERGE;
 use integration_templates::CHECKPOINT_WITH_LATER_WORK;
 use integration_templates::ENDED_FIRST_COVER;
 use integration_templates::MERGE_EXTENT_LANES_READY;
@@ -42,6 +48,7 @@ use integration_templates::MERGED_TRUNK_WITH_OWN_WORK;
 use integration_templates::NEWER_TRUNK;
 use integration_templates::PENDING_TRUNK_MERGE;
 use integration_templates::RELEASE_LANE_READY;
+use integration_templates::TRUNK_CHECKPOINT_WITH_LATER_WORK;
 use ledger_templates::PROJECTION_HISTORY;
 use ledger_templates::RELEASE_ENROLLMENT;
 use ledger_templates::SHARED_ENROLLMENT;
@@ -360,10 +367,18 @@ fn run_selected_setup_test() -> SetupTestSelection {
     SetupTestSelection::NoSelection
 }
 
-const fn round_two_histories() -> [LedgerTemplate; 25] {
+const fn round_two_histories() -> [LedgerTemplate; 33] {
     [
         ENDED_FIRST_COVER,
+        ACTIVE_BEFORE_LATER_PHASE,
+        ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET,
+        ACTIVE_WITH_SHARED_PHASE_START,
+        CHECKPOINT_BEFORE_BACKDATED_CLAIM,
+        CHECKPOINT_BEFORE_SAME_PATH_PHASE,
+        CHECKPOINT_WITH_FOREIGN_MERGE,
         CHECKPOINT_WITH_LATER_WORK,
+        TRUNK_CHECKPOINT_WITH_LATER_WORK,
+        integration_templates::TWO_OUTSTANDING_IN_ONE_CHECKOUT,
         MERGE_EXTENT_LANES_READY,
         RELEASE_LANE_READY,
         PROJECTION_HISTORY,
@@ -690,6 +705,7 @@ const STARTING_REPOSITORIES: &[LedgerTemplate] = &[
     hook_repository::GIT_REPOSITORY,
     hook_repository::INITIALIZED_REPOSITORY,
     hook_repository::CONFIGURED_REPOSITORY,
+    hook_evidence_templates::PENDING_SIBLING,
     ledger_templates::SCRATCH_REPOSITORY,
     drift_fixtures::INITIALIZED_REPOSITORY,
     parallel_templates::INITIALIZED_BEFORE_RUN,
@@ -704,6 +720,7 @@ const STARTING_REPOSITORIES: &[LedgerTemplate] = &[
 
 const DRIFT_HELPER_HISTORIES: &[LedgerTemplate] = &[
     drift_fixtures::COMMITTED_INCURSION,
+    drift_fixtures::HISTORY_RELEASED_SIBLING,
     drift_fixtures::PHASE_BEFORE_REBASE,
     drift_fixtures::INTEGRATED_MERGE,
     drift_fixtures::HISTORY_WIDENING_OVER_AN_OVERLAPPED_HOLDER_CHECKPOINT,

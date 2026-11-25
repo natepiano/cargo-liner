@@ -548,11 +548,7 @@ fn assert_board_retains_pending_phase(work: PendingPhaseWork) {
     let repository = initialized_repository();
     let trunk = repository.path();
     let (_holder_directory, holder) = foreign_worktree(&repository, "board-parallel-phases");
-    let mut phase_ids = Vec::new();
-    for (scope, session) in [
-        ("file:a.rs", "dir-sid.phase-1"),
-        ("file:b.rs", "dir-sid.phase-2"),
-    ] {
+    let claim_phase = |scope, session| {
         let claimed = berth_command(BERTH_EXECUTABLE)
             .args(["claim", scope, "--json"])
             .current_dir(&holder)
@@ -561,14 +557,14 @@ fn assert_board_retains_pending_phase(work: PendingPhaseWork) {
             .output()
             .expect("phase claim should run");
         assert_success(&claimed);
-        phase_ids.push(reservation_id(&claimed));
-    }
-    let first = &phase_ids[0];
-    let second = &phase_ids[1];
+        reservation_id(&claimed)
+    };
+    let first = &claim_phase("file:a.rs", "dir-sid.phase-1");
     fs::write(holder.join("a.rs"), "// first phase work\n").expect("first phase source");
     fs::write(holder.join("b.rs"), "// second phase work\n").expect("second phase source");
     git(&holder, &["add", "a.rs"]);
     GIT.run_without_hooks(&holder, ["commit", "--quiet", "-m", "first phase"]);
+    let second = &claim_phase("file:b.rs", "dir-sid.phase-2");
     for id in [first, second] {
         let checkpoint = run_berth(&holder, &["release", id, "--json"]);
         assert_success(&checkpoint);
@@ -4966,7 +4962,7 @@ fn assert_scoped_patch_proof_at(data: &serde_json::Value, reservation_id: &str, 
 }
 
 #[test]
-fn release_reports_unavailable_pending_paths_after_a_trunk_rewrite() {
+fn release_preserves_checkpoint_when_trunk_rewrites_and_paths_are_unavailable() {
     let fixture =
         rewritten_reservation_fixture(TargetRewrite::Different, ReservationCompletion::Outstanding);
     let root = fixture.repository.path();
@@ -5004,17 +5000,12 @@ fn release_reports_unavailable_pending_paths_after_a_trunk_rewrite() {
     );
     assert_success(&released.output);
     let answer = json(&released.output);
-    assert_eq!(answer["status"], "outstanding", "{answer}");
+    assert_eq!(answer["status"], "trunk_rewritten", "{answer}");
     let payload = &answer["payload"]["data"];
-    assert_eq!(
-        payload["status"], "resnapshotted_pending_paths_unavailable",
-        "{answer}"
-    );
+    assert_eq!(payload["status"], "evidence_revalidated", "{answer}");
+    assert_eq!(payload["evidence"]["status"], "trunk_rewritten", "{answer}");
     assert!(payload.get("pending_paths").is_none(), "{answer}");
-    assert_eq!(payload["protected_tip"], fixture.target);
-    let message = answer["message"].as_str().expect("release explanation");
-    assert!(message.ends_with("pending paths unavailable."), "{message}");
-    assert!(!message.ends_with("pending paths: ."), "{message}");
+    assert_eq!(journal_operation_count(root, "resnapshot"), 0);
 }
 
 #[test]

@@ -353,6 +353,64 @@ pub(super) fn git_output_with_environment(
     GIT.output_with_environment(repository_root, arguments, name, value)
 }
 
+pub(super) const HISTORY_RELEASED_SIBLING: LedgerTemplate =
+    recorded_history::template("drift-released-sibling", build_released_sibling);
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct ReleasedSiblingHistory {
+    pub(super) released_commit: String,
+    pub(super) staying_id:      String,
+    pub(super) holder_id:       String,
+}
+
+fn build_released_sibling(destination: &Path) {
+    let repository = initialized_repository();
+    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
+    let (holder_directory, holder_root) = foreign_worktree(&repository, "holder");
+    dirty_source(&holder_root, "shared/held.txt");
+    let holder_id = claim(&holder_root, "file:shared/held.txt", SECOND_RUN);
+    let released_id = claim(repository.path(), "file:released.txt", FIRST_RUN);
+    let base = git_stdout(repository.path(), &["rev-parse", "HEAD"]);
+    let released_commit =
+        commit_entering_path(repository.path(), "shared/held.txt", "released work\n");
+    let checkpointed = run_berth(repository.path(), &["release", &released_id, "--json"]);
+    assert!(checkpointed.status.success(), "{checkpointed:?}");
+    assert_eq!(
+        json_output(&checkpointed)["payload"]["data"]["status"],
+        "checkpointed"
+    );
+
+    let staying = run_berth(
+        repository.path(),
+        &[
+            "claim",
+            "file:staying.txt",
+            "--run",
+            FIRST_RUN,
+            "--head",
+            &base,
+            "--json",
+        ],
+    );
+    assert!(staying.status.success(), "{staying:?}");
+    let staying = json_output(&staying);
+    let staying_id = staying["payload"]["data"]["reservation_id"]
+        .as_str()
+        .expect("staying reservation id")
+        .to_owned();
+    commit_entering_path(repository.path(), "staying.txt", "staying work\n");
+    recorded_history::save(
+        destination,
+        repository.path(),
+        &ReleasedSiblingHistory {
+            released_commit,
+            staying_id,
+            holder_id,
+        },
+    );
+    drop(holder_directory);
+}
+
 pub(super) const COMMITTED_INCURSION: LedgerTemplate =
     recorded_history::template("drift-committed-incursion", |destination| {
         let repository = initialized_repository();

@@ -12,18 +12,93 @@ use super::command;
 use super::command::GitCommandOutputAvailability;
 use super::constants::GIT_DENSE_COMBINED_ARG;
 use super::constants::GIT_DIFF_TREE_COMMAND;
+use super::constants::GIT_EXCLUDE_REVISION_PREFIX;
+use super::constants::GIT_FIRST_PARENT_MERGE_DIFF_ARG;
 use super::constants::GIT_LITERAL_TOP_PATHSPEC_PREFIX;
 use super::constants::GIT_LOG_COMMAND;
+use super::constants::GIT_MAX_COUNT_ARG_PREFIX;
+use super::constants::GIT_MERGE_BASE_COMMAND;
 use super::constants::GIT_NAME_ONLY_ARG;
 use super::constants::GIT_NAME_STATUS_ARG;
+use super::constants::GIT_NO_COMMIT_FORMAT_ARG;
+use super::constants::GIT_NO_MERGE_BASE_EXIT_CODE;
 use super::constants::GIT_NO_RENAMES_ARG;
 use super::constants::GIT_NUL_TERMINATED_ARG;
 use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_RECURSIVE_ARG;
+use super::constants::GIT_REV_LIST_COMMAND;
 use super::constants::GIT_ROOT_ARG;
 use super::constants::GIT_STDIN_ARG;
 use crate::ids::GitObjectId;
 use crate::ids::ReservationScopePath;
+
+/// Check every changed path in the candidate range, including changes a later commit reverts.
+pub(crate) fn commit_range_touches_only(
+    repository_root: &Path,
+    start: &GitObjectId,
+    end: &GitObjectId,
+    owns_path: impl Fn(&[u8]) -> bool,
+) -> bool {
+    let range = format!("{start}..{end}");
+    let arguments = [
+        GIT_LOG_COMMAND,
+        GIT_NO_COMMIT_FORMAT_ARG,
+        GIT_NAME_ONLY_ARG,
+        GIT_NUL_TERMINATED_ARG,
+        GIT_NO_RENAMES_ARG,
+        GIT_FIRST_PARENT_MERGE_DIFF_ARG,
+        &range,
+        GIT_PATHSPEC_SEPARATOR,
+    ];
+    command::git_output(repository_root, arguments).is_ok_and(|output| {
+        output.status.success()
+            && output
+                .stdout
+                .strip_suffix(&[0])
+                .is_some_and(|paths| paths.split(|byte| *byte == 0).all(owns_path))
+    })
+}
+
+/// Prove that two tips share no commits beyond the excluded histories.
+pub(crate) fn commit_ranges_are_disjoint(
+    repository_root: &Path,
+    left: &GitObjectId,
+    right: &GitObjectId,
+    excluded: &[&GitObjectId],
+) -> bool {
+    let Ok(bases) = command::git_output(
+        repository_root,
+        [
+            GIT_MERGE_BASE_COMMAND,
+            "--all",
+            &left.to_string(),
+            &right.to_string(),
+        ],
+    ) else {
+        return false;
+    };
+    if bases.status.code() == Some(GIT_NO_MERGE_BASE_EXIT_CODE) {
+        return true;
+    }
+    let Ok(bases_text) = std::str::from_utf8(&bases.stdout) else {
+        return false;
+    };
+    if !bases.status.success() || bases_text.is_empty() {
+        return false;
+    }
+    let mut arguments = vec![
+        GIT_REV_LIST_COMMAND.to_owned(),
+        format!("{GIT_MAX_COUNT_ARG_PREFIX}1"),
+    ];
+    arguments.extend(bases_text.lines().map(str::to_owned));
+    arguments.extend(
+        excluded
+            .iter()
+            .map(|commit| format!("{GIT_EXCLUDE_REVISION_PREFIX}{commit}")),
+    );
+    command::git_output_dynamic(repository_root, &arguments)
+        .is_ok_and(|output| output.status.success() && output.stdout.is_empty())
+}
 
 /// Compare every readable phase start with one target, and read what the target itself
 /// introduced, in a single git invocation.

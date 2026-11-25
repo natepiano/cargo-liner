@@ -341,15 +341,16 @@ fn parallel_phase_merge_extents_contain_only_each_phases_own_paths() {
 
 #[test]
 fn checkpointing_each_phase_names_its_dirty_or_unmerged_own_paths() {
-    let repository = initialized_repository();
-    let root = repository.path();
-    GIT.run(root, ["switch", "--quiet", "-c", "unit"]);
-    let first = open_phase(root, "file:a.rs", "dir-sid.phase-1");
-    let second = open_phase(root, "file:b.rs", "dir-sid.phase-2");
-    fs::write(root.join("a.rs"), "// committed phase work\n").expect("first phase file");
-    fs::write(root.join("b.rs"), "// dirty phase work\n").expect("second phase file");
-    GIT.run(root, ["add", "a.rs"]);
-    GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "first phase"]);
+    let (
+        _worktrees,
+        _repository,
+        SiblingPhases {
+            unit,
+            first,
+            second,
+        },
+    ) = recorded_sibling_phases();
+    let root = unit.as_path();
 
     for (id, session, path) in [
         (&first, "dir-sid.phase-1", "a.rs"),
@@ -431,16 +432,17 @@ fn reconciliation_keeps_a_checkpoint_outstanding_while_its_own_path_is_unmerged(
 }
 
 fn assert_reconciliation_retains_pending_own_path(commit_pending: bool) {
-    let repository = initialized_repository();
+    let (
+        _worktrees,
+        repository,
+        SiblingPhases {
+            unit,
+            first,
+            second,
+        },
+    ) = recorded_sibling_phases();
     let trunk = repository.path();
-    let unit_directory = tempfile::tempdir().expect("unit directory");
-    let unit = unit_directory.path();
-    GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
-    let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
-    let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
-    fs::write(unit.join("a.rs"), "// checkpoint work\n").expect("checkpoint work");
-    GIT.run(unit, ["add", "a.rs"]);
-    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "checkpoint work"]);
+    let unit = unit.as_path();
     let tip = GIT.stdout(unit, ["rev-parse", "HEAD"]);
     let checkpoint =
         run_berth_with_session(unit, &["release", &first, "--json"], "dir-sid.phase-1");
@@ -477,16 +479,17 @@ fn assert_reconciliation_retains_pending_own_path(commit_pending: bool) {
 
 #[test]
 fn patch_equivalent_own_paths_settle_without_adopting_unmerged_sibling_work() {
-    let repository = initialized_repository();
+    let (
+        _worktrees,
+        repository,
+        SiblingPhases {
+            unit,
+            first,
+            second,
+        },
+    ) = recorded_sibling_phases();
     let trunk = repository.path();
-    let unit_directory = tempfile::tempdir().expect("unit directory");
-    let unit = unit_directory.path();
-    GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
-    let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
-    let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
-    fs::write(unit.join("a.rs"), "// integrated own work\n").expect("first phase work");
-    GIT.run(unit, ["add", "a.rs"]);
-    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "first phase work"]);
+    let unit = unit.as_path();
     let protected_tip = GIT.stdout(unit, ["rev-parse", "HEAD"]);
     assert_success(&run_berth_with_session(
         unit,
@@ -588,20 +591,20 @@ fn parallel_phases_release_in_one_call_after_their_own_work_is_clean_and_merged(
     #[path = "../../cargo-berth-test-support/fixtures/active_phase_claim.rs"]
     mod active_phase_claim;
 
-    let repository = initialized_repository();
+    let (
+        _worktrees,
+        repository,
+        SiblingPhases {
+            unit,
+            first,
+            second,
+        },
+    ) = recorded_sibling_phases();
     let trunk = repository.path();
-    let unit_directory = tempfile::tempdir().expect("unit worktree directory");
-    let unit = unit_directory.path();
-    GIT.add_worktree_without_hooks(trunk, unit, "unit", "main");
-    let first = open_phase(unit, "file:a.rs", "dir-sid.phase-1");
-    let second = open_phase(unit, "file:b.rs", "dir-sid.phase-2");
+    let unit = unit.as_path();
     let active =
         active_phase_claim::append_active_phase_claim(&trunk.join(JOURNAL_PATH), &second, "c.rs")
             .expect("the active phase claim should append");
-    fs::write(unit.join("a.rs"), "// first phase work\n").expect("first phase file");
-    fs::write(unit.join("b.rs"), "// second phase work\n").expect("second phase file");
-    GIT.run(unit, ["add", "a.rs"]);
-    GIT.run_without_hooks(unit, ["commit", "--quiet", "-m", "first phase"]);
 
     let first_checkpoint =
         run_berth_with_session(unit, &["release", &first, "--json"], "dir-sid.phase-1");
@@ -695,12 +698,12 @@ fn a_phase_checkpoint_does_not_adopt_a_released_siblings_committed_paths() {
     let repository = initialized_repository();
     let root = repository.path();
     let r15 = open_phase(root, "file:a.rs", "dir-sid.phase-15");
-    let r16 = open_phase(root, "file:b.rs", "dir-sid.phase-16");
     fs::write(root.join("a.rs"), "// phase 15 checkpoint\n").expect("phase 15 file");
     // Keep the concurrent phase live while reconciliation settles the first checkpoint.
     fs::write(root.join("b.rs"), "// phase 16 declared work\n").expect("phase 16 file");
     GIT.run(root, ["add", "a.rs"]);
     GIT.run_without_hooks(root, ["commit", "--quiet", "-m", "phase 15 checkpoint"]);
+    let r16 = open_phase(root, "file:b.rs", "dir-sid.phase-16");
     assert_success(&run_berth_with_session(
         root,
         &["release", &r15, "--json"],
@@ -1857,6 +1860,14 @@ fn session_mappings(root: &Path) -> Value {
         &fs::read(root.join(SESSION_MAPPING_PATH)).expect("session mappings should read"),
     )
     .expect("session mappings should be JSON")
+}
+
+fn recorded_sibling_phases() -> (TempDir, TempDir, SiblingPhases) {
+    let worktrees = tempfile::tempdir().expect("unit worktree directory");
+    let repository =
+        parallel_templates::SIBLING_PHASES.instantiate_with_external_worktrees(worktrees.path());
+    let phases = recorded_history::read(repository.path());
+    (worktrees, repository, phases)
 }
 
 fn initialized_repository() -> TempDir { parallel_templates::INITIALIZED_BEFORE_RUN.instantiate() }

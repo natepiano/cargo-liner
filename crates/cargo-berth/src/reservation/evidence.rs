@@ -25,6 +25,7 @@ use crate::ids::ReservationId;
 use crate::ids::ReservationScopePath;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationScopeSet;
+use crate::scope::PathCase;
 
 /// The fixed checkpoint commit used for ordinary integration evidence.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
@@ -185,8 +186,44 @@ impl ReservationIntegrationJudgment {
     }
 }
 
-/// Judge live integration once for release, reconciliation, and retained merge protection.
-/// Checkpoint ancestry and patch equivalence alone cannot clear pending reservation paths.
+/// Judge an outstanding checkpoint against its target and current merge extent.
+pub(crate) fn judge_checkpoint_integration(
+    evidence: &IntegrationEvidenceStatus,
+    extent: &MergeExtent,
+    protected_tip: &ProtectedReservationTip,
+    declared_scopes: &ReservationScopeSet,
+    observed_target_path_case: Option<PathCase>,
+) -> ReservationIntegrationJudgment {
+    if let (
+        IntegrationEvidenceStatus::Integrated {
+            trunk_oid,
+            proof: IntegrationProof::ProtectedTipAncestor,
+            witness,
+        },
+        MergeExtent::Protected { key, scopes },
+        Some(path_case),
+    ) = (evidence, extent, observed_target_path_case)
+        && &key.trunk == trunk_oid
+        && key.head != *protected_tip.as_ref()
+        && key.working_tree.tracked_paths.is_empty()
+        && key.working_tree.untracked_paths.is_empty()
+        && !scopes.as_slice().iter().any(|pending| {
+            declared_scopes
+                .as_slice()
+                .iter()
+                .any(|declared| declared.overlaps(pending, path_case))
+        })
+    {
+        return ReservationIntegrationJudgment::Integrated {
+            trunk_oid: trunk_oid.clone(),
+            proof:     IntegrationProof::ProtectedTipAncestor,
+            witness:   witness.clone(),
+        };
+    }
+    judge_integration(evidence, extent)
+}
+
+/// Judge integration when the current merge extent must be empty.
 pub(crate) fn judge_integration(
     evidence: &IntegrationEvidenceStatus,
     extent: &MergeExtent,
