@@ -60,6 +60,7 @@ use super::replay_checkpoint::DeferredReplay;
 use super::replay_checkpoint::ReplayCheckpoint;
 use super::target::IntegrationTarget;
 use super::worktree_context::WorktreeContext;
+use crate::answer::ConflictAuthorization;
 use crate::config::BerthConfig;
 use crate::config::ConfigurationLookup;
 use crate::config::Enrollment;
@@ -75,6 +76,7 @@ use crate::ids::ProjectionGeneration;
 use crate::ids::RepoInstanceId;
 use crate::ids::ReservationId;
 use crate::ids::WorktreeId;
+use crate::reservation::LiveReservationFacts;
 use crate::reservation::RecordedTarget;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationFacts;
@@ -109,6 +111,20 @@ struct DeferredPreparation {
     repo_instance_id: RepoInstanceId,
 }
 
+impl DeferredPreparation {
+    fn is_current(
+        &self,
+        paths: &LedgerPaths,
+        repository: RepoInstanceId,
+    ) -> Result<bool, LedgerError> {
+        let end_offset = self.deferred.reservation_replay().core.end_offset;
+        let metadata = fs::metadata(&paths.journal)?;
+        Ok(self.repo_instance_id == repository
+            && metadata.len() == u64::from(end_offset)
+            && self.source.status(&metadata, end_offset) == JournalReplaySourceStatus::Current)
+    }
+}
+
 enum RetainedPreparation {
     Complete(JournalPreparation),
     Deferred(DeferredPreparation),
@@ -132,7 +148,13 @@ impl RetainedPreparation {
             ),
             Self::Deferred(prepared) => {
                 let replay = prepared.deferred.reservation_replay();
-                (replay.reservations.as_ref(), (&replay.core).into())
+                (
+                    replay
+                        .reservations
+                        .as_ref()
+                        .map(LiveReservationFacts::edit_facts),
+                    (&replay.core).into(),
+                )
             },
         }
     }
@@ -711,7 +733,7 @@ impl Ledger {
     }
 
     /// Read reservations without loading the parts needed only by a transaction.
-    pub(crate) fn read_validated_reservations(
+    pub(crate) fn read_validated_live_reservations(
         &self,
     ) -> Result<Result<Vec<Reservation>, ReservationReplayError>, LedgerError> {
         self.require_existing()?;
@@ -766,13 +788,7 @@ impl Ledger {
                 Ok(RetainedPreparation::Complete(prepared))
             },
             Some(RetainedPreparation::Deferred(prepared)) => {
-                let offset = prepared.deferred.reservation_replay().core.end_offset;
-                let metadata = fs::metadata(&self.paths.journal)?;
-                if prepared.repo_instance_id == repo_instance_id
-                    && metadata.len() == u64::from(offset)
-                    && prepared.source.status(&metadata, offset)
-                        == JournalReplaySourceStatus::Current
-                {
+                if prepared.is_current(&self.paths, repo_instance_id)? {
                     Ok(RetainedPreparation::Deferred(prepared))
                 } else {
                     let mut prepared = self.complete_deferred(repo_instance_id, prepared)?;
@@ -869,6 +885,144 @@ impl Ledger {
         validate: impl FnMut(ReplayedLedgerState<'_>) -> TransactionValidation<Rejection>,
     ) -> Result<LedgerTransactionOutcome<Rejection>, LedgerTransactionError> {
         self.transact_tolerating(Duration::ZERO, worktree_id, coordination_run_id, validate)
+    }
+
+    /// Append one scoped first-touch claim from reservation facts and the ordering graph.
+    ///
+    /// Return no outcome if the complete transaction must handle the operation.
+    pub(crate) fn try_append_scoped_claim<Action, Output>(
+        &self,
+        worktree: WorktreeId,
+        run: CoordinationRunId,
+        validate: impl FnOnce(
+            &LiveReservationFacts,
+            ReplayPosition,
+        ) -> Option<(JournalOperation, Action)>,
+        finish: impl FnOnce(Action, SessionIdentityMappingPublication) -> Output,
+    ) -> Result<Option<Output>, LedgerTransactionError> {
+        if !matches!(self.automatic_compaction, AutomaticCompaction::Deferred) {
+            return Ok(None);
+        }
+        let repository = self
+            .repository_identity()
+            .map_err(LedgerTransactionError::from_ledger_error)?;
+        let Some(preparation) = self.take_retained_preparation() else {
+            return Ok(None);
+        };
+        let RetainedPreparation::Deferred(mut preparation) = preparation else {
+            self.retain_preparation(preparation);
+            return Ok(None);
+        };
+        let plan = self.prepare_scoped_claim(worktree, run, &mut preparation, validate);
+        let Some(plan) = plan? else {
+            self.retain_preparation(RetainedPreparation::Deferred(preparation));
+            return Ok(None);
+        };
+        let lock = MutationLock::acquire(&self.paths.lock, MUTATING_VERB_CONTENTION_TOLERANCE)
+            .map_err(LedgerError::from)?;
+        if !preparation.is_current(&self.paths, repository)?
+            || plan.mappings
+                != SessionMappingVersion::read(&self.paths.directory).map_err(LedgerError::from)?
+        {
+            drop(lock);
+            self.retain_preparation(RetainedPreparation::Deferred(preparation));
+            return Ok(None);
+        }
+        projection::read_validated_at(&self.paths.projection, repository, plan.position)
+            .map_err(LedgerError::from)?;
+        let Some(replay) = preparation
+            .deferred
+            .into_reservation_replay()
+            .extended_over(plan.records.records())
+            .map_err(LedgerError::from)?
+        else {
+            return Ok(None);
+        };
+        let reservations = replay
+            .reservations
+            .as_ref()
+            .map_err(|error| LedgerError::ReservationReplay(error.clone()))?;
+        Journal::open_existing(&self.paths.journal)
+            .map_err(LedgerError::from)?
+            .append_prepared(&plan.records)
+            .map_err(journal_append_transaction_error)?;
+        let session_mapping_publication = plan.publication.publish(&self.paths.directory);
+        plan.gate_policy.publish_projection(
+            &self.paths,
+            repository,
+            (&replay.core).into(),
+            Ok(reservations.edit_facts()),
+        )?;
+        let output = finish(plan.action, session_mapping_publication);
+        drop(lock);
+        Ok(Some(output))
+    }
+
+    fn prepare_scoped_claim<Action>(
+        &self,
+        worktree: WorktreeId,
+        run: CoordinationRunId,
+        preparation: &mut DeferredPreparation,
+        validate: impl FnOnce(
+            &LiveReservationFacts,
+            ReplayPosition,
+        ) -> Option<(JournalOperation, Action)>,
+    ) -> Result<Option<ScopedClaimAppend<Action>>, LedgerTransactionError> {
+        if !preparation.is_current(&self.paths, preparation.repo_instance_id)? {
+            return Ok(None);
+        }
+        let replay = preparation.deferred.reservation_replay();
+        let position = ReplayPosition::from(&replay.core);
+        let mappings =
+            SessionMappingVersion::read(&self.paths.directory).map_err(LedgerError::from)?;
+        let Some((operation, action)) = replay
+            .reservations
+            .as_ref()
+            .ok()
+            .and_then(|facts| validate(facts, position))
+        else {
+            return Ok(None);
+        };
+        let JournalOperation::Claim {
+            authorization,
+            reservation_id,
+            ..
+        } = &operation
+        else {
+            return Ok(None);
+        };
+        if !matches!(authorization.as_ref(), ConflictAuthorization::NoConflict)
+            || !matches!(preparation.deferred.read_ordering_graph(),
+                Some(Ok(graph)) if !graph.has_claim(*reservation_id))
+        {
+            return Ok(None);
+        }
+        let publication = PreparedSessionMappingPublication::prepare_sequence(
+            &self.paths.directory,
+            run,
+            std::slice::from_ref(&operation),
+        )
+        .remove(0);
+        let event = JournalEvent::for_operation(
+            JournalActor {
+                repository: preparation.repo_instance_id,
+                worktree,
+                run,
+            },
+            next_projection_generation(position.generation)?,
+            operation,
+        );
+        let records =
+            PreparedJournalAppend::encode(&[event]).map_err(journal_append_transaction_error)?;
+        let gate_policy = GateTargetPolicy::read(&self.paths.repository_root)?;
+        Ok(Some(ScopedClaimAppend {
+            action,
+            records,
+            publication,
+            gate_policy,
+            mappings,
+            position,
+        }))
     }
 
     /// Append a validated operation before executing its authorized action under the same lock.
@@ -1256,9 +1410,15 @@ impl Ledger {
         empty.sync_all()?;
         fs::rename(empty_path, &ledger.paths.journal)?;
         let replay = JournalReplay::empty();
-        Projection::from_replay(repo_instance_id, &replay)
-            .publish(&ledger.paths.directory, &ledger.paths.projection)?;
-        gate_policy.publish(&ledger.paths.directory, &replay)?;
+        gate_policy.publish_projection(
+            &ledger.paths,
+            repo_instance_id,
+            (&replay).into(),
+            replay
+                .reservations
+                .as_ref()
+                .map(RetainedReservationSet::checkpoint),
+        )?;
         fs::File::open(&ledger.paths.directory)?.sync_all()?;
         std::mem::drop(lock);
         Ok(result)
@@ -1683,11 +1843,15 @@ impl LedgerTransaction {
     }
 
     fn publish(&self, paths: &LedgerPaths) -> Result<(), LedgerError> {
-        Projection::from_replay(self.repo_instance_id, &self.replay)
-            .publish(&paths.directory, &paths.projection)?;
-        self.gate_policy
-            .publish(&self.ledger_directory, &self.replay)?;
-        Ok(())
+        self.gate_policy.publish_projection(
+            paths,
+            self.repo_instance_id,
+            (&self.replay).into(),
+            self.replay
+                .reservations
+                .as_ref()
+                .map(RetainedReservationSet::checkpoint),
+        )
     }
 }
 
@@ -1734,13 +1898,19 @@ impl GateTargetPolicy {
         Ok(Self::Enrolled(trunk))
     }
 
-    fn publish(&self, ledger_directory: &Path, replay: &JournalReplay) -> Result<(), LedgerError> {
-        let Self::Enrolled(trunk) = self else {
+    fn publish_projection(
+        &self,
+        paths: &LedgerPaths,
+        repository: RepoInstanceId,
+        position: ReplayPosition,
+        reservations: Result<&ReservationFacts, &ReservationReplayError>,
+    ) -> Result<(), LedgerError> {
+        Projection::from_position(repository, position)
+            .publish(&paths.directory, &paths.projection)?;
+        let (Self::Enrolled(trunk), Ok(reservations)) = (self, reservations) else {
             return Ok(());
         };
-        let Ok(reservations) = &replay.reservations else {
-            return Ok(());
-        };
+        let ledger_directory = &paths.directory;
         let targets = reservations
             .iter()
             .filter(|reservation| {
@@ -1821,6 +1991,15 @@ pub(super) fn journal_append_transaction_error(
             LedgerTransactionError::LedgerUnreadable(LedgerError::JournalEncoding(error))
         },
     }
+}
+
+struct ScopedClaimAppend<Action> {
+    action:      Action,
+    records:     PreparedJournalAppend,
+    publication: PreparedSessionMappingPublication,
+    gate_policy: GateTargetPolicy,
+    mappings:    SessionMappingVersion,
+    position:    ReplayPosition,
 }
 
 struct LedgerTransaction {
@@ -1994,7 +2173,6 @@ mod tests {
     use crate::reservation::MergeExtentKey;
     use crate::reservation::ReleaseDisposition;
     use crate::reservation::ReservationRunStatus;
-    use crate::reservation::RetainedReservationSet;
 
     #[test]
     fn retained_edit_replay_reloads_a_longer_compacted_replacement()
@@ -2029,7 +2207,7 @@ mod tests {
             original
                 .reservations
                 .clone()
-                .map(RetainedReservationSet::into_facts)
+                .map(|set| set.into_live().edit_facts().clone())
         );
         let preparation = ledger
             .take_retained_preparation()
@@ -2059,7 +2237,7 @@ mod tests {
             expected
                 .reservations
                 .clone()
-                .map(RetainedReservationSet::into_facts),
+                .map(|set| set.checkpoint().clone()),
         );
         assert!(matches!(
             ledger.take_retained_preparation(),

@@ -72,6 +72,7 @@ pub(crate) use retention::IncursionIncident;
 pub(crate) use retention::IncursionIncidentStatus;
 pub(crate) use retention::IncursionObservation;
 pub(crate) use retention::IntegrationTrunkSnapshot;
+pub(crate) use retention::LiveReservationFacts;
 pub(crate) use retention::ReservationFacts;
 pub(crate) use retention::RetainedProtectedTip;
 pub(crate) use retention::RetainedReservationSet;

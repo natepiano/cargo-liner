@@ -118,6 +118,10 @@ pub(super) struct Projection {
 impl Projection {
     /// Derive a projection from a complete replay.
     pub(super) fn from_replay(repo_instance_id: RepoInstanceId, replay: &JournalReplay) -> Self {
+        Self::from_position(repo_instance_id, replay.into())
+    }
+
+    pub(super) fn from_position(repo_instance_id: RepoInstanceId, replay: ReplayPosition) -> Self {
         Self {
             schema_version: SchemaVersion::from(CURRENT_PROJECTION_SCHEMA_VERSION),
             repo_instance_id,

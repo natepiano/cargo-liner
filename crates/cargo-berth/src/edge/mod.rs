@@ -20,6 +20,7 @@ pub(crate) use declaration::OrderingDeclarationError;
 pub(crate) use graph::EdgeDeclarationRejection;
 pub(crate) use graph::EdgeReplayError;
 pub(crate) use graph::OrderingGraph;
+pub(crate) use graph::OrderingReplayRecord;
 pub(crate) use graph::PreparedOrderingEdge;
 #[cfg(test)]
 pub(crate) use graph::ordering_work;
