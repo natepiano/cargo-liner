@@ -132,7 +132,7 @@ def write_catalog(root: Path, repo: Path) -> None:
     style = root / "style"
     write(style, "rust/marker.md", MARKER_RULE.replace("\n", "\r\n"))
     write(style, "rust/types.md", "---\ntier: B\nfamily: types\ncandidates:\n"
-          + "  kind: struct_fields\n  surface: whole\n  field_type_pattern: '^String$'\n---\n# Types\n")
+          + "  kind: observer_guards\n  surface: whole\n---\n# Types\n")
     write(style, "rust/filter.md", "---\ntier: B\nfamily: names\npre_filter: marker\n---\n# Filter\n")
     write(style, "rust/format.md", "---\ntier: A\nmechanism: rustfmt\n---\n# Format\n")
     write(style, "rust/review.md", "---\ntier: C\nfamily: names\n---\n# Review\n")

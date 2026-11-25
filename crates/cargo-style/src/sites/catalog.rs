@@ -9,10 +9,10 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
+use serde::Serialize;
 use toml::Table;
 use toml::Value;
 
-use super::UnavailableReason;
 use super::frontmatter;
 use super::frontmatter::Field;
 use super::frontmatter::Fields;
@@ -40,10 +40,28 @@ pub(super) enum Reach {
 
 pub(super) enum Listing {
     Regex(RegexSpec),
+    FieldAffixes,
+    EnumVariantStutter,
+    FieldTypeStutter,
+    StructFields(StructFieldsSpec),
+    SingleImplTraits,
     /// Python lists no sites for a rule without a tier B or D candidates generator, such as a
     /// tier A, C or E rule.
     NoSites,
     Unavailable(UnavailableReason),
+}
+
+impl Listing {
+    pub(super) const fn enumerates_sites(&self) -> bool {
+        !matches!(self, Self::NoSites | Self::Unavailable(_))
+    }
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum UnavailableReason {
+    UnsupportedGenerator,
+    PrefilterRequiresSharedMembership,
 }
 
 pub(super) struct RegexSpec {
@@ -53,6 +71,12 @@ pub(super) struct RegexSpec {
     pub(super) globs:      Vec<String>,
     pub(super) paths:      Vec<String>,
     pub(super) exemptions: Vec<String>,
+}
+
+pub(super) struct StructFieldsSpec {
+    pub(super) origin:             PathBuf,
+    pub(super) structs:            Vec<String>,
+    pub(super) field_type_pattern: String,
 }
 
 pub(super) enum Exclusion {
@@ -178,8 +202,6 @@ impl Catalog {
 }
 
 impl Rule {
-    pub(super) const fn is_regex(&self) -> bool { matches!(self.listing, Listing::Regex(_)) }
-
     fn read(
         path: &Path,
         root: &Path,
@@ -313,21 +335,13 @@ fn values(fields: &Fields, key: &str) -> Result<Vec<String>, String> {
 
 enum Candidates {
     Absent,
-    Declared {
-        surface:   Surface,
-        generator: Generator,
-    },
+    Declared { surface: Surface, listing: Listing },
 }
 
 enum Surface {
     Unclassified,
     Whole,
     Partial,
-}
-
-enum Generator {
-    Other,
-    Regex(RegexSpec),
 }
 
 fn candidates(fields: &Fields, path: &Path) -> Result<Candidates, String> {
@@ -357,24 +371,32 @@ fn candidates(fields: &Fields, path: &Path) -> Result<Candidates, String> {
         "" => Exclusion::None,
         value => Exclusion::Pattern(value.to_owned()),
     };
-    let _ = scalar(block, "field_type_pattern", "")?;
+    let field_type_pattern = scalar(block, "field_type_pattern", "")?.to_owned();
     let globs = values(block, "globs")?;
     let paths = values(block, "paths")?;
     let exemptions = values(block, "paths_exempt")?;
-    let _ = values(block, "structs")?;
-    let generator = if kind == "regex" {
-        Generator::Regex(RegexSpec {
+    let structs = values(block, "structs")?;
+    let listing = match kind {
+        "regex" => Listing::Regex(RegexSpec {
             origin: path.to_owned(),
             pattern,
             exclusion,
             globs,
             paths,
             exemptions,
-        })
-    } else {
-        Generator::Other
+        }),
+        "field_affixes" => Listing::FieldAffixes,
+        "enum_variant_stutter" => Listing::EnumVariantStutter,
+        "field_type_stutter" => Listing::FieldTypeStutter,
+        "struct_fields" => Listing::StructFields(StructFieldsSpec {
+            origin: path.to_owned(),
+            structs,
+            field_type_pattern,
+        }),
+        "single_impl_traits" => Listing::SingleImplTraits,
+        _ => Listing::Unavailable(UnavailableReason::UnsupportedGenerator),
     };
-    Ok(Candidates::Declared { surface, generator })
+    Ok(Candidates::Declared { surface, listing })
 }
 
 /// Check the rule fields in the order of Python `_rule_from_text`, so the first refusal reason
@@ -419,23 +441,7 @@ fn classify(fields: &Fields, origin: Origin, path: &Path) -> Result<(Listing, bo
     }
     let _ = scalar(fields, "mode", "")?;
     Ok(match (tier, candidates) {
-        (
-            "B" | "D",
-            Candidates::Declared {
-                generator: Generator::Regex(spec),
-                ..
-            },
-        ) => (Listing::Regex(spec), true),
-        (
-            "B" | "D",
-            Candidates::Declared {
-                generator: Generator::Other,
-                ..
-            },
-        ) => (
-            Listing::Unavailable(UnavailableReason::UnsupportedGenerator),
-            true,
-        ),
+        ("B" | "D", Candidates::Declared { listing, .. }) => (listing, true),
         ("B", Candidates::Absent) if filtered => (
             Listing::Unavailable(UnavailableReason::PrefilterRequiresSharedMembership),
             true,
