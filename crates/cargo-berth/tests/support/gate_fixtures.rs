@@ -118,6 +118,11 @@ pub(super) fn commit_scoped_target(
         )
         .expect("scoped target source should write");
     }
+    commit_scoped_files(repository_root, message);
+    git_stdout(repository_root, &["rev-parse", "HEAD"])
+}
+
+fn commit_scoped_files(repository_root: &Path, message: &str) {
     git(repository_root, &["add", "src"]);
     git(
         repository_root,
@@ -130,7 +135,6 @@ pub(super) fn commit_scoped_target(
             message,
         ],
     );
-    git_stdout(repository_root, &["rev-parse", "HEAD"])
 }
 
 pub(super) fn deferred_pair(repository: TempDir) -> DeferredPair {
@@ -1255,40 +1259,45 @@ fn build_before_prepared_gate_comparison(destination: &Path) {
         let scopes = (0..4)
             .map(|index| format!("src/proposed-{index}.rs"))
             .collect::<Vec<_>>();
-        let reservation_ids = scopes
-            .iter()
-            .map(|scope| {
-                reservation_id(&claim(
-                    repository.path(),
+        git(
+            repository.path(),
+            &["switch", "-c", "protected-round-robin"],
+        );
+        let mut reservation_ids = Vec::with_capacity(scopes.len());
+        for (index, scope) in scopes.iter().enumerate() {
+            let claimed = run_berth(
+                repository.path(),
+                &[
+                    "claim",
                     &format!("file:{scope}"),
+                    "--run",
                     FIRST_RUN,
+                    "--head",
+                    &base,
+                    "--plan",
                     "docs/proposed-round-robin.md",
+                    "--phase",
                     "proposed round robin",
-                ))
-            })
-            .collect::<Vec<_>>();
-        let protected_tip =
-            commit_scoped_target(repository.path(), &scopes, "protected proposal subjects");
-        for reservation_id in &reservation_ids {
-            let released = run_berth(repository.path(), &["release", reservation_id, "--json"]);
-            assert!(
-                released.status.success(),
-                "release failed: {}",
-                String::from_utf8_lossy(&released.stderr)
+                    "--json",
+                ],
             );
+            assert_success(&claimed);
+            let id = reservation_id(&claimed);
+            fs::write(
+                repository.path().join(scope),
+                format!("pub(super) fn proposed_{index}() {{}}\n"),
+            )
+            .expect("scoped target source should write");
+            commit_scoped_files(repository.path(), "protected proposal subject");
+            let released = run_berth(repository.path(), &["release", &id, "--json"]);
+            assert_success(&released);
+            assert_eq!(
+                json_output(&released)["payload"]["data"]["status"],
+                "checkpointed"
+            );
+            reservation_ids.push(id);
         }
-        git(
-            repository.path(),
-            &[
-                "update-ref",
-                "refs/heads/protected-round-robin",
-                &protected_tip,
-            ],
-        );
-        git(
-            repository.path(),
-            &["-c", "core.hooksPath=/dev/null", "reset", "--hard", &base],
-        );
+        git(repository.path(), &["switch", "main"]);
         let actual = commit_scoped_target(repository.path(), &scopes, "actual equivalent target");
         // Keep every proof subject outstanding while both target schedules are exercised.
         for scope in &scopes {

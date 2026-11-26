@@ -2471,7 +2471,6 @@ mod merge_extent {
     //! A claim protects the net branch merge and the live run's editing scope independently.
 
     use std::collections::BTreeSet;
-    use std::fmt::Write;
     use std::fs;
     use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt;
@@ -2483,6 +2482,7 @@ mod merge_extent {
     use cargo_berth_test_support::GitDriver;
     use cargo_berth_test_support::HOLDER_MERGE_EXTENT_OBSERVED;
     use cargo_berth_test_support::IntegrationRepository;
+    use cargo_berth_test_support::LedgerTemplate;
     use cargo_berth_test_support::OptionalLocks;
     use cargo_berth_test_support::SECOND_RUN;
     use cargo_berth_test_support::assert_success;
@@ -2499,11 +2499,20 @@ mod merge_extent {
     use super::RELEASE_LANE_READY;
     use super::RETENTION_REF_PREFIX;
     use super::SESSION_MAPPING_PATH;
+    use super::integration_templates::ACTIVE_BEFORE_LATER_PHASE;
+    use super::integration_templates::ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET;
+    use super::integration_templates::ACTIVE_WITH_SHARED_PHASE_START;
+    use super::integration_templates::CHECKPOINT_BEFORE_BACKDATED_CLAIM;
+    use super::integration_templates::CHECKPOINT_BEFORE_SAME_PATH_PHASE;
+    use super::integration_templates::CHECKPOINT_LANE;
+    use super::integration_templates::CHECKPOINT_WITH_FOREIGN_MERGE;
     use super::integration_templates::CheckpointWithLaterWork;
     use super::integration_templates::MERGED_TRUNK_ONLY;
     use super::integration_templates::MERGED_TRUNK_WITH_OWN_WORK;
     use super::integration_templates::NEWER_TRUNK;
     use super::integration_templates::PENDING_TRUNK_MERGE;
+    use super::integration_templates::TRUNK_CHECKPOINT_WITH_LATER_WORK;
+    use super::integration_templates::TWO_OUTSTANDING_IN_ONE_CHECKOUT;
 
     /// The built binary is also the only berth executable git hooks may invoke.
     const BERTH: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -2776,18 +2785,11 @@ mod merge_extent {
 
     #[test]
     fn f001_missing_target_alerts_after_checkpoint_lands_but_later_work_remains() {
-        let repo = IntegrationRepository::from_recorded_template(CHECKPOINT_WITH_LATER_WORK);
-        let CheckpointWithLaterWork {
-            reservation_id: id,
-            checkpoint_tip,
-        } = serde_json::from_slice(
-            &fs::read(repo.root().join(INTEGRATION_STATE)).expect("checkpoint state should read"),
-        )
-        .expect("checkpoint state should decode");
-        repo.git(&repo.integration, &["merge", "--ff-only", &checkpoint_tip]);
-        repo.git(repo.root(), &["merge", "--ff-only", "integration"]);
-        repo.git(&repo.integration, &["switch", "--quiet", "--detach"]);
-        repo.git(repo.root(), &["update-ref", "-d", "refs/heads/integration"]);
+        let (repo, id, checkpoint_tip) = checkpoint_fixture(CHECKPOINT_WITH_LATER_WORK);
+        repo.git_without_hooks(&repo.integration, &["merge", "--ff-only", &checkpoint_tip]);
+        repo.git_without_hooks(repo.root(), &["merge", "--ff-only", "integration"]);
+        repo.git_without_hooks(&repo.integration, &["switch", "--quiet", "--detach"]);
+        repo.git_without_hooks(repo.root(), &["update-ref", "-d", "refs/heads/integration"]);
 
         let observed = repo.board();
         let row = snapshot(&observed, &id);
@@ -3427,63 +3429,6 @@ mod merge_extent {
     }
 
     #[test]
-    fn another_runs_commit_enters_the_branch_extent_after_the_first_run_ends() {
-        let fixture = Repository::new();
-        let id = claim(&fixture.holder, "file:first.rs", FIRST_RUN);
-        commit(&fixture.holder, "first.rs", "first run\n");
-        let first_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
-        succeed(&berth(
-            &fixture.holder,
-            &["release", &id, "--json"],
-            FIRST_RUN,
-        ));
-        // Run B commits without claiming or checking a path, so A is the only holder.
-        // Its merge protection follows the branch even after trunk integrates A's tip.
-        commit(&fixture.holder, "second.rs", "second run\n");
-        GIT.run(
-            fixture.trunk(),
-            ["merge", "--quiet", "--ff-only", &first_tip],
-        );
-        let observed = board(fixture.trunk());
-        let reservation = snapshot(&observed, &id);
-        assert_eq!(
-            events(fixture.trunk())
-                .iter()
-                .filter(|event| event["op"] == "claim")
-                .count(),
-            1,
-            "B must have no reservation that could independently protect its commit"
-        );
-        assert_eq!(
-            reservation["integration_evidence"]["status"]["status"],
-            "not_integrated"
-        );
-        assert_eq!(
-            scope_paths(&reservation["merge_extent"]["scopes"]),
-            BTreeSet::from(["second.rs".to_owned()])
-        );
-        assert_eq!(reservation["race_extent"]["status"], "ended");
-        assert!(!scope_paths(&reservation["scopes"]).contains("second.rs"));
-        assert_eq!(reservation["edit_blocking_status"], "blocking");
-        assert_evidence_matches_snapshot(fixture.trunk(), &id, reservation);
-
-        assert_refused(&fixture.outsider, "file:second.rs", THIRD_RUN, &id);
-
-        write(&fixture.holder, "dirty.rs", "later uncommitted work\n");
-        assert_refused(&fixture.outsider, "file:dirty.rs", THIRD_RUN, &id);
-        let dirty_board = board(fixture.trunk());
-        let dirty_reservation = snapshot(&dirty_board, &id);
-        assert_eq!(
-            scope_paths(&dirty_reservation["merge_extent"]["scopes"]),
-            BTreeSet::from(["dirty.rs".to_owned(), "second.rs".to_owned()])
-        );
-        assert_eq!(dirty_reservation["race_extent"]["status"], "ended");
-        assert_eq!(dirty_reservation["scopes"], reservation["scopes"]);
-        assert_allowed(&fixture.holder, "file:first.rs", SECOND_RUN);
-        assert_allowed(&fixture.outsider, "file:first.rs", THIRD_RUN);
-    }
-
-    #[test]
     fn settled_extents_stay_empty_while_a_new_reservation_protects_later_work() {
         let fixture = Repository::new();
         let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
@@ -3542,64 +3487,32 @@ mod merge_extent {
 
     #[test]
     fn historical_checkpoint_only_evidence_stays_unchanged_when_replayed() {
-        let fixture = Repository::new();
-        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
-        commit(&fixture.holder, "checkpoint.rs", "checkpoint work\n");
-        let checkpoint = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
-        succeed(&berth(
-            &fixture.holder,
-            &["release", &id, "--json"],
-            FIRST_RUN,
-        ));
-        commit(&fixture.holder, "later.rs", "later branch work\n");
-        GIT.run(
-            fixture.trunk(),
-            ["merge", "--quiet", "--ff-only", &checkpoint],
+        let (repo, id, checkpoint) = checkpoint_fixture(TRUNK_CHECKPOINT_WITH_LATER_WORK);
+        let root = repo.root();
+        repo.git_without_hooks(root, &["merge", "--quiet", "--ff-only", &checkpoint]);
+        super::edges_templates::append_edge_fixture_event(
+            root,
+            serde_json::json!({
+                "op": "evidence_revalidated",
+                "reservation_id": id,
+                "status": {
+                    "status": "integrated", "trunk_oid": checkpoint,
+                    "proof": "protected_tip_ancestor", "witness": {"kind": "evaluated_trunk"},
+                },
+                "edit_blocking_status": "clear",
+            }),
         );
-        succeed(&berth(
-            &fixture.outsider,
-            &["release", &id, "--json"],
-            THIRD_RUN,
-        ));
+        let historical_journal =
+            fs::read_to_string(root.join(JOURNAL)).expect("historical journal should read");
 
-        // Recreate the old derivation in this temporary ledger only. Its evidence says
-        // clear even though the outstanding reservation's branch still protects later.rs.
-        let mut historical_events = events(fixture.trunk());
-        let historical_evidence = historical_events
-            .iter_mut()
-            .rev()
-            .find(|event| event["op"] == "evidence_revalidated" && event["reservation_id"] == id)
-            .expect("integrated checkpoint should have evidence");
-        historical_evidence["status"] = serde_json::json!({
-            "status": "integrated", "trunk_oid": checkpoint,
-            "proof": "protected_tip_ancestor", "witness": {"kind": "evaluated_trunk"},
-        });
-        historical_evidence["edit_blocking_status"] = Value::from("clear");
-        let historical_evidence = historical_evidence.clone();
-        let mut historical_journal = String::new();
-        for event in historical_events {
-            writeln!(&mut historical_journal, "{event}")
-                .expect("historical journal record should format");
-        }
-        fs::write(fixture.trunk().join(JOURNAL), &historical_journal)
-            .expect("isolated historical journal should write");
-        fs::remove_file(fixture.trunk().join(PROJECTION)).expect("projection should remove");
-
-        let replayed = board(fixture.trunk());
-        assert_eq!(snapshot(&replayed, &id)["edit_blocking_status"], "blocking");
-        assert_eq!(
-            latest_evidence(&events(fixture.trunk()), &id)["status"],
-            serde_json::json!({"status": "not_integrated"})
-        );
-        assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
-
-        commit(fixture.trunk(), "trunk.rs", "advance evidence target\n");
-        let updated = board(fixture.trunk());
-        assert_evidence_matches_snapshot(fixture.trunk(), &id, snapshot(&updated, &id));
-        let journal = fs::read_to_string(fixture.trunk().join(JOURNAL))
+        let replayed = board(root);
+        let reservation = snapshot(&replayed, &id);
+        assert_eq!(reservation["edit_blocking_status"], "clear");
+        assert_eq!(reservation["lifecycle"]["stage"], "released");
+        assert_evidence_matches_snapshot(root, &id, reservation);
+        let journal = fs::read_to_string(root.join(JOURNAL))
             .expect("historical journal should remain readable");
         assert!(journal.starts_with(&historical_journal));
-        assert!(events(fixture.trunk()).contains(&historical_evidence));
     }
 
     #[test]
@@ -4218,18 +4131,10 @@ mod merge_extent {
 
     #[test]
     fn two_outstanding_reservations_have_one_answerable_foreign_merge_conflict() {
-        let fixture = Repository::new();
-        let oldest = claim(&fixture.holder, "file:first.rs", FIRST_RUN);
-        let newer = claim(&fixture.holder, "file:second.rs", FIRST_RUN);
-        commit(&fixture.holder, "first.rs", "first checkpoint\n");
-        commit(&fixture.holder, "second.rs", "second checkpoint\n");
-        for id in [&oldest, &newer] {
-            let released = berth(&fixture.holder, &["release", id, "--json"], FIRST_RUN);
-            succeed(&released);
-            assert_eq!(json(&released)["status"], "outstanding");
-        }
+        let (repo, oldest, _) = checkpoint_fixture(TWO_OUTSTANDING_IN_ONE_CHECKOUT);
+        let outsider = repo.recorded_lane("conflict-requester");
         let refused = berth(
-            &fixture.outsider,
+            &outsider,
             &["claim", "file:second.rs", "--run", THIRD_RUN, "--json"],
             THIRD_RUN,
         );
@@ -4256,11 +4161,11 @@ mod merge_extent {
             "reviewed shared branch work",
             "--json",
         ];
-        let applied = berth(&fixture.outsider, &arguments, THIRD_RUN);
+        let applied = berth(&outsider, &arguments, THIRD_RUN);
         succeed(&applied);
-        assert_allowed(&fixture.outsider, "file:second.rs", THIRD_RUN);
-        write(&fixture.outsider, "second.rs", "answered edit\n");
-        let drift = berth(&fixture.outsider, &["drift", "--full", "--json"], THIRD_RUN);
+        assert_allowed(&outsider, "file:second.rs", THIRD_RUN);
+        write(&outsider, "second.rs", "answered edit\n");
+        let drift = berth(&outsider, &["drift", "--full", "--json"], THIRD_RUN);
         succeed(&drift);
         assert_eq!(json(&drift)["blocked_by"], serde_json::json!([]));
     }
@@ -4616,25 +4521,6 @@ mod merge_extent {
     }
 
     #[test]
-    fn integrated_checkpoint_with_unprotected_later_work_stays_outstanding() {
-        let fixture = Repository::new();
-        let id = integrated_checkpoint_with_later_commit(&fixture);
-
-        let observed = board(fixture.trunk());
-        let reservation = snapshot(&observed, &id);
-        assert_eq!(
-            reservation["integration_evidence"]["status"]["status"],
-            "not_integrated"
-        );
-        assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
-        assert_eq!(
-            scope_paths(&reservation["merge_extent"]["scopes"]),
-            BTreeSet::from(["later.rs".to_owned()])
-        );
-        assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
-    }
-
-    #[test]
     fn kept_branch_work_releases_an_outstanding_hold_and_its_capacity() {
         let fixture = Repository::new();
         for root in [fixture.trunk(), &fixture.holder, &fixture.outsider] {
@@ -4761,80 +4647,297 @@ mod merge_extent {
     }
 
     #[test]
-    fn release_keeps_unclaimed_later_branch_work_outstanding() {
-        let fixture = Repository::new();
-        let id = integrated_checkpoint_with_later_commit(&fixture);
-        let observed = board(fixture.trunk());
-        assert_eq!(
-            snapshot(&observed, &id)["integration_evidence"]["status"]["status"],
-            "not_integrated"
+    fn release_of_merged_checkpoint_frees_its_slot_without_taking_later_work() {
+        std::thread::scope(|scope| {
+            let rows = [
+                (
+                    "01a1e826",
+                    TRUNK_CHECKPOINT_WITH_LATER_WORK,
+                    "main",
+                    "release",
+                ),
+                (
+                    "01a1e968",
+                    CHECKPOINT_WITH_LATER_WORK,
+                    "integration",
+                    "release",
+                ),
+                (
+                    "self-release",
+                    TRUNK_CHECKPOINT_WITH_LATER_WORK,
+                    "main",
+                    "board",
+                ),
+            ];
+            let workers = rows.map(|(case, template, target, command)| {
+                scope.spawn(move || {
+                    assert_merged_checkpoint_frees_slot(case, template, target, command);
+                })
+            });
+            for worker in workers {
+                worker.join().expect("checkpoint case should pass");
+            }
+        });
+    }
+
+    fn assert_merged_checkpoint_frees_slot(
+        case: &str,
+        template: LedgerTemplate,
+        target: &str,
+        command: &str,
+    ) {
+        let (repo, id, checkpoint) = checkpoint_fixture(template);
+        let root = repo.root();
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        let target_checkout = if target == "main" {
+            root
+        } else {
+            &repo.integration
+        };
+        repo.git_without_hooks(
+            target_checkout,
+            &["merge", "--quiet", "--ff-only", &checkpoint],
         );
 
-        let released = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
-        succeed(&released);
-        assert_eq!(json(&released)["status"], "outstanding");
-        assert_eq!(
-            json(&released)["payload"]["data"]["pending_paths"],
-            serde_json::json!(["later.rs"])
-        );
-        let observed = board(fixture.trunk());
-        let reservation = snapshot(&observed, &id);
-        assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
+        if case == "01a1e826" {
+            write(
+                root,
+                super::CONFIGURATION_PATH,
+                "trunk = \"main\"\nmaximum_reservations = 1\n",
+            );
+        }
+        if command == "release" {
+            let released = repo.run(&holder, &["release", &id, "--json"]);
+            succeed(&released);
+            assert_eq!(
+                json(&released)["payload"]["data"]["status"],
+                "released",
+                "{case}"
+            );
+        } else {
+            let observed = repo.board();
+            assert_eq!(
+                snapshot(&observed, &id)["lifecycle"]["stage"],
+                "released",
+                "{case}"
+            );
+        }
+
+        let journal = events(root);
+        let operations = journal.iter().filter(|event| event["reservation_id"] == id);
+        let checkpoint_event = operations
+            .clone()
+            .find(|event| event["op"] == "checkpoint")
+            .expect("release should record the checkpoint");
+        assert_eq!(checkpoint_event["protected_tip"], checkpoint, "{case}");
         assert!(
-            events(fixture.trunk())
+            operations.clone().all(|event| event["op"] != "resnapshot"),
+            "{case}"
+        );
+        let releases = operations
+            .filter(|event| event["op"] == "release")
+            .collect::<Vec<_>>();
+        assert_eq!(releases.len(), 1, "{case}");
+        assert_eq!(releases[0]["source"], "reconciliation", "{case}");
+        assert_eq!(releases[0]["disposition"]["kind"], "integrated", "{case}");
+        if case == "01a1e826" {
+            claim(root, "file:new.rs", THIRD_RUN);
+        }
+    }
+
+    #[test]
+    fn first_release_uses_merged_work_before_the_next_phase() {
+        let (repo, id, checkpoint) = checkpoint_fixture(ACTIVE_BEFORE_LATER_PHASE);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        repo.git(repo.root(), &["merge", "--quiet", "--ff-only", &checkpoint]);
+        let released = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&released);
+        assert_eq!(json(&released)["payload"]["data"]["status"], "released");
+        let journal = events(repo.root());
+        let kept = journal
+            .iter()
+            .find(|event| event["op"] == "checkpoint" && event["reservation_id"] == id)
+            .expect("release should record a checkpoint");
+        assert_eq!(kept["protected_tip"], checkpoint);
+        write(
+            repo.root(),
+            super::CONFIGURATION_PATH,
+            "trunk = \"main\"\nmaximum_reservations = 2\n",
+        );
+        claim(repo.root(), "file:new.rs", THIRD_RUN);
+    }
+
+    #[test]
+    fn first_release_keeps_the_reservation_active_if_its_work_follows_foreign_work() {
+        let (repo, id, _) = checkpoint_fixture(ACTIVE_BEFORE_LATER_PHASE);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        commit(&holder, "phase.rs", "pending first phase\n");
+
+        let release = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+        assert!(!release.status.success(), "{}", json(&release));
+        let observed = repo.board();
+        assert_eq!(snapshot(&observed, &id)["lifecycle"]["stage"], "active");
+        assert!(
+            events(repo.root())
                 .iter()
-                .all(|event| event["reservation_id"] != id || event["op"] != "release")
+                .all(|event| event["op"] != "checkpoint" || event["reservation_id"] != id)
         );
     }
 
     #[test]
-    fn release_moves_an_unintegrated_checkpoint_to_the_holder_head() {
-        let fixture = Repository::new();
-        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
-        commit(&fixture.holder, "checkpoint.rs", "checkpoint C\n");
-        succeed(&berth(
-            &fixture.holder,
-            &["release", &id, "--json"],
-            FIRST_RUN,
-        ));
-        commit(&fixture.holder, "later.rs", "commit D\n");
-        let later_tip = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
+    fn first_release_keeps_a_holder_active_when_two_claims_share_the_start() {
+        let (repo, id, checkpoint) = checkpoint_fixture(ACTIVE_WITH_SHARED_PHASE_START);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        repo.git(repo.root(), &["merge", "--quiet", "--ff-only", &checkpoint]);
 
-        let resnapshot = berth(&fixture.holder, &["release", &id, "--json"], FIRST_RUN);
-        succeed(&resnapshot);
-        assert_eq!(
-            json(&resnapshot)["payload"]["data"]["status"],
-            "resnapshotted"
+        let release = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+        assert!(!release.status.success(), "{}", json(&release));
+        assert_eq!(snapshot(&repo.board(), &id)["lifecycle"]["stage"], "active");
+        assert!(
+            events(repo.root())
+                .iter()
+                .all(|event| event["op"] != "checkpoint" || event["reservation_id"] != id)
         );
-        let observed = board(fixture.trunk());
-        let reservation = snapshot(&observed, &id);
-        assert_eq!(reservation["lifecycle"]["stage"], "outstanding");
-        assert_eq!(
-            GIT.stdout(
-                fixture.trunk(),
-                ["rev-parse", &format!("{RETENTION_REF_PREFIX}{id}")]
-            ),
-            later_tip
-        );
-        assert_refused(&fixture.outsider, "file:later.rs", THIRD_RUN, &id);
     }
 
-    /// A checkpoint trunk already contains, followed by a holder commit trunk lacks.
-    fn integrated_checkpoint_with_later_commit(fixture: &Repository) -> String {
-        let id = claim(&fixture.holder, "file:checkpoint.rs", FIRST_RUN);
-        commit(&fixture.holder, "checkpoint.rs", "checkpoint C\n");
-        let checkpoint = GIT.stdout(&fixture.holder, ["rev-parse", "HEAD"]);
-        succeed(&berth(
-            &fixture.holder,
-            &["release", &id, "--json"],
-            FIRST_RUN,
-        ));
-        GIT.run(
-            fixture.trunk(),
-            ["merge", "--quiet", "--ff-only", &checkpoint],
+    #[test]
+    fn a_backdated_claim_does_not_settle_a_checkpoint_with_unmerged_work() {
+        let (repo, id, checkpoint) = checkpoint_fixture(CHECKPOINT_BEFORE_BACKDATED_CLAIM);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        let journal = events(repo.root());
+        let later_claim = journal
+            .iter()
+            .rev()
+            .find(|event| event["op"] == "claim")
+            .expect("later claim");
+        assert_eq!(later_claim["phase_start_head"], checkpoint);
+        assert_eq!(
+            later_claim["head_snapshot"]["head"],
+            repo.git_stdout(&holder, &["rev-parse", "HEAD"])
         );
-        commit(&fixture.holder, "later.rs", "commit D\n");
-        id
+
+        let observed = repo.board();
+        assert_eq!(
+            snapshot(&observed, &id)["lifecycle"]["stage"],
+            "outstanding",
+            "{observed}"
+        );
+    }
+
+    #[test]
+    fn first_release_does_not_settle_against_main_when_the_target_is_missing() {
+        let (repo, id, checkpoint) = checkpoint_fixture(ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        repo.git_without_hooks(repo.root(), &["merge", "--quiet", "--ff-only", &checkpoint]);
+        repo.git_without_hooks(&repo.integration, &["switch", "--quiet", "--detach"]);
+        repo.git_without_hooks(repo.root(), &["update-ref", "-d", "refs/heads/integration"]);
+
+        let release = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+        let response = json(&release);
+        assert_ne!(
+            response["payload"]["data"]["status"], "released",
+            "{response}"
+        );
+        let observed = repo.board();
+        let row = snapshot(&observed, &id);
+        assert_ne!(row["lifecycle"]["stage"], "released", "{observed}");
+        assert_eq!(row["target"]["commit"], "unresolved", "{observed}");
+        assert!(
+            observed["payload"]["data"]["alerts"]["entries"]
+                .as_array()
+                .expect("board alerts")
+                .iter()
+                .any(|alert| alert["kind"] == "target_missing"
+                    && alert["reservation_id"] == id
+                    && alert["target"] == "refs/heads/integration"),
+            "{observed}"
+        );
+    }
+
+    #[test]
+    fn a_later_same_worktree_holder_does_not_keep_the_checkpoint_outstanding() {
+        std::thread::scope(|scope| {
+            let outcomes = [FirstObservation::Release, FirstObservation::Board].map(|command| {
+                scope.spawn(move || assert_later_same_path_work_stays_with_its_holder(command))
+            });
+            for outcome in outcomes {
+                outcome.join().expect("same-path case should pass");
+            }
+        });
+    }
+
+    #[derive(Clone, Copy)]
+    enum FirstObservation {
+        Release,
+        Board,
+    }
+
+    fn assert_later_same_path_work_stays_with_its_holder(command: FirstObservation) {
+        let (repo, id, _) = checkpoint_fixture(CHECKPOINT_BEFORE_SAME_PATH_PHASE);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        let journal = events(repo.root());
+        let later = journal
+            .iter()
+            .rev()
+            .find(|event| event["op"] == "claim")
+            .and_then(|event| event["reservation_id"].as_str())
+            .expect("later claim should name its reservation");
+
+        if matches!(command, FirstObservation::Release) {
+            let released = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+            succeed(&released);
+            assert_eq!(json(&released)["payload"]["data"]["status"], "released");
+        }
+        let observed = repo.board();
+        assert_eq!(snapshot(&observed, &id)["lifecycle"]["stage"], "released");
+        assert_eq!(snapshot(&observed, later)["lifecycle"]["stage"], "active");
+        assert_refused(repo.root(), "file:phase.rs", THIRD_RUN, later);
+    }
+
+    #[test]
+    fn repeat_release_keeps_its_tip_after_merging_foreign_same_path_work() {
+        let (repo, id, checkpoint) = checkpoint_fixture(CHECKPOINT_WITH_FOREIGN_MERGE);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        let released = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&released);
+        assert_eq!(json(&released)["payload"]["data"]["status"], "outstanding");
+        assert_eq!(
+            GIT.stdout(
+                repo.root(),
+                ["rev-parse", &format!("{RETENTION_REF_PREFIX}{id}")]
+            ),
+            checkpoint
+        );
+    }
+
+    #[test]
+    fn release_keeps_an_unintegrated_checkpoint_when_head_has_unrelated_work() {
+        let (repo, id, checkpoint) = checkpoint_fixture(TRUNK_CHECKPOINT_WITH_LATER_WORK);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        let release = repo.run(&holder, &["release", &id, "--json"]);
+        succeed(&release);
+
+        assert_eq!(json(&release)["payload"]["data"]["status"], "outstanding");
+        assert_eq!(
+            repo.git_stdout(
+                repo.root(),
+                &["rev-parse", &format!("{RETENTION_REF_PREFIX}{id}")]
+            ),
+            checkpoint
+        );
+        assert_refused(repo.root(), "file:later.txt", THIRD_RUN, &id);
+    }
+
+    fn checkpoint_fixture(template: LedgerTemplate) -> (IntegrationRepository, String, String) {
+        let repo = IntegrationRepository::from_recorded_template(template);
+        let CheckpointWithLaterWork {
+            reservation_id,
+            checkpoint_tip,
+        } = serde_json::from_slice(
+            &fs::read(repo.root().join(INTEGRATION_STATE)).expect("checkpoint state should read"),
+        )
+        .expect("checkpoint state should decode");
+        (repo, reservation_id, checkpoint_tip)
     }
 
     #[test]

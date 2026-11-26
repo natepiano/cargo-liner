@@ -140,6 +140,8 @@ pub(super) const GIT_COUNT_ARG: &str = "--count";
 pub(super) const GIT_DENSE_COMBINED_ARG: &str = "--diff-merges=dense-combined";
 /// Follow only the first parent, so a walk stays on one branch's own line.
 pub(super) const GIT_FIRST_PARENT_ARG: &str = "--first-parent";
+/// List merge changes against the first parent.
+pub(super) const GIT_FIRST_PARENT_MERGE_DIFF_ARG: &str = "--diff-merges=first-parent";
 /// Continue a revision walk when one supplied object cannot be resolved.
 pub(super) const GIT_IGNORE_MISSING_ARG: &str = "--ignore-missing";
 /// Delimit incursion-log commit fields with NUL and start each record with NUL.
@@ -159,6 +161,8 @@ pub(super) const GIT_NAME_STATUS_ARG: &str = "--name-status";
 pub(super) const GIT_FULL_REF_FORMAT_ARG: &str = "--format=%(refname)";
 /// Supply an explicit merge base to `merge-tree`.
 pub(super) const GIT_MERGE_BASE_ARG_PREFIX: &str = "--merge-base=";
+/// Omit commit headers from a path listing.
+pub(super) const GIT_NO_COMMIT_FORMAT_ARG: &str = "--format=";
 /// Omit merge commits, which carry no patch of their own to compare.
 pub(super) const GIT_NO_MERGES_ARG: &str = "--no-merges";
 /// Omit `merge-tree`'s informational messages, leaving the tree id and conflicted paths.

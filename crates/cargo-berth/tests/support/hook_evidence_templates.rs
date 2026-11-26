@@ -70,6 +70,77 @@ pub(super) const REWRITTEN_TRUNK_LOST_EVIDENCE: LedgerTemplate = LedgerTemplate 
     ..INCURSION_ANSWERED_LOST_EVIDENCE
 };
 
+pub(super) const PENDING_SIBLING: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "hook-pending-sibling",
+        build: |root| {
+            let built = build_pending_sibling(root);
+            assert!(built.is_ok(), "pending sibling fixture failed: {built:?}");
+        },
+        ..INCURSION_ANSWERED_LOST_EVIDENCE.repository
+    },
+    ..INCURSION_ANSWERED_LOST_EVIDENCE
+};
+
+pub(super) const PENDING_SIBLING_STATE: &str = ".git/hook-pending-sibling.json";
+pub(super) const PENDING_SIBLING_REQUESTER: &str = ".git/fixture-worktrees/parallel-requester";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct PendingSibling {
+    pub(super) first_id:  String,
+    pub(super) second_id: String,
+}
+
+fn build_pending_sibling(root: &Path) -> TestResult {
+    CONFIGURED_REPOSITORY.restore_into(root);
+    let holder = root.join(".git/fixture-worktrees/parallel-holder");
+    fs::create_dir_all(root.join(".git/fixture-worktrees"))?;
+    GIT.add_worktree_without_hooks(root, &holder, "parallel-holder", "HEAD");
+    hook_repository::copy_configuration(root, &holder)?;
+    let claim = |path, session| {
+        let output =
+            hook_repository::run_berth_with_session(&holder, &["claim", path, "--json"], session)?;
+        hook_repository::require_success(&output, "phase claim")?;
+        hook_repository::claimed_reservation_id(&output)
+    };
+    let first_id = claim("file:a.rs", "dir-sid.phase-1")?;
+    hook_repository::dirty_source(&holder, "a.rs")?;
+    hook_repository::dirty_source(&holder, "b.rs")?;
+    GIT.run(&holder, ["add", "a.rs"]);
+    GIT.run_without_hooks(&holder, ["commit", "--quiet", "-m", "first phase"]);
+    let second_id = claim("file:b.rs", "dir-sid.phase-2")?;
+    for (id, session, path) in [
+        (&first_id, "dir-sid.phase-1", "a.rs"),
+        (&second_id, "dir-sid.phase-2", "b.rs"),
+    ] {
+        let checkpoint =
+            hook_repository::run_berth_with_session(&holder, &["release", id, "--json"], session)?;
+        hook_repository::require_success(&checkpoint, "phase checkpoint")?;
+        let checkpoint = hook_repository::json_output(&checkpoint)?;
+        assert_eq!(checkpoint["status"], "outstanding", "{checkpoint}");
+        assert_eq!(checkpoint["payload"]["data"]["status"], "checkpointed");
+        assert_eq!(
+            checkpoint["payload"]["data"]["pending_paths"],
+            serde_json::json!([path])
+        );
+        assert!(
+            hook_repository::required_string(&checkpoint, "/message", "checkpoint")?.contains(path)
+        );
+    }
+    GIT.run_without_hooks(root, ["merge", "--quiet", "--ff-only", "parallel-holder"]);
+    let requester = root.join(PENDING_SIBLING_REQUESTER);
+    GIT.add_worktree_without_hooks(root, &requester, "parallel-requester", "HEAD");
+    hook_repository::copy_configuration(root, &requester)?;
+    fs::write(
+        root.join(PENDING_SIBLING_STATE),
+        serde_json::to_vec(&PendingSibling {
+            first_id,
+            second_id,
+        })?,
+    )?;
+    Ok(())
+}
+
 fn build_answered_incursion_with_lost_evidence(root: &Path) -> TestResult {
     CONFIGURED_REPOSITORY.restore_into(root);
     let incursion = prepare_incursion(root, 1)?;
