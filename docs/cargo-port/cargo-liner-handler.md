@@ -1047,49 +1047,50 @@ The copies are deleted. No source changes.
 - The new row fails before the fix and passes after it.
 - No changed test takes one second or more.
 
-### Phase 51 — a release of merged work frees its board slot  · status: todo
+### Phase 51 — a release of merged work frees its board slot  · status: done
+
+#### As-built
+
+- A release of a reservation whose own work is on its target frees the slot. The first release and a resnapshot never move the protected tip onto a commit that recorded boundaries prove is another reservation's work.
+- A reservation whose protected tip reaches its target releases itself in the reconciliation transaction, with no 24 h activity wait. The edit retry sees the release in the retained replay.
+- Ownership uses the current journal: claim starts at the observed HEAD, checkpoints, protected tips and Git ancestry. There is no commit ownership record. Ambiguous ownership (two claims at one start, a mixed history) keeps the reservation protected.
+- Pending work that a later live reservation holds does not keep an earlier reservation outstanding. A missing target never settles a partial landing.
+- By ruling 3, an uncheckpointed commit outside the reservation's scope does not hold the slot once the protected tip is on the target.
+
+**Files:**
+- `crates/cargo-berth/src/reservation/phase_boundary.rs` — ownership boundaries from the journal and ancestry.
+- `crates/cargo-berth/src/verb/release.rs` — first-release tip choice and the resnapshot guard.
+- `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/src/reservation/evidence.rs` — self-release on an integrated tip and pending-work settlement.
+- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/board.rs` — the `01a1e826` and `01a1e968` rows and the ownership rows.
+
+**Binds later work:** Phase 51b owns the remaining interleaved-history cases. Never release a reservation on ambiguous ownership.
+
+**Gotchas:** Declined as unlikely for one user: B rebases a commit that A already merged; A's next release can then retain B's original commit.
+
+### Phase 51b — a release never takes another reservation's work in an interleaved history  · status: todo
 
 #### Work Order
 
-**Goal:** a reservation whose work is on its target frees its board slot when it is released, or when its protected tip reaches the target. A release never protects commits that are not the reservation's own work. Source: the showrunner, 2026-11-20, from a spacetime showrunner report.
+**Goal:** close the five closure-review cases that Phase 51 moved here by the landing rule. Source: Phase 51 closure review pass 3, 2026-11-25.
 
 **Spec:**
-1. The fault, from the hana_catalyst worktrees on 2026-11-20 (`maximum_reservations = 128`):
-   - The board was full, and every claim got `reservation_limit_reached`.
-   - The fps reservation `01a1e826-4107-7e13-8d24-b9a8d4054d1d` held fps Phase 1. That work merged into spacetime as `6404721d79`.
-   - `cargo-berth release 01a1e826-4107-7e13-8d24-b9a8d4054d1d` printed "now retains protected tip c25d254610...; pending paths: ... (29 paths)". The status became outstanding and still counted as live.
-   - The release took a new snapshot at the branch tip `c25d254610`, which also holds unmerged Phase 2 work. The release extended the protection.
-   - The board now shows `01a1e826` as `released_after_checkpoint`, protected tip `c25d254610f9f7c5d145cd1503bdb423ff5d87df`, merge extent protected against target `9ba7507245bb5ee72c660ab8a882de34cd9d7ef0`.
-2. Second case: the spacetime-server reservation `01a1e968-c074-7d80-b520-9b9edd026988` (Phase 2, merged). A plain release took a snapshot of the unmerged tip `6eb35ba526`. After `release --keep-work`, it reads `released_after_checkpoint`, `kept_on_branch`.
-3. Today only `resolve <id> --integrated-as <sha>` frees a merged reservation. A holder does not release itself when its tip reaches the target. `01a1f522` released itself only after 24 h with no owner activity.
-4. First write a cargo-berth test that reproduces the `01a1e826` case and fails before the fix. Name the function and the value that pick the new tip. A lead: `checkpoint_operation` in `crates/cargo-berth/src/verb/release.rs` takes `protected_tip` from `git::reservation_checkpoint_commits`.
-5. The showrunner's ruling:
-   - A release of a reservation whose work is on its target frees the slot at once.
-   - A release never moves the protected tip onto commits that are not the reservation's own work.
-   - A reservation whose protected tip becomes an ancestor of its target releases itself at once, with no 24 h activity wait.
-6. Add the second case as a row of the same test.
-7. Background: `~/.claude/projects/-home-natepiano-rust-hana/memory/cargo-berth-coordination.md` records the same behavior. Read it only.
+1. B claims `b.rs`, commits R and stays active. A claims `a.rs` at R in the same checkout. B commits Q, and A commits P on Q. A's first release must not retain Q (`reservation/phase_boundary.rs`, the older-claim skip).
+2. B commits Q in another checkout. A takes an authorized overlap at S with `--head Q`, merges Q and commits P. A's first release must not retain Q (`verb/release.rs`, the foreign-commit check uses the supplied start).
+3. A checkpoints P and has a pending edit. B claims while HEAD is P. A commits Q, and the target takes only P. Q is A's work, and A must not be released (`reservation/phase_boundary.rs`, B's end at the shared HEAD).
+4. A full landing with a deleted target settles against `main` (`reconcile.rs`, test `tests/board.rs:200` requires it). Decide with the showrunner whether a missing target keeps the reservation and its alert; it is baseline behavior.
+5. Restore the gate test check of board evidence with pending edits (`tests/gate.rs`, the restore of `src` before the board check).
+6. Write each case as a failing test first.
 
-**Constraints from prior phases:**
-- `RetainedReservationSet::apply_evidence` skips `target_proof_commits` for `ProtectedTipAncestor` revalidations after release. Keep the released tip and earlier proof commits available to `cross_target_predecessor_evidence`.
-- Phase 56b passes the edit check's `Ledger` into `reconcile_for_check`. Keep automatic releases in that reconciliation transaction so the edit retry sees them in the retained replay.
+**Constraints from prior phases:** Keep the Phase 51 rulings and the ownership rule: ambiguous ownership keeps the reservation protected.
 
 **Files:**
-- `crates/cargo-berth/src/verb/release.rs` — the release and checkpoint tip choice
-- `crates/cargo-berth/src/git/` — `reservation_checkpoint_commits` and reachability
-- `crates/cargo-berth/src/reservation/` — the live count and the self-release on an integrated tip
-- `crates/cargo-berth/src/reconcile.rs` — when reconcile owns the self-release
-- `crates/cargo-berth/tests/lifecycle.rs` — the release test
+- `crates/cargo-berth/src/reservation/phase_boundary.rs`, `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/tests/`
 
 **Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
 
 **Verification:**
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- The new test fails before the fix and passes after it.
-- No changed test takes one second or more.
+- Each new test fails before the fix. No changed test takes 1 s or more.
 
 ### Phase 52 — a Mac handler sees each config change at once, also under load  · status: todo
 
