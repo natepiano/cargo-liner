@@ -4994,7 +4994,6 @@ fn unchanged_full_drift_carries_reconciliation_alerts() {
 #[test]
 fn drift_after_a_trunk_rewrite_reports_lost_released_evidence_once_confirmed() {
     let repository = initialized_repository();
-    let observer_id = claim(repository.path(), "file:observer.txt", FIRST_RUN);
     let released_id = claim(repository.path(), "file:released.txt", FIRST_RUN);
     // Each reservation protects its own uncommitted work.
     fs::write(repository.path().join("observer.txt"), "observer work\n")
@@ -5014,6 +5013,7 @@ fn drift_after_a_trunk_rewrite_reports_lost_released_evidence_once_confirmed() {
         ],
     );
     // The observer's dirt belongs to its reservation, so the committed reservation settles.
+    let observer_id = claim(repository.path(), "file:observer.txt", FIRST_RUN);
     for (expected_status, expected_fact_status) in [
         ("integrated", "released"),
         ("integrated", "already_settled"),
@@ -5529,30 +5529,19 @@ fn a_rebase_anchors_each_phase_sharing_a_branch_below_its_own_commits() {
 
 /// A sibling's released checkpoint is not phase history of the reservation that stays.
 ///
-/// Two reservations claim at one head in one worktree. The first commits a path a foreign
-/// holder keeps, then checkpoints and releases. The second reservation's `phase_start..HEAD`
-/// range still holds that commit, but the commit is the released sibling's work, so it raises
-/// no incursion for the second reservation, and an incursion the second one does raise names
-/// only its own commit.
+/// The first reservation checkpoints a commit that touches a foreign holder's path.
+/// The second reservation sets its phase start before that commit.
+/// Its drift report names only incursions from its own commits.
 #[test]
 fn a_released_siblings_checkpoint_raises_no_incursion_against_the_reservation_that_stays() {
-    let repository = initialized_repository();
-    git(repository.path(), &["switch", "--quiet", "-c", "phase"]);
-    let (holder_directory, holder_root) = foreign_worktree(&repository, "holder");
-    dirty_source(&holder_root, "shared/held.txt");
-    let holder_id = claim(&holder_root, "file:shared/held.txt", SECOND_RUN);
-    let released_id = claim(repository.path(), "file:released.txt", FIRST_RUN);
-    let staying_id = claim(repository.path(), "file:staying.txt", FIRST_RUN);
-    let released_commit =
-        commit_entering_path(repository.path(), "shared/held.txt", "released work\n");
-    let checkpointed = run_berth(repository.path(), &["release", &released_id, "--json"]);
-    assert!(checkpointed.status.success(), "{checkpointed:?}");
-    assert_eq!(
-        json_output(&checkpointed)["payload"]["data"]["status"],
-        "checkpointed"
-    );
-
-    commit_entering_path(repository.path(), "staying.txt", "staying work\n");
+    let worktrees = tempdir().expect("worktree parent should exist");
+    let repository = drift_fixtures::HISTORY_RELEASED_SIBLING
+        .instantiate_with_external_worktrees(worktrees.path());
+    let drift_fixtures::ReleasedSiblingHistory {
+        released_commit,
+        staying_id,
+        holder_id,
+    } = recorded_history::read(repository.path());
     let unentered = json_output(&drift(
         repository.path(),
         &["--full", "--reservation", &staying_id],
@@ -5589,5 +5578,4 @@ fn a_released_siblings_checkpoint_raises_no_incursion_against_the_reservation_th
         [entering_commit.as_str()],
         "the incursion names the staying reservation's own commit alone: {entered:#}"
     );
-    drop(holder_directory);
 }

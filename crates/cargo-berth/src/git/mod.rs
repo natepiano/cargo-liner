@@ -49,6 +49,8 @@ pub(crate) use patch::scoped_patch_equivalence;
 pub(crate) use patch::scoped_patch_equivalence_with_target_history;
 pub(crate) use paths::INCURSION_ATTRIBUTION_RECORD_MARKER;
 pub(crate) use paths::IncursionPathLogInvocation;
+pub(crate) use paths::commit_range_touches_only;
+pub(crate) use paths::commit_ranges_are_disjoint;
 pub(crate) use paths::incursion_path_log;
 pub(crate) use paths::phase_committed_path_diffs;
 pub(crate) use reachability::AheadBehind;

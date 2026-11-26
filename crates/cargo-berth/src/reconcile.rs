@@ -3225,9 +3225,16 @@ fn complete_reconciliation_plan(
     )?;
     plan.action.covered_targets = covered_targets_for_pass(reservations, &extents, plan);
     plan.operations.extend(extents.operations);
-    judge_live_integration(reservations, &mut snapshots, plan)?;
+    let path_case = PathCase::read(context.repository.context().common_git_directory()).ok();
+    let settlement_extents = judge_live_integration(reservations, &mut snapshots, plan, path_case)?;
     append_evidence_operations(reservations, plan)?;
-    append_settlement_operations(reservations, ordering_graph, plan)?;
+    append_settlement_operations(
+        reservations,
+        ordering_graph,
+        plan,
+        path_case,
+        &settlement_extents,
+    )?;
     let merged_runs = match context.merged_run_endings {
         MergedRunEndings::End | MergedRunEndings::CheckpointRequested { .. } => {
             append_merged_run_endings(
@@ -3311,10 +3318,13 @@ fn judge_live_integration(
     reservations: &RetainedReservationSet,
     snapshots: &mut [RepositoryReservationSnapshot],
     plan: &mut ReconciliationPlan,
-) -> Result<(), ReservationReplayError> {
+    path_case: Option<PathCase>,
+) -> Result<HashMap<ReservationId, MergeExtent>, ReservationReplayError> {
+    let mut settlement_extents = HashMap::new();
     for snapshot in snapshots {
         let RepositoryReservationEvidence::Outstanding {
-            integration_status, ..
+            protected_tip,
+            integration_status,
         } = &mut snapshot.evidence
         else {
             continue;
@@ -3322,14 +3332,36 @@ fn judge_live_integration(
         let reservation = reservations.reservation(snapshot.reservation_id)?;
         let extent = planned_merge_extent(reservation.id(), &plan.operations)
             .unwrap_or_else(|| reservation.merge_extent());
-        let status = reservation::judge_integration(integration_status, extent).evidence_status();
+        let observed_path_case = observed_target_path_case(
+            &plan.action.repository_snapshot,
+            reservation.id(),
+            path_case,
+        );
+        let settlement_extent = later_holder_settlement_extent(
+            reservations,
+            reservation,
+            protected_tip,
+            integration_status,
+            extent,
+            plan,
+            observed_path_case,
+        );
+        let status = reservation::judge_checkpoint_integration(
+            integration_status,
+            settlement_extent.as_ref().unwrap_or(extent),
+            protected_tip,
+            reservation.scopes(),
+            observed_path_case,
+        )
+        .evidence_status();
+        if let Some(settlement_extent) = settlement_extent {
+            settlement_extents.insert(reservation.id(), settlement_extent);
+        }
         // A deferred committed-work comparison must keep its existing journaling decision.
         if status == *integration_status {
             continue;
         }
-        // An orphan has no checkout to observe. Its snapshot must retain the protected-tip
-        // ancestry or scoped-work proof for recovery, while the journal's full judgment stays
-        // conservative and cannot settle without a fresh empty extent.
+        // An orphan's snapshot retains scoped patch proof for recovery when the extent is unknown.
         if snapshot.worktree_liveness != WorktreeLiveness::Orphaned {
             *integration_status = status.clone();
         }
@@ -3350,7 +3382,70 @@ fn judge_live_integration(
             });
         }
     }
-    Ok(())
+    Ok(settlement_extents)
+}
+
+/// Use a later claim's boundary to settle a checkpoint on a clean shared checkout.
+fn later_holder_settlement_extent(
+    reservations: &RetainedReservationSet,
+    reservation: &Reservation,
+    protected_tip: &ProtectedReservationTip,
+    evidence: &IntegrationEvidenceStatus,
+    extent: &MergeExtent,
+    plan: &ReconciliationPlan,
+    path_case: Option<PathCase>,
+) -> Option<MergeExtent> {
+    let (
+        MergeExtent::Protected { key, .. },
+        IntegrationEvidenceStatus::Integrated {
+            trunk_oid,
+            proof: IntegrationProof::ProtectedTipAncestor,
+            ..
+        },
+        Some(path_case),
+    ) = (extent, evidence, path_case)
+    else {
+        return None;
+    };
+    if &key.trunk != trunk_oid
+        || !key.working_tree.tracked_paths.is_empty()
+        || !key.working_tree.untracked_paths.is_empty()
+    {
+        return None;
+    }
+    let snapshot = &plan.action.repository_snapshot;
+    let mut later = reservation::phase_boundary::later_holder_claims(reservations, reservation)
+        .filter(|other| {
+            snapshot.recorded_target(other.id()) == snapshot.recorded_target(reservation.id())
+        });
+    let next = later.next()?;
+    if later.next().is_some()
+        || !reservation::phase_boundary::later_claim_owns_suffix(
+            &plan.action.repository_root,
+            next,
+            protected_tip.as_ref(),
+            &key.head,
+            path_case,
+        )
+    {
+        return None;
+    }
+    Some(MergeExtent::Empty { key: key.clone() })
+}
+
+fn observed_target_path_case(
+    snapshot: &RepositorySnapshot,
+    reservation_id: ReservationId,
+    path_case: Option<PathCase>,
+) -> Option<PathCase> {
+    path_case.filter(|_| {
+        matches!(
+            snapshot
+                .targets()
+                .get(snapshot.recorded_target(reservation_id)),
+            Some(TargetObservation::Resolved(_))
+        )
+    })
 }
 
 /// Rebuild the edge view from the reservation states the completed plan will commit.
@@ -5027,13 +5122,11 @@ fn settlement_selection(
     evidence: &IntegrationEvidenceStatus,
     actual_trunk: &JudgedTargetTip,
     merge_extent: &MergeExtent,
+    observed_target_path_case: Option<PathCase>,
 ) -> SettlementSelection {
-    if !matches!(
-        reservation.lifecycle(),
-        ReservationLifecycle::Outstanding { .. }
-    ) {
+    let ReservationLifecycle::Outstanding { protected_tip, .. } = reservation.lifecycle() else {
         return SettlementSelection::Unchanged;
-    }
+    };
     let (
         ReservationIntegrationJudgment::Integrated {
             trunk_oid,
@@ -5042,7 +5135,13 @@ fn settlement_selection(
         },
         JudgedTargetTip::Resolved(actual),
     ) = (
-        reservation::judge_integration(evidence, merge_extent),
+        reservation::judge_checkpoint_integration(
+            evidence,
+            merge_extent,
+            protected_tip,
+            reservation.scopes(),
+            observed_target_path_case,
+        ),
         actual_trunk,
     )
     else {
@@ -5072,6 +5171,8 @@ fn append_settlement_operations(
     reservations: &RetainedReservationSet,
     ordering_graph: &OrderingGraph,
     reconciliation: &mut ReconciliationPlan,
+    path_case: Option<PathCase>,
+    settlement_extents: &HashMap<ReservationId, MergeExtent>,
 ) -> Result<(), ReservationReplayError> {
     let mut settled = HashMap::new();
     for reservation in reservations.iter() {
@@ -5089,7 +5190,9 @@ fn append_settlement_operations(
             &integration_status,
             &reconciliation.action.evidence,
         );
-        let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
+        let extent = settlement_extents
+            .get(&reservation.id())
+            .or_else(|| planned_merge_extent(reservation.id(), &reconciliation.operations))
             .unwrap_or_else(|| reservation.merge_extent());
         let SettlementSelection::Release(disposition) = settlement_selection(
             reservation,
@@ -5099,21 +5202,23 @@ fn append_settlement_operations(
                 .repository_snapshot
                 .target_for(reservation.id()),
             extent,
+            observed_target_path_case(
+                &reconciliation.action.repository_snapshot,
+                reservation.id(),
+                path_case,
+            ),
         ) else {
             continue;
         };
-        let edit_blocking_status = reservation
-            .with_merge_extent(extent.clone())
-            .edit_blocking_status();
         reconciliation.operations.retain(|operation| !matches!(operation,
             JournalOperation::EvidenceRevalidated { reservation_id, .. } if *reservation_id == reservation.id()
         ));
         reconciliation
             .operations
             .push(JournalOperation::EvidenceRevalidated {
-                reservation_id: reservation.id(),
-                status: evidence.clone(),
-                edit_blocking_status,
+                reservation_id:       reservation.id(),
+                status:               evidence.clone(),
+                edit_blocking_status: EditBlockingStatus::Clear,
             });
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id: reservation.id(),
@@ -5177,10 +5282,11 @@ fn plan_shrink_has_committed_work(
 fn merged_run_integration(
     reservation: &Reservation,
     key: &MergeExtentKey,
+    head: &GitObjectId,
     repository: &git::RepositorySnapshot,
     git_cost: &mut MergeExtentGitCost,
 ) -> Option<(ProtectedReservationTip, IntegrationEvidenceStatus)> {
-    let protected_tip = ProtectedReservationTip::from(key.head.clone());
+    let protected_tip = ProtectedReservationTip::from(head.clone());
     let repository_root = repository.repository_root();
     if reservation.is_plan_shrink() {
         if !plan_shrink_has_committed_work(reservation, key, repository, git_cost) {
@@ -5198,10 +5304,10 @@ fn merged_run_integration(
         .ok()?;
         return Some((protected_tip, status));
     }
-    if key.head != key.trunk {
+    if *head != key.trunk {
         git_cost.path_queries += 1;
         if !matches!(
-            git::reachability(repository_root, &key.head, &key.trunk),
+            git::reachability(repository_root, head, &key.trunk),
             Ok(Reachability::Ancestor)
         ) {
             return None;
@@ -5217,15 +5323,65 @@ fn merged_run_integration(
     ))
 }
 
-/// Checkpoint merged runs that `MergedRunEndings` permits to end.
-///
-/// An independent run qualifies after observed work or a commit beyond its phase start.
-/// This pass must observe no net branch change at a head that trunk contains.
-/// The run checkpoints at that head and releases in the same append.
-/// Later reads revalidate its integration evidence.
-/// A fresh claim keeps running until it does work.
-/// `MergeExtentKey.reservation_group` requires a shared reservation to request its own checkpoint.
-/// A sibling can advance the holder's head while this phase still edits.
+/// Select the tip for a merged run from its full worktree observation.
+fn merged_run_head<'head>(
+    reservation: &Reservation,
+    reservations: &'head RetainedReservationSet,
+    extent: &'head MergeExtent,
+    merged_run_endings: MergedRunEndings,
+    repository: &git::RepositorySnapshot,
+    snapshot: &RepositorySnapshot,
+) -> Option<(&'head MergeExtentKey, &'head GitObjectId)> {
+    let checkpoint_requested = matches!(
+        merged_run_endings,
+        MergedRunEndings::CheckpointRequested { reservation_id, worktree_id }
+            if reservation_id == reservation.id() && worktree_id == reservation.actor().worktree
+    );
+    let key = match extent {
+        MergeExtent::Empty { key } => key,
+        MergeExtent::Protected { key, .. }
+            if checkpoint_requested
+                && key.working_tree.tracked_paths.is_empty()
+                && key.working_tree.untracked_paths.is_empty() =>
+        {
+            key
+        },
+        _ => return None,
+    };
+    // Shared worktrees require an explicit checkpoint request for each phase.
+    if !reservation.is_plan_shrink()
+        && matches!(
+            key.reservation_group,
+            HolderMergeExtentCoverage::ReservationShares { .. }
+        )
+        && !checkpoint_requested
+    {
+        return None;
+    }
+    let head = if checkpoint_requested && !reservation.is_plan_shrink() {
+        reservation::phase_boundary::first_checkpoint_tip(
+            repository.repository_root(),
+            repository.context().common_git_directory(),
+            reservations,
+            reservation,
+            &key.head,
+        )
+        .ok()?
+    } else {
+        &key.head
+    };
+    if head == &key.head {
+        return matches!(extent, MergeExtent::Empty { .. }).then_some((key, head));
+    }
+    // A partial landing needs proof at the reservation's recorded target.
+    matches!(
+        snapshot.targets().get(snapshot.recorded_target(reservation.id())),
+        Some(TargetObservation::Resolved(target)) if *target == key.trunk
+    )
+    .then_some((key, head))
+}
+
+/// Checkpoint and release eligible merged runs in one journal append.
 fn append_merged_run_endings(
     reservations: &RetainedReservationSet,
     reconciliation: &mut ReconciliationPlan,
@@ -5242,24 +5398,16 @@ fn append_merged_run_endings(
         }
         let extent = planned_merge_extent(reservation.id(), &reconciliation.operations)
             .unwrap_or_else(|| reservation.merge_extent());
-        let MergeExtent::Empty { key } = extent else {
+        let Some((key, head)) = merged_run_head(
+            reservation,
+            reservations,
+            extent,
+            merged_run_endings,
+            repository,
+            &reconciliation.action.repository_snapshot,
+        ) else {
             continue;
         };
-        // MergeExtentKey.reservation_group separates shared branch progress from this phase's
-        // checkpoint request.
-        if !reservation.is_plan_shrink()
-            && matches!(
-                key.reservation_group,
-                HolderMergeExtentCoverage::ReservationShares { .. }
-            )
-            && !matches!(
-                merged_run_endings,
-                MergedRunEndings::CheckpointRequested { reservation_id, worktree_id }
-                    if reservation_id == reservation.id() && worktree_id == reservation.actor().worktree
-            )
-        {
-            continue;
-        }
         // Enrollment requires a nonempty observed footprint. Its immutable source preserves
         // that evidence even if a preceding drift or gate already recorded an empty extent.
         let did_work = matches!(
@@ -5273,6 +5421,7 @@ fn append_merged_run_endings(
         let Some((protected_tip, integration_status)) = merged_run_integration(
             reservation,
             key,
+            head,
             repository,
             &mut reconciliation.action.merge_extent_git_cost,
         ) else {
@@ -5282,7 +5431,10 @@ fn append_merged_run_endings(
             trunk_oid,
             proof,
             witness,
-        } = reservation::judge_integration(&integration_status, extent)
+        } = reservation::judge_integration(
+            &integration_status,
+            &MergeExtent::Empty { key: key.clone() },
+        )
         else {
             continue;
         };
@@ -6702,7 +6854,7 @@ mod tests {
             Vec::new(),
             crate::edge::CrossTargetPredecessorEvidence::default(),
         );
-        let mut extent = serde_json::to_value(later_work_extent()?)?;
+        let mut extent = serde_json::to_value(later_work_extent("src/later.rs")?)?;
         extent["scopes"] = json!(
             (0..128)
                 .map(|index| json!({"path":format!("other_{index}/changed.rs"), "kind":"file"}))
@@ -6751,7 +6903,7 @@ mod tests {
             Vec::new(),
             crate::edge::CrossTargetPredecessorEvidence::default(),
         );
-        let extent = later_work_extent()?;
+        let extent = later_work_extent("src/later.rs")?;
         let expected_extent = extent.clone();
         let barrier = std::sync::Barrier::new(3);
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -7295,7 +7447,8 @@ mod tests {
         let [claim, checkpoint] = checkpoint_events()?;
         let actual_trunk = JudgedTargetTip::Resolved(TRUNK.parse()?);
         let other_trunk = JudgedTargetTip::Resolved(TIP.parse()?);
-        let extent = later_work_extent()?;
+        let extent = later_work_extent("other/later.rs")?;
+        let in_scope_extent = later_work_extent("src/later.rs")?;
         for proof in [
             IntegrationProof::ProtectedTipAncestor,
             IntegrationProof::ScopedPatchEquivalent,
@@ -7334,49 +7487,69 @@ mod tests {
                 SettlementSelection::Release(disposition.clone())
             );
             let unavailable_extent = extent.unavailable("holder missing".to_owned());
-            for (status, trunk, extent) in [
-                (&integration_status, &other_trunk, &empty_extent),
-                (&integration_status, &actual_trunk, &extent),
-                (&integration_status, &actual_trunk, &unavailable_extent),
-                (
-                    &IntegrationEvidenceStatus::NotIntegrated,
-                    &actual_trunk,
-                    &empty_extent,
-                ),
+            let expected_with_later_work = if proof == IntegrationProof::ProtectedTipAncestor {
+                SettlementSelection::Release(disposition.clone())
+            } else {
+                SettlementSelection::Unchanged
+            };
+            assert_eq!(
+                select_settlement(reservation, &integration_status, &actual_trunk, &extent),
+                expected_with_later_work
+            );
+            for (trunk, extent) in [
+                (&actual_trunk, &in_scope_extent),
+                (&other_trunk, &empty_extent),
+                (&actual_trunk, &unavailable_extent),
             ] {
                 assert_eq!(
-                    select_settlement(reservation, status, trunk, extent),
+                    select_settlement(reservation, &integration_status, trunk, extent),
                     SettlementSelection::Unchanged
                 );
             }
-            let release = journal_event(
-                4,
-                &json!({
-                    "op": "release", "reservation_id": RESERVATION_ID, "disposition": disposition,
-                }),
-            )?;
-            let released = RetainedReservationSet::replay(&[
-                claim.clone(),
-                checkpoint.clone(),
-                integrated,
-                release,
-            ])?;
-            let reservation = released.reservation(reservation_id)?;
             assert_eq!(
                 select_settlement(
                     reservation,
-                    &integration_status,
+                    &IntegrationEvidenceStatus::NotIntegrated,
                     &actual_trunk,
                     &empty_extent
                 ),
                 SettlementSelection::Unchanged
             );
-            assert!(
-                matches!(reservation.evidence_state()?, ReservationEvidenceState::Released {
-                integration_status: retained_status, ..
-            } if retained_status == status)
-            );
+            assert_released_checkpoint_stays_settled(
+                [claim.clone(), checkpoint.clone(), integrated],
+                &disposition,
+                &status,
+                &actual_trunk,
+                &empty_extent,
+            )?;
         }
+        Ok(())
+    }
+
+    fn assert_released_checkpoint_stays_settled(
+        [claim, checkpoint, integrated]: [JournalEvent; 3],
+        disposition: &ReleaseDisposition,
+        status: &IntegrationEvidenceStatus,
+        actual_trunk: &JudgedTargetTip,
+        extent: &MergeExtent,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let release = journal_event(
+            4,
+            &json!({
+                "op": "release", "reservation_id": RESERVATION_ID, "disposition": disposition,
+            }),
+        )?;
+        let released = RetainedReservationSet::replay(&[claim, checkpoint, integrated, release])?;
+        let reservation = released.reservation(RESERVATION_ID.parse()?)?;
+        assert_eq!(
+            select_settlement(reservation, status, actual_trunk, extent),
+            SettlementSelection::Unchanged
+        );
+        assert!(
+            matches!(reservation.evidence_state()?, ReservationEvidenceState::Released {
+                integration_status, ..
+            } if integration_status == *status)
+        );
         Ok(())
     }
 
@@ -7883,7 +8056,13 @@ mod tests {
         actual_trunk: &JudgedTargetTip,
         merge_extent: &MergeExtent,
     ) -> SettlementSelection {
-        super::settlement_selection(reservation, evidence, actual_trunk, merge_extent)
+        super::settlement_selection(
+            reservation,
+            evidence,
+            actual_trunk,
+            merge_extent,
+            Some(super::PathCase::Sensitive),
+        )
     }
 
     /// A durable proof that can settle without another evidence change.
@@ -7899,13 +8078,13 @@ mod tests {
         )
     }
 
-    /// Retained branch work beyond the checkpoint continues to block settlement.
-    fn later_work_extent() -> Result<MergeExtent, serde_json::Error> {
+    /// The holder has later work beyond the checkpoint.
+    fn later_work_extent(path: &str) -> Result<MergeExtent, serde_json::Error> {
         serde_json::from_value(json!({
             "status": "protected",
             "key": {"trunk": TRUNK, "head": "3333333333333333333333333333333333333333",
                 "working_tree": {"tracked_paths": [], "untracked_paths": []}},
-            "scopes": [{"path": "src/later.rs", "kind": "file"}],
+            "scopes": [{"path": path, "kind": "file"}],
         }))
     }
 
