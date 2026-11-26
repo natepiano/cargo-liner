@@ -34,6 +34,7 @@ use super::constants::SYSTEM_PYTHON;
 use super::frontmatter;
 use super::ledger::ListedCoordinate;
 use super::mask;
+use super::path_match;
 use super::path_match::PathPattern;
 use super::source_tree::SourceReadFailure;
 use super::source_tree::SourceTree;
@@ -297,7 +298,7 @@ fn listed_coordinates(
             let text = fields.next()?;
             Some((path, line, text))
         })
-        .filter(|(path, _, _)| !is_exempt(path, &spec.exemptions))
+        .filter(|(path, _, _)| !path_match::is_exempt(path, &spec.exemptions))
         .collect::<Vec<_>>();
     let excluded = match &spec.exclusion {
         Exclusion::None => vec![false; matches.len()],
@@ -323,19 +324,6 @@ fn listed_coordinates(
         });
     }
     Ok(sites.into_iter().collect())
-}
-
-fn is_exempt(path: &str, exemptions: &[String]) -> bool {
-    let rooted = format!("/{path}");
-    exemptions
-        .iter()
-        .map(|entry| entry.trim_matches('/'))
-        .any(|entry| {
-            !entry.is_empty()
-                && (path == entry
-                    || rooted.ends_with(&format!("/{entry}"))
-                    || rooted.contains(&format!("/{entry}/")))
-        })
 }
 
 fn python_excludes(

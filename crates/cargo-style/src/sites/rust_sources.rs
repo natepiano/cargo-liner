@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::path::Path;
+use std::rc::Rc;
 
 use super::catalog::Reach;
 use super::catalog::Rule;
@@ -13,6 +14,8 @@ use super::source_tree::SourceReadFailure;
 use super::source_tree::SourceTree;
 use crate::finding_source::FindingSource;
 use crate::finding_source::SourceText;
+use crate::finding_source::Utf8Source;
+use crate::source_lines::SiteLine;
 use crate::tip_view;
 use crate::tip_view::RepositoryTip;
 
@@ -23,6 +26,23 @@ pub(super) struct RustSources {
 pub(super) struct RustBlob {
     pub(super) masked: MaskedSource,
     pub(super) paths:  Vec<String>,
+    original:          OriginalSource,
+}
+
+enum OriginalSource {
+    Utf8(Rc<Utf8Source>),
+    Unreadable,
+}
+
+impl RustBlob {
+    pub(super) fn display_line(&self, line: usize) -> String {
+        if let OriginalSource::Utf8(source) = &self.original
+            && let SiteLine::Text(text) = source.lines.line(line)
+        {
+            return mask::display_line(text, 1);
+        }
+        String::new()
+    }
 }
 
 impl RustSources {
@@ -37,20 +57,24 @@ impl RustSources {
             match blobs.entry(entry.object.clone()) {
                 Entry::Occupied(mut blob) => blob.get_mut().paths.push(path.clone()),
                 Entry::Vacant(slot) => {
-                    let masked = match source.source(&entry.object)? {
+                    let (masked, original) = match source.source(&entry.object)? {
                         SourceText::Utf8(source) => {
                             let text = source.lines.text();
-                            if text.contains('\r') {
+                            let masked = if text.contains('\r') {
                                 mask::mask_source(&text.replace("\r\n", "\n").replace('\r', "\n"))
                             } else {
                                 mask::mask_source(text)
-                            }
+                            };
+                            (masked, OriginalSource::Utf8(Rc::clone(source)))
                         },
-                        SourceText::NotUtf8(_) => mask::mask_source(""),
+                        SourceText::NotUtf8(_) => {
+                            (mask::mask_source(""), OriginalSource::Unreadable)
+                        },
                     };
                     let _ = slot.insert(RustBlob {
                         masked,
                         paths: vec![path.clone()],
+                        original,
                     });
                 },
             }
@@ -74,11 +98,11 @@ pub(super) struct RustCoordinate {
 pub(super) fn listed<'a>(
     tip: &RepositoryTip,
     rule: &Rule,
-    candidates: impl IntoIterator<Item = (&'a [String], Vec<RustCoordinate>)>,
+    candidates: impl IntoIterator<Item = (impl IntoIterator<Item = &'a String>, Vec<RustCoordinate>)>,
 ) -> Vec<ListedCoordinate> {
     let mut listed = Vec::new();
     for (paths, coordinates) in candidates {
-        for path in paths.iter().filter(|path| in_reach(tip, rule, path)) {
+        for path in paths.into_iter().filter(|path| in_reach(tip, rule, path)) {
             listed.extend(coordinates.iter().map(|site| ListedCoordinate {
                 path: path.clone(),
                 line: site.line,
