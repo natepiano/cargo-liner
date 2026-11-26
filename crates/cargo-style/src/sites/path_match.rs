@@ -1,4 +1,4 @@
-//! Match catalog and committed ignore paths with shell patterns.
+//! Match catalog paths, committed ignore paths and generator exemptions.
 
 use regex::Error;
 use regex::Regex;
@@ -32,6 +32,19 @@ impl PathPattern {
     }
 
     pub(super) fn matches(&self, path: &str) -> bool { self.regex.is_match(path) }
+}
+
+pub(super) fn is_exempt(path: &str, exemptions: &[String]) -> bool {
+    let rooted = format!("/{path}");
+    exemptions
+        .iter()
+        .map(|entry| entry.trim_matches('/'))
+        .any(|entry| {
+            !entry.is_empty()
+                && (path == entry
+                    || rooted.ends_with(&format!("/{entry}"))
+                    || rooted.contains(&format!("/{entry}/")))
+        })
 }
 
 fn class_length(mut rest: impl Iterator<Item = char> + Clone) -> Option<usize> {

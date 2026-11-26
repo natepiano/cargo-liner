@@ -45,6 +45,13 @@ pub(super) enum Listing {
     FieldTypeStutter,
     StructFields(StructFieldsSpec),
     SingleImplTraits,
+    AllowsWithoutReason,
+    TestAllowBoilerplate,
+    ObserverGuards,
+    Literals {
+        exemptions: Vec<String>,
+    },
+    TestLiterals,
     /// Python lists no sites for a rule without a tier B or D candidates generator, such as a
     /// tier A, C or E rule.
     NoSites,
@@ -394,6 +401,11 @@ fn candidates(fields: &Fields, path: &Path) -> Result<Candidates, String> {
             field_type_pattern,
         }),
         "single_impl_traits" => Listing::SingleImplTraits,
+        "allows_without_reason" => Listing::AllowsWithoutReason,
+        "test_allow_boilerplate" => Listing::TestAllowBoilerplate,
+        "observer_guards" => Listing::ObserverGuards,
+        "literals" => Listing::Literals { exemptions },
+        "test_literals" => Listing::TestLiterals,
         _ => Listing::Unavailable(UnavailableReason::UnsupportedGenerator),
     };
     Ok(Candidates::Declared { surface, listing })

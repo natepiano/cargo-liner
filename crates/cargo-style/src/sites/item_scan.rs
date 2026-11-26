@@ -143,8 +143,16 @@ impl ItemScanner {
         None
     }
 
+    pub(super) fn body_after(&self, lines: &[&str], start: Position) -> FollowingBody {
+        self.find_item_body(lines, start)
+            .map_or(FollowingBody::Absent, |body| {
+                FollowingBody::Present(body.close)
+            })
+    }
+
     fn body(&self, lines: &[&str], open: Position) -> Option<ItemBody> {
-        if let BodyClose::ClosedAt(close) = find_body_close(lines, open, |_, _| {})
+        let close = find_body_close(lines, open, |_, _| {});
+        if let BodyClose::ClosedAt(close) = close
             && matches!(
                 self.next_token(
                     lines,
@@ -158,7 +166,7 @@ impl ItemScanner {
         {
             return None;
         }
-        Some(ItemBody { open })
+        Some(ItemBody { open, close })
     }
 
     fn next_token<'a>(&self, lines: &[&'a str], start: Position) -> Option<&'a str> {
@@ -197,9 +205,9 @@ pub(super) struct VariantDef<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct Position {
-    line:   usize,
-    column: usize,
+pub(super) struct Position {
+    pub(super) line:   usize,
+    pub(super) column: usize,
 }
 
 impl Position {
@@ -214,7 +222,8 @@ enum WhereClause {
 }
 
 struct ItemBody {
-    open: Position,
+    open:  Position,
+    close: BodyClose,
 }
 
 impl ItemBody {
@@ -233,7 +242,13 @@ fn opener(closer: &str) -> Option<&str> {
     }
 }
 
-enum BodyClose {
+pub(super) enum FollowingBody {
+    Absent,
+    Present(BodyClose),
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum BodyClose {
     ClosedAt(Position),
     Unclosed,
 }

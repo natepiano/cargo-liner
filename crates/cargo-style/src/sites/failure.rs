@@ -27,6 +27,12 @@ pub(crate) enum SitesFailure {
     ItemPattern(#[source] regex::Error),
     #[error("cannot compile the Rust trait declaration pattern")]
     TraitDeclarationPattern(#[source] regex::Error),
+    #[error("cannot compile the Rust allow patterns")]
+    AllowPattern(#[source] regex::Error),
+    #[error("cannot compile the Rust observer declaration pattern")]
+    ObserverPattern(#[source] regex::Error),
+    #[error("cannot compile the Rust literal patterns")]
+    LiteralPattern(#[source] regex::Error),
     #[error("{rule}: candidates kind=struct_fields in {origin} needs field_type_pattern")]
     FieldTypePattern { rule: String, origin: PathBuf },
     #[error("listed site {0} has no committed blob")]

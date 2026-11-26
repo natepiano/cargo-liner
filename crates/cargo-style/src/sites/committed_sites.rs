@@ -6,6 +6,7 @@ use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
 
+use super::allow_sites;
 use super::catalog::Listing;
 use super::catalog::RegexSpec;
 use super::catalog::Rule;
@@ -14,6 +15,8 @@ use super::constants::HEX_DIGITS;
 use super::failure::SitesFailure;
 use super::ledger::ListedCoordinate;
 use super::ledger::ListedHistory;
+use super::literal_sites;
+use super::observer_sites;
 use super::regex_sites;
 use super::rust_sources::RustSources;
 use super::trait_sites;
@@ -40,6 +43,15 @@ impl CommittedSites<'_, '_> {
                 type_sites::struct_fields(sources, tip, rule, spec)
             }),
             Listing::SingleImplTraits => self.rust(history, trait_sites::single_impl_traits),
+            Listing::AllowsWithoutReason => self.rust(history, allow_sites::allows_without_reason),
+            Listing::TestAllowBoilerplate => {
+                self.rust(history, allow_sites::test_allow_boilerplate)
+            },
+            Listing::ObserverGuards => self.rust(history, observer_sites::observer_guards),
+            Listing::Literals { exemptions } => self.rust(history, |sources, tip, rule| {
+                literal_sites::literals(sources, tip, rule, exemptions)
+            }),
+            Listing::TestLiterals => self.rust(history, literal_sites::test_literals),
             Listing::NoSites => Ok(SitesOutcome::Listed { sites: Vec::new() }),
             Listing::Unavailable(reason) => Ok(SitesOutcome::Unavailable { reason: *reason }),
         }

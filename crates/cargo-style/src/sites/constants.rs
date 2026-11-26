@@ -1,5 +1,12 @@
 //! Named values of the `sites` command.
 
+// allow attributes
+pub(super) const BOILERPLATE_LINTS: &[(&str, &str)] = &[
+    ("clippy::expect_used", ".expect("),
+    ("clippy::unwrap_used", ".unwrap("),
+    ("clippy::panic", "panic!"),
+];
+
 // command
 pub(crate) const SITES_SUBCOMMAND: &str = "sites";
 
@@ -42,9 +49,37 @@ pub(super) const PYTHON_VERSION_CHECK: &str =
     "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)";
 pub(super) const SYSTEM_PYTHON: &str = "/run/current-system/sw/bin/python3";
 
+// literals
+pub(super) const FIXED_SPELLINGS: &[&str] = &[
+    "Cargo.toml",
+    "Cargo.lock",
+    "mod.rs",
+    "lib.rs",
+    "main.rs",
+    "crate",
+    "super",
+    "self",
+    "src",
+];
+pub(super) const FORMAT_MACROS: &str = concat!(
+    "format|print|println|eprint|eprintln|write|writeln|panic|assert|assert_eq|assert_ne|",
+    "debug_assert|debug_assert_eq|debug_assert_ne|todo|unimplemented|unreachable|matches|vec",
+);
+pub(super) const IDENTITY_NUMERICS: &[&str] = &["0", "1", "0.0", "1.0"];
+pub(super) const INCLUDE_MACROS: &str = "include_str|include_bytes|embedded_asset|env|concat";
+pub(super) const LITERAL_EXEMPTIONS: [&str; 3] = ["examples", "benches", "build.rs"];
+pub(super) const MIN_NUMERIC_LITERAL_DIGITS: usize = 2;
+pub(super) const MIN_STRING_LITERAL_CHARACTERS: usize = 2;
+
+// observer guards
+pub(super) const OBSERVER_BODY_WINDOW: usize = 6;
+
 // source mask
 /// The last character position that can close an escaped char literal.
 pub(super) const ESCAPED_CHAR_LIMIT: usize = 12;
+
+// test spans
+pub(super) const CFG_TEST: &str = "#[cfg(test)]";
 
 // type sites
 pub(super) const UNIT_SUFFIXES: &[&str] = &[
