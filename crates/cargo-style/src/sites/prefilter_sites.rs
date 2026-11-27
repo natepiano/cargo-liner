@@ -7,7 +7,6 @@ use super::catalog::Catalog;
 use super::catalog::Rule;
 use super::failure::SitesFailure;
 use super::frontmatter;
-use super::ledger::ListedCoordinate;
 use super::regex_sites;
 use super::regex_sites::PythonSearch;
 use super::regex_sites::RegexFailure;
@@ -36,10 +35,10 @@ impl PrefilterFile<'_> {
     }
 }
 
-struct PrefilterLine<'a> {
-    path:   &'a str,
-    number: usize,
-    text:   &'a str,
+pub(super) struct PrefilterLine<'a> {
+    pub(super) path:   &'a str,
+    pub(super) number: usize,
+    pub(super) text:   &'a str,
 }
 
 struct PrefilterScan<'a> {
@@ -58,9 +57,9 @@ pub(super) fn enumerate(
     source: &mut FindingSource<'_>,
     tree: &SourceTree,
     catalog: &Catalog,
-    requested: &Rule,
     universe: &BTreeSet<String>,
-) -> Result<Vec<ListedCoordinate>, SitesFailure> {
+    mut found: impl FnMut(&Rule, PrefilterLine<'_>),
+) -> Result<(), SitesFailure> {
     let mut scans = Vec::new();
     let mut read_result = Ok(());
     for (rule, pattern) in catalog.prefilter_rules() {
@@ -99,24 +98,17 @@ pub(super) fn enumerate(
     })?;
     read_result?;
     let mut matches = matches.into_iter();
-    let mut coordinates = Vec::new();
     for (scan, search) in scans.iter().zip(searches) {
-        let flags = matches.by_ref().take(search.lines.len());
-        if scan.rule.id == requested.id {
-            coordinates.extend(scan.lines().zip(flags).filter(|(_, matched)| *matched).map(
-                |(line, _)| ListedCoordinate {
-                    path: line.path.to_owned(),
-                    line: line.number,
-                    text: line.text.to_owned(),
-                },
-            ));
-        } else {
-            let _ = flags.count();
+        let matching_lines = matches.by_ref().take(search.lines.len());
+        for (line, _) in scan
+            .lines()
+            .zip(matching_lines)
+            .filter(|(_, matched)| *matched)
+        {
+            found(scan.rule, line);
         }
     }
-    coordinates.sort_unstable();
-    coordinates.dedup();
-    Ok(coordinates)
+    Ok(())
 }
 
 fn read_files<'a>(

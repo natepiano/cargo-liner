@@ -53,6 +53,8 @@ pub(crate) enum SitesFailure {
         #[source]
         source:  regex::Error,
     },
+    #[error("committed ignore file is not UTF-8: {0:?}")]
+    IgnoreEncoding(String),
     #[error("cannot parse committed ignore file {path:?}")]
     IgnoreConfig {
         path:   String,

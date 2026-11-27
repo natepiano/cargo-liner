@@ -27,5 +27,16 @@ mod test_spans;
 mod trait_sites;
 mod type_sites;
 
+pub(crate) use self::catalog::Catalog;
+pub(crate) use self::catalog::CatalogFailure;
+pub(crate) use self::catalog::Reach;
+pub(crate) use self::catalog::Rule;
+pub(crate) use self::catalog::RuleInputScope;
+pub(crate) use self::catalog::RulePolicy;
+pub(crate) use self::catalog::Tier;
+pub(crate) use self::committed_sites::SiteMembership;
 pub(crate) use self::constants::SITES_SUBCOMMAND;
+pub(crate) use self::failure::SitesFailure;
+pub(crate) use self::manifest_syntax::read_toml_1_0;
+pub(crate) use self::request::CheckoutSource;
 pub(crate) use self::request::SitesRequest;

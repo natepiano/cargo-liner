@@ -6,6 +6,7 @@ mod constants;
 mod judgment;
 mod ledger;
 mod lint;
+mod membership;
 mod reply;
 
 use std::collections::BTreeMap;
@@ -21,19 +22,21 @@ use std::string::FromUtf8Error;
 use catalog::CoverageCatalog;
 use catalog::CoverageRule;
 use catalog::Mechanism;
-use catalog::RuleReach;
-use catalog::Tier;
 use constants::CELLS_FLAG;
 use constants::COVERAGE_REPLY_SCHEMA;
 use constants::CRATE_FLAG;
 use constants::LEDGER_FLAG;
 use constants::REPO_FLAG;
 use constants::RULE_FLAG;
+use judgment::CellJudgmentPolicy;
 use judgment::CoveredTip;
 use judgment::JudgmentReader;
 use ledger::CoverageLedger;
 use lint::LintCoverage;
 use lint::LintTool;
+use membership::CellMembership;
+use membership::CoverageComponent;
+use reply::CellPresentation;
 use reply::CellProjection;
 use reply::CellState;
 use reply::CoverageAnswer;
@@ -42,11 +45,12 @@ use reply::CoverageReport;
 use reply::CoverageTotals;
 use reply::HeldCoverage;
 use reply::Observation;
-use reply::Prerequisite;
 use reply::RuleTally;
 use rusqlite::Connection;
 
+use crate::constants::CHECKOUT_FLAG;
 use crate::constants::FINDING_RULES_FLAG;
+use crate::constants::UNCOVERED;
 use crate::error::ReaderError;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
@@ -57,8 +61,11 @@ use crate::ledger_read::LedgerRevision;
 use crate::rule_snapshot::PinComparison;
 use crate::rule_snapshot::RuleSnapshot;
 use crate::rule_snapshot::RuleSnapshotFailure;
-use crate::tip_view;
-use crate::tip_view::RepositoryTip;
+use crate::sites::Catalog;
+use crate::sites::CatalogFailure;
+use crate::sites::CheckoutSource;
+use crate::sites::SitesFailure;
+use crate::sites::Tier;
 
 enum RuleFilter {
     All,
@@ -79,12 +86,6 @@ impl CrateFilter {
     }
 }
 
-/// A Rust file at the synced tip, with the crate that holds it.
-struct RustFile<'a> {
-    path:   &'a str,
-    member: &'a str,
-}
-
 /// The evidence that gives the state of each cell of one rule.
 enum CellEvidence<'a> {
     /// A tier A rule: the saved workspace lint run for its `LintTool`.
@@ -103,6 +104,7 @@ struct CoverageRequest {
     repo:         PathBuf,
     ledger:       PathBuf,
     rules:        PathBuf,
+    checkout:     CheckoutSource,
     rule_filter:  RuleFilter,
     crate_filter: CrateFilter,
     detail:       ReplyDetail,
@@ -111,11 +113,19 @@ struct CoverageRequest {
 #[derive(Debug, thiserror::Error)]
 enum CoverageError {
     #[error(
-        "usage: cargo style coverage --repo <path> --ledger <ledger.sqlite> --rules <rules.json> [--rule <id>] [--crate <path>] [--cells]"
+        "usage: cargo style coverage --repo <path> --ledger <ledger.sqlite> --rules <rules.json> [--checkout <path>] [--rule <id>] [--crate <path>] [--cells]"
     )]
     Usage,
     #[error("unknown rule {0}")]
     UnknownRule(String),
+    #[error("coverage rule snapshot lacks {0}")]
+    MissingRulePolicy(String),
+    #[error("coverage rule snapshot does not match the native catalog for {0}")]
+    InconsistentRule(String),
+    #[error(transparent)]
+    Catalog(#[from] CatalogFailure),
+    #[error(transparent)]
+    Sites(#[from] SitesFailure),
     #[error("tier A rule {0} lacks a lint mechanism")]
     MissingMechanism(String),
     #[error("cannot open the coverage rule snapshot")]
@@ -175,6 +185,7 @@ impl CoverageRequest {
         let mut repo = None;
         let mut ledger = None;
         let mut rules = None;
+        let mut checkout = CheckoutSource::Repository;
         let mut rule_filter = RuleFilter::All;
         let mut crate_filter = CrateFilter::WholeRepository;
         let mut detail = ReplyDetail::CountsOnly;
@@ -186,6 +197,11 @@ impl CoverageRequest {
                 },
                 Some(FINDING_RULES_FLAG) if rules.is_none() => {
                     rules = arguments.next().map(PathBuf::from);
+                },
+                Some(CHECKOUT_FLAG) if matches!(checkout, CheckoutSource::Repository) => {
+                    checkout = CheckoutSource::Explicit(
+                        arguments.next().ok_or(CoverageError::Usage)?.into(),
+                    );
                 },
                 Some(RULE_FLAG) if matches!(rule_filter, RuleFilter::All) => {
                     rule_filter = RuleFilter::Named(read_text_argument(arguments.next())?);
@@ -206,6 +222,7 @@ impl CoverageRequest {
             repo,
             ledger,
             rules,
+            checkout,
             rule_filter,
             crate_filter,
             detail,
@@ -214,8 +231,10 @@ impl CoverageRequest {
 
     fn answer(self) -> Result<(), CoverageError> {
         let (catalog, pins) = CoverageCatalog::read(&self.rules)?;
-        let rules = self.selected_rules(&catalog)?;
-        let json = ledger::read_snapshot(&self.ledger, |ledger| self.reply(ledger, &rules, &pins))?;
+        let native = Catalog::read(self.checkout.path(&self.repo))?;
+        let json = ledger::read_snapshot(&self.ledger, |ledger| {
+            self.reply(ledger, &catalog, &native, &pins)
+        })?;
         let mut stdout = io::stdout().lock();
         stdout
             .write_all(&json)
@@ -226,20 +245,37 @@ impl CoverageRequest {
     fn selected_rules<'a>(
         &self,
         catalog: &'a CoverageCatalog,
+        native: &Catalog,
     ) -> Result<Vec<(&'a str, &'a CoverageRule)>, CoverageError> {
         match &self.rule_filter {
-            RuleFilter::All => Ok(catalog
-                .rules
-                .iter()
-                .filter(|(_, rule)| rule.tier != Tier::Unclassified)
-                .map(|(identity, rule)| (identity.as_str(), rule))
-                .collect()),
-            RuleFilter::Named(identity) => {
+            RuleFilter::All => {
+                if let Some(rule) = native
+                    .classified_rules()
+                    .find(|rule| !catalog.rules.contains_key(&rule.id))
+                {
+                    return Err(CoverageError::MissingRulePolicy(rule.id.clone()));
+                }
+                let mut selected = Vec::new();
+                for (identity, rule) in &catalog.rules {
+                    rule.check_native(identity, native.rule(identity)?)?;
+                    if rule.policy.tier != Tier::Unclassified {
+                        selected.push((identity.as_str(), rule));
+                    }
+                }
+                Ok(selected)
+            },
+            RuleFilter::Named(requested) => {
+                let base = requested.strip_suffix(UNCOVERED).unwrap_or(requested);
+                let current = native.rule(base)?;
                 let (identity, rule) = catalog
                     .rules
-                    .get_key_value(identity)
-                    .ok_or_else(|| CoverageError::UnknownRule(identity.clone()))?;
-                Ok(if rule.tier == Tier::Unclassified {
+                    .get_key_value(base)
+                    .ok_or_else(|| CoverageError::MissingRulePolicy(base.to_owned()))?;
+                rule.check_native(identity, current)?;
+                if requested.ends_with(UNCOVERED) && !rule.has_uncovered() {
+                    return Err(CoverageError::UnknownRule(requested.clone()));
+                }
+                Ok(if rule.policy.tier == Tier::Unclassified {
                     Vec::new()
                 } else {
                     vec![(identity.as_str(), rule)]
@@ -251,24 +287,13 @@ impl CoverageRequest {
     fn reply(
         &self,
         ledger: CoverageLedger<'_>,
-        rules: &[(&str, &CoverageRule)],
+        catalog: &CoverageCatalog,
+        native: &Catalog,
         pins: &RuleSnapshot,
     ) -> Result<Vec<u8>, CoverageError> {
         let synced_tip = ledger.sync.commit.clone();
-        let unavailable: Vec<_> = rules
-            .iter()
-            .filter_map(|&(identity, rule)| {
-                matches!(rule.tier, Tier::B | Tier::D).then_some(identity)
-            })
-            .collect();
-        let coverage = if unavailable.is_empty() {
-            CoverageAnswer::Available(self.report(ledger, &synced_tip, rules, pins)?)
-        } else {
-            CoverageAnswer::Unavailable {
-                prerequisite: Prerequisite::CandidateSites,
-                rules:        unavailable,
-            }
-        };
+        let coverage =
+            CoverageAnswer::Available(self.report(ledger, &synced_tip, catalog, native, pins)?);
         Ok(serde_json::to_vec(&CoverageReply {
             schema: COVERAGE_REPLY_SCHEMA,
             observed: Observation {
@@ -283,11 +308,19 @@ impl CoverageRequest {
         &self,
         mut ledger: CoverageLedger<'_>,
         synced_tip: &str,
-        rules: &[(&'a str, &'a CoverageRule)],
+        catalog: &'a CoverageCatalog,
+        native: &Catalog,
         pins: &RuleSnapshot,
     ) -> Result<CoverageReport<'a>, CoverageError> {
         let mut source = FindingSource::open(&self.repo)?;
         let tip = source.tip(synced_tip)?;
+        let sites =
+            native.membership(&self.repo, ledger.connection, synced_tip, &mut source, &tip)?;
+        let membership = CellMembership {
+            tip:   &tip,
+            sites: &sites,
+        };
+        let rules = self.selected_rules(catalog, native)?;
         let TreeBlobs::Listed(entries) = source.tree(synced_tip)? else {
             return Err(FindingSourceFailure::UndecodableSyncedTree(synced_tip.to_owned()).into());
         };
@@ -306,13 +339,12 @@ impl CoverageRequest {
             ReplyDetail::WithCells => CellProjection::IncludeCells(Vec::new()),
         });
         let mut lints = BTreeMap::new();
-        let tree = if rules.iter().any(|(_, rule)| rule.tier == Tier::A) {
+        let tree = if rules.iter().any(|(_, rule)| rule.policy.tier == Tier::A) {
             lint::tree_at(&self.repo, synced_tip)?
         } else {
             String::new()
         };
-        let rust_files = self.rust_files(&tip, &entries);
-        for &(identity, rule) in rules {
+        for (identity, rule) in rules {
             let mut tally = RuleTally::new(identity, rule);
             let cell_evidence = read_cell_evidence(
                 &mut lints,
@@ -322,58 +354,47 @@ impl CoverageRequest {
                 &tree,
                 (identity, rule),
             )?;
-            for file in rule_files(rule, &rust_files) {
-                let (state, held) = match cell_evidence {
-                    CellEvidence::Lint(lint) => (
-                        lint_cell(lint, file.path, identity, pins)?,
-                        HeldCoverage::NoCurrentHold,
-                    ),
-                    CellEvidence::Judgment => {
-                        judgments.cell(&mut ledger, &mut source, (identity, rule), file.path)?
+            let discoveries: Vec<_> = native.discoveries(identity).collect();
+            let base = CoverageComponent::base(identity, rule);
+            let uncovered = rule
+                .has_uncovered()
+                .then(|| CoverageComponent::uncovered(identity));
+            for component in std::iter::once(base).chain(uncovered) {
+                let presentation = match &self.rule_filter {
+                    RuleFilter::Named(id) if id.ends_with(UNCOVERED) && id != component.id() => {
+                        CellPresentation::CountOnly
                     },
+                    _ => CellPresentation::Show,
                 };
-                totals.record(&mut tally, file.path, file.member, state, held);
+                let paths = discoveries.iter().flat_map(|definition| {
+                    membership.paths(&component, &definition.reach, rule.policy.input_scope)
+                });
+                for path in paths {
+                    if !self.crate_filter.includes(path.member) {
+                        continue;
+                    }
+                    let (state, held) = match cell_evidence {
+                        CellEvidence::Lint(lint) => (
+                            lint_cell(lint, path.path, identity, pins)?,
+                            HeldCoverage::NoCurrentHold,
+                        ),
+                        CellEvidence::Judgment => {
+                            let policy = CellJudgmentPolicy {
+                                identity: component.id(),
+                                scope:    path
+                                    .judgment_scope(component.tier(), rule.policy.input_scope),
+                                family:   rule.policy.family,
+                            };
+                            judgments.cell(&mut ledger, &mut source, policy, path.path)?
+                        },
+                    };
+                    totals.record(&mut tally, &component, path, state, held, presentation);
+                }
             }
-            totals.finish_rule(tally);
+            totals.finish_rule(tally, discoveries.len());
         }
         Ok(totals.finish())
     }
-
-    /// The Rust files at the synced tip in the requested crate scope, in tree order.
-    fn rust_files<'a>(
-        &self,
-        tip: &'a RepositoryTip,
-        entries: &'a TreeEntries,
-    ) -> Vec<RustFile<'a>> {
-        entries
-            .keys()
-            .filter(|path| tip.has_rust_path(path))
-            .filter_map(|path| {
-                let member = tip.crate_of(path);
-                self.crate_filter.includes(member).then_some(RustFile {
-                    path: path.as_str(),
-                    member,
-                })
-            })
-            .collect()
-    }
-}
-
-/// The files in `rust_files` that are cells of the rule. Tier A and C rules start from the Rust
-/// files in the rule's reach; tiers B, D and E have no Rust file cells.
-fn rule_files<'f, 'a>(
-    rule: &'f CoverageRule,
-    rust_files: &'f [RustFile<'a>],
-) -> impl Iterator<Item = &'f RustFile<'a>> {
-    let rust_files = if matches!(rule.tier, Tier::A | Tier::C) {
-        rust_files
-    } else {
-        &[]
-    };
-    rust_files.iter().filter(move |file| match &rule.reach {
-        RuleReach::Repository => true,
-        RuleReach::Member(directory) => tip_view::under(file.path, directory),
-    })
 }
 
 fn read_text_argument(argument: Option<OsString>) -> Result<String, CoverageError> {
@@ -391,7 +412,7 @@ fn read_cell_evidence<'a>(
     tree: &str,
     (identity, rule): (&str, &CoverageRule),
 ) -> Result<CellEvidence<'a>, CoverageError> {
-    if rule.tier != Tier::A {
+    if rule.policy.tier != Tier::A {
         return Ok(CellEvidence::Judgment);
     }
     let Mechanism::Lint(tool) = rule.mechanism else {
