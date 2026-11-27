@@ -1381,36 +1381,23 @@ The copies are deleted. No source changes.
 
 **Ruled out:** Two Cargo builds in the regression test exceed the one-second test limit.
 
-### Phase 60 — a cargo-berth claim retry reports a publication only after it is durable  · status: todo
+### Phase 60 — a cargo-berth claim retry reports a publication only after it is durable  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** a claim retry reports the coordination-run marker and the session mapping as published only after both are on disk with a directory sync. Source: sdlc, from the admin-console review of `phase_reservation.py repair --to`, relayed by cargo-liner at 05:20 PST on 2026-11-27. This is a correctness fix.
-
-**Spec:**
-1. The fault: on a retry of a claim that the reservation already holds, `selected_reservation_check_acquisition` (`crates/cargo-berth/src/verb/claim/acquisition.rs`) passes `CoordinationRunMarkerPublication::Published` and `SessionIdentityMappingPublication::Published` to `first_touch_acquisition`. It does not write or sync anything. The cited sites are `acquisition.rs:465` and `:517`.
-2. A first attempt can write the marker or the mapping and stop before the directory sync. The retry then reports `published`. A crash after that reply can lose the publication.
-3. Make the retry path report `Published` only after the same durable publication that the locked path runs: the file write, the file sync and the directory sync. A failed publication reports `Unavailable` with its diagnostic, as the locked path does.
-4. Find every other site that reports `Published` without a durable write. Fix each one in the same way.
-5. Add a test for each fixed site. Each test fails before the fix and passes after it.
-
-**Constraints from prior phases:**
-- The fast check path exists so that a check of an already-held path takes no ledger lock (Phases 56c–56e). Keep it lock-free. A publication needs no ledger lock.
-- No test may take one second or more. Do not simulate a crash with a child process. Test the publication result and the sync calls directly.
+- `ledger/publication.rs` holds the shared durable publication: write and sync a temporary file, replace the destination, then sync the directory.
+- The held-path check (`HeldCheckAcquisition::publish`, called from `verb/check.rs`) republishes the coordination-run marker and any required session index before it reports `published`.
+- A failed write or sync reports `unavailable` with its diagnostic.
+- A `PlanShrink` hold under a harness session reports `left_unmapped`. With no harness session, it reports `published`, because no entry is needed.
+- The fast check path takes no ledger mutation lock. `HeldCheckAcquisition` keeps its committed acquisition in a box for Clippy's large-variant lint.
+- `docs/cargo-berth/generated/output-contract.json` and the as-built pages `check-under-load.md`, `json-contract.md`, `phase-reservations.md` and `worktree-coordination.md` describe the new behavior.
 
 **Files:**
-- `crates/cargo-berth/src/verb/claim/acquisition.rs`
-- `crates/cargo-berth/src/ledger/worktree_context.rs` and `crates/cargo-berth/src/session/mod.rs`, if the publication helpers change.
+- `crates/cargo-berth/src/ledger/publication.rs`, `ledger/mod.rs`, `ledger/worktree_context.rs` — durable publication.
+- `crates/cargo-berth/src/session/mod.rs` — session index publication and the `left_unmapped` report.
+- `crates/cargo-berth/src/verb/check.rs`, `verb/claim/acquisition.rs`, `output.rs` — the held-path publication.
 
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- Each new test fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Ruled out:** a lock-free check can restore the marker while a concurrent release removes the last reservation. The locked path publishes the marker outside the lock too. It is unlikely for a single user, so it stays.
 
 ### Phase 61 — no cargo-berth test folder goes into /dev/shm  · status: todo
 
