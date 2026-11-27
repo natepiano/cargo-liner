@@ -1014,38 +1014,20 @@ The copies are deleted. No source changes.
 
 **Ruled out:** Using a sibling's scope to satisfy a named acquisition.
 
-### Phase 50 — mend shortens a path beside a built-in attribute it does not list  · status: todo
+### Phase 50 — mend shortens a path beside a built-in attribute it does not list  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** a built-in attribute in a block, such as `#[link(name = "c")]` on an `extern` block, does not stop `cargo mend --fix` from shortening the paths in that block. Source: review finding F012 of the Phase 47 change, held for its own phase at the repair-round cap. A mend bug always gets a phase.
-
-**Spec:**
-1. The fault: `BlockBindings::collect` (`crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`) treats an attribute that is not in `BUILT_IN_ATTRIBUTES` as a possible macro. It then returns `BlockBindings::Unknown`, so mend leaves every site in the block. `#[link(name = "c")]` on an `extern` block is one case: `std::time::Duration` beside it does not shorten. This is a missed fix only. Mend never writes a wrong import here.
-2. Make `BUILT_IN_ATTRIBUTES.names` the complete list from the Rust Reference built-in attributes index (https://doc.rust-lang.org/reference/attributes.html#built-in-attributes-index). Keep it one named constant. An attribute that is not on the list still counts as a possible macro.
-3. Add `#[link(name = "c")]` on the `unsafe extern "C"` block of `unbound_first_segment` in `BLOCK_BINDINGS_SOURCE`. That fixture is the positive control: `inline_type_fix_leaves_paths_with_block_bindings` asserts that `std::time::Duration` shortens. The assert fails before the fix.
-4. Add a unit table in the `block_bindings.rs` tests: blocks with built-in attributes give `BlockBinding::Absent` for an unbound first segment. Include the `#[link(name = "c")]` `extern` block row; it fails before the fix.
-
-**Constraints from prior phases:**
-- `meta_binding` matches an attribute by `meta.path().get_ident()`, and a path with more than one segment gives `MayBind`. The Reference index lists two-segment entries in the `diagnostic` namespace (`diagnostic::on_unimplemented`, `diagnostic::do_not_recommend`). Match those on the full path.
-- `derive` and `cfg_attr` keep their own checks in `meta_binding`: `derive` accepts only `BUILT_IN_ATTRIBUTES.derives`, and `cfg_attr` checks each attribute after its predicate. A new name goes to the `_ => true` arm.
-- The existing unit test `item_macros_can_bind_the_first_path_segment` holds only `MayBind` rows. Keep it.
-- A fixture that builds a proc-macro crate takes over 1 s on the Mac. Do not add one.
-- The import-hiding checks of other mend fixes (`NamingTokens` in `facade_redirect/source_text.rs`, `ModuleImports::collides` with `RewrittenPaths`, the macro-body footprint in `inline_path_qualified_type/visitor.rs`) are not part of this change.
+- `BUILT_IN_ATTRIBUTES.names` in `block_bindings.rs` is the full Rust Reference built-in attributes index, in one constant.
+- `diagnostic::on_unimplemented` and `diagnostic::do_not_recommend` match on the full path. Every other multi-segment path gives `MayBind`.
+- `meta_binding` checks the inner attribute of `#[unsafe(...)]`, for example `#[unsafe(no_mangle)]`.
+- `derive` and `cfg_attr` keep their own checks.
 
 **Files:**
-- `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`
-- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — `BLOCK_BINDINGS_SOURCE`, the positive control
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs` — the full list, the `unsafe(...)` inner check, and the unit table `built_in_attributes_leave_the_first_path_segment_unbound`.
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — `#[link(name = "c")]` on the `unsafe extern "C"` block of `BLOCK_BINDINGS_SOURCE`, the positive control.
 
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- The new row fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Ruled out:** a crate can rename an extern crate to `diagnostic` under `#![no_implicit_prelude]`. Mend still treats `diagnostic::*` as built-in. This case is unlikely for a single user, so it stays.
 
 ### Phase 51 — a release of merged work frees its board slot  · status: done
 
