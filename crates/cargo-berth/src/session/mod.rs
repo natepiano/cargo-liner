@@ -6,9 +6,8 @@ use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
 use std::fs;
-use std::fs::OpenOptions;
+use std::fs::File;
 use std::io::ErrorKind;
-use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::str::FromStr;
@@ -31,10 +30,40 @@ use crate::ledger::ClaimSource;
 use crate::ledger::HARNESS_SESSION_ENVIRONMENT;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
+use crate::ledger::publication;
 use crate::reservation::MergeExtent;
 use crate::reservation::ReservationRunStatus;
 
 static CURRENT_PROCESS_HARNESS_SESSION: OnceLock<HookHarnessSessionSelection> = OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static TEST_HARNESS_SESSION: std::cell::RefCell<Option<HarnessSessionIdentity>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_harness_session<Output>(
+    harness_session_id: Option<HarnessSessionId>,
+    action: impl FnOnce() -> Output,
+) -> Output {
+    struct RestoreSession(Option<HarnessSessionIdentity>);
+
+    impl Drop for RestoreSession {
+        fn drop(&mut self) { TEST_HARNESS_SESSION.replace(self.0.take()); }
+    }
+
+    let identity =
+        harness_session_id.map_or(HarnessSessionIdentity::Unavailable, |harness_session_id| {
+            HarnessSessionIdentity::Available {
+                harness_session_id,
+                source: HarnessSessionSource::CargoBerthEnvironment,
+            }
+        });
+    let _restore = RestoreSession(TEST_HARNESS_SESSION.replace(Some(identity)));
+    action()
+}
 
 /// One harness session identifier supplied to a single command invocation.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -57,6 +86,10 @@ impl HarnessSessionId {
     /// under the key its edit hooks look up. A set but unusable
     /// `HARNESS_SESSION_ENVIRONMENT` yields no session rather than the Claude Code one.
     fn from_current_process() -> HarnessSessionIdentity {
+        #[cfg(test)]
+        if let Some(identity) = TEST_HARNESS_SESSION.with_borrow(Clone::clone) {
+            return identity;
+        }
         match CURRENT_PROCESS_HARNESS_SESSION.get() {
             Some(HookHarnessSessionSelection::Session {
                 harness_session_id,
@@ -284,8 +317,8 @@ pub(crate) enum FirstTouchSessionReservationMapping {
 pub(crate) enum SessionIdentityMappingPublication {
     /// The mapping reflects the reservation, including when no harness session required an entry.
     Published,
-    /// Active sibling reservations already hold every requested path, so the harness session
-    /// stays unmapped and a later bare check under it opens new work.
+    /// The command leaves the reservation unmapped for this harness session.
+    /// This includes sibling coverage and plan shrink holds.
     LeftUnmapped,
     /// An explicit selection affected this command but could not become session state.
     ExplicitSelectionAppliesOnlyToCurrentInvocation {
@@ -362,7 +395,7 @@ impl SessionIdentityStore {
     /// Apply one journal consequence to the selections and the owned reservations.
     fn apply(&mut self, change: SessionMappingChange) {
         match change {
-            SessionMappingChange::Unchanged => {},
+            SessionMappingChange::Unchanged | SessionMappingChange::LeaveUnmapped => {},
             SessionMappingChange::Select {
                 session,
                 identity,
@@ -397,6 +430,8 @@ pub(crate) enum SessionIdentityStoreError {
     Encoding(serde_json::Error),
     /// The existing mapping could not be decoded as JSON.
     Decoding(serde_json::Error),
+    /// The current session no longer selects the reservation proven by the check.
+    SelectionChanged,
 }
 
 /// A harness session id was empty, too long, or contained a control character.
@@ -476,9 +511,35 @@ fn published_first_touch_mapping(ledger_directory: &Path) -> FirstTouchSessionRe
         )
 }
 
+/// Republish the existing selection without changing the shared session index.
+pub(crate) fn republish_current_selection(
+    ledger_directory: &Path,
+    identity: SessionReservationIdentity,
+) -> SessionIdentityMappingPublication {
+    let HarnessSessionIdentity::Available {
+        harness_session_id, ..
+    } = HarnessSessionId::from_current_process()
+    else {
+        return SessionIdentityMappingPublication::LeftUnmapped;
+    };
+    let publication = (|| {
+        let publication = SessionIndexPublication::lock(ledger_directory)?;
+        let mapping_path = ledger_directory.join(SessionIdentityStore::FILE_NAME);
+        let bytes = fs::read(&mapping_path).map_err(SessionIdentityStoreError::Io)?;
+        let store: SessionIdentityStore =
+            serde_json::from_slice(&bytes).map_err(SessionIdentityStoreError::Decoding)?;
+        if store.identities.get(&harness_session_id) != Some(&identity) {
+            return Err(SessionIdentityStoreError::SelectionChanged);
+        }
+        publication.replace(&mapping_path, &bytes)
+    })();
+    publication.into()
+}
+
 /// Mapping bytes computed during generation- and session-version-bound preparation.
 pub(crate) enum PreparedSessionMappingPublication {
     Unchanged,
+    LeftUnmapped,
     Ready { bytes: Vec<u8> },
     Unavailable { diagnostic: String },
 }
@@ -486,6 +547,7 @@ pub(crate) enum PreparedSessionMappingPublication {
 /// One journal fact's effect on the disposable harness-session index.
 enum SessionMappingChange {
     Unchanged,
+    LeaveUnmapped,
     Select {
         session:  HarnessSessionId,
         identity: SessionReservationIdentity,
@@ -527,9 +589,16 @@ impl SessionMappingChange {
     fn for_operation(operation: &JournalOperation, run: CoordinationRunId) -> Self {
         match operation {
             JournalOperation::Claim {
-                source: ClaimSource::Enrolled | ClaimSource::Cover { .. } | ClaimSource::PlanShrink,
+                source: ClaimSource::Enrolled | ClaimSource::Cover { .. },
                 ..
             } => Self::Unchanged,
+            JournalOperation::Claim {
+                source: ClaimSource::PlanShrink,
+                ..
+            } => match HarnessSessionId::from_current_process() {
+                HarnessSessionIdentity::Available { .. } => Self::LeaveUnmapped,
+                HarnessSessionIdentity::Unavailable => Self::Unchanged,
+            },
             JournalOperation::Claim { reservation_id, .. } => {
                 Self::select(run, *reservation_id, SelectionOrigin::Claim)
             },
@@ -563,26 +632,40 @@ impl SessionMappingChange {
             _ => Self::Unchanged,
         }
     }
+    const fn publication_without_write(&self) -> Option<PreparedSessionMappingPublication> {
+        match self {
+            Self::Unchanged => Some(PreparedSessionMappingPublication::Unchanged),
+            Self::LeaveUnmapped => Some(PreparedSessionMappingPublication::LeftUnmapped),
+            Self::Select { .. } | Self::Retire(_) => None,
+        }
+    }
 }
 
 impl PreparedSessionMappingPublication {
     /// Fold a complete append's consequences without publishing before its journal facts.
     pub(crate) fn prepare(ledger_directory: &Path, events: &[JournalEvent]) -> Self {
-        let changes = events
-            .iter()
-            .map(SessionMappingChange::for_event)
-            .filter(|change| !matches!(change, SessionMappingChange::Unchanged))
-            .collect::<Vec<_>>();
-        if changes.is_empty() {
-            return Self::Unchanged;
+        let mut store = None;
+        let mut without_write = Self::Unchanged;
+        for change in events.iter().map(SessionMappingChange::for_event) {
+            match change.publication_without_write() {
+                Some(publication @ Self::LeftUnmapped) => without_write = publication,
+                Some(_) => {},
+                None => store
+                    .get_or_insert_with(|| Self::read_store(ledger_directory))
+                    .apply(change),
+            }
         }
-        let mut store = SessionIdentityStore::read_for_update(
+        store.as_ref().map_or(without_write, Self::encode)
+    }
+
+    fn read_store(ledger_directory: &Path) -> SessionIdentityStore {
+        SessionIdentityStore::read_for_update(
             &ledger_directory.join(SessionIdentityStore::FILE_NAME),
-        );
-        for change in changes {
-            store.apply(change);
-        }
-        serde_json::to_vec(&store).map_or_else(
+        )
+    }
+
+    fn encode(store: &SessionIdentityStore) -> Self {
+        serde_json::to_vec(store).map_or_else(
             |error| Self::Unavailable {
                 diagnostic: SessionIdentityStoreError::Encoding(error).to_string(),
             },
@@ -594,6 +677,7 @@ impl PreparedSessionMappingPublication {
     pub(crate) fn publish(self, ledger_directory: &Path) -> SessionIdentityMappingPublication {
         match self {
             Self::Unchanged => SessionIdentityMappingPublication::Published,
+            Self::LeftUnmapped => SessionIdentityMappingPublication::LeftUnmapped,
             Self::Ready { bytes } => SessionIdentityStore::publish_bytes(
                 &bytes,
                 ledger_directory,
@@ -679,32 +763,17 @@ impl PreparedSessionMappingPublication {
         run: CoordinationRunId,
         operations: &[JournalOperation],
     ) -> Vec<Self> {
-        let changes = operations
+        let mut store = None;
+        operations
             .iter()
-            .map(|operation| SessionMappingChange::for_operation(operation, run))
-            .collect::<Vec<_>>();
-        if changes
-            .iter()
-            .all(|change| matches!(change, SessionMappingChange::Unchanged))
-        {
-            return changes.into_iter().map(|_| Self::Unchanged).collect();
-        }
-        let mut store = SessionIdentityStore::read_for_update(
-            &ledger_directory.join(SessionIdentityStore::FILE_NAME),
-        );
-        changes
-            .into_iter()
-            .map(|change| {
-                if matches!(change, SessionMappingChange::Unchanged) {
-                    return Self::Unchanged;
+            .map(|operation| {
+                let change = SessionMappingChange::for_operation(operation, run);
+                if let Some(publication) = change.publication_without_write() {
+                    return publication;
                 }
+                let store = store.get_or_insert_with(|| Self::read_store(ledger_directory));
                 store.apply(change);
-                serde_json::to_vec(&store).map_or_else(
-                    |error| Self::Unavailable {
-                        diagnostic: SessionIdentityStoreError::Encoding(error).to_string(),
-                    },
-                    |bytes| Self::Ready { bytes },
-                )
+                Self::encode(store)
             })
             .collect()
     }
@@ -721,19 +790,12 @@ impl PreparedSessionMappingPublication {
         else {
             return Self::Unchanged;
         };
-        let mut store = SessionIdentityStore::read_for_update(
-            &ledger_directory.join(SessionIdentityStore::FILE_NAME),
-        );
+        let mut store = Self::read_store(ledger_directory);
         store.identities.insert(
             harness_session_id,
             SessionReservationIdentity::new(coordination_run_id, reservation_id),
         );
-        serde_json::to_vec(&store).map_or_else(
-            |error| Self::Unavailable {
-                diagnostic: SessionIdentityStoreError::Encoding(error).to_string(),
-            },
-            |bytes| Self::Ready { bytes },
-        )
+        Self::encode(&store)
     }
 }
 
@@ -762,23 +824,41 @@ impl SessionIdentityStore {
         ledger_directory: &Path,
         mapping_path: &Path,
     ) -> Result<(), SessionIdentityStoreError> {
+        SessionIndexPublication::lock(ledger_directory)?.replace(mapping_path, bytes)
+    }
+}
+
+/// Serializes index replacement without taking the ledger mutation lock.
+struct SessionIndexPublication<'directory> {
+    directory: &'directory Path,
+    _lock:     File,
+}
+
+impl<'directory> SessionIndexPublication<'directory> {
+    const LOCK_FILE_NAME: &'static str = "session-identities.lock";
+
+    fn lock(directory: &'directory Path) -> Result<Self, SessionIdentityStoreError> {
+        let lock = File::options()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(directory.join(Self::LOCK_FILE_NAME))
+            .map_err(SessionIdentityStoreError::Io)?;
+        lock.lock().map_err(SessionIdentityStoreError::Io)?;
+        Ok(Self {
+            directory,
+            _lock: lock,
+        })
+    }
+
+    fn replace(self, mapping_path: &Path, bytes: &[u8]) -> Result<(), SessionIdentityStoreError> {
         let publication_id = Uuid::now_v7();
-        let temporary_path =
-            ledger_directory.join(format!("{}.{publication_id}.tmp", Self::FILE_NAME));
-        let publication = (|| -> Result<(), std::io::Error> {
-            let mut temporary_file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary_path)?;
-            temporary_file.write_all(bytes)?;
-            temporary_file.sync_all()?;
-            fs::rename(&temporary_path, mapping_path)?;
-            fs::File::open(ledger_directory)?.sync_all()
-        })();
-        if publication.is_err() {
-            std::mem::drop(fs::remove_file(&temporary_path));
-        }
-        publication.map_err(SessionIdentityStoreError::Io)
+        let temporary_path = self.directory.join(format!(
+            "{}.{publication_id}.tmp",
+            SessionIdentityStore::FILE_NAME
+        ));
+        publication::replace(self.directory, mapping_path, &temporary_path, bytes)
+            .map_err(SessionIdentityStoreError::Io)
     }
 }
 
@@ -808,6 +888,9 @@ impl Display for SessionIdentityStoreError {
                     formatter,
                     "session identity mapping decoding failed: {error}"
                 )
+            },
+            Self::SelectionChanged => {
+                formatter.write_str("the harness session no longer selects this reservation")
             },
         }
     }

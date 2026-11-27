@@ -434,17 +434,43 @@ pub(crate) enum CheckReservationSelection {
 /// Whether a lock-free check can reuse the reservation its caller selected.
 pub(in crate::verb) enum CheckAcquisitionDecision {
     /// The selected active reservation's run already protects the complete edit.
-    HeldBySelectedReservation {
-        /// The exact scopes that the locked acquisition would report.
-        scopes:      ReservationScopeSet,
-        /// The same already-held acquisition reported by the locked path.
-        acquisition: ReservationAcquisition,
-    },
+    HeldBySelectedReservation(HeldCheckAcquisition),
     /// Selection or coverage requires the ordinary locked first-touch decision.
     NeedsLockedDecision,
 }
 
-/// Reuse the locked path's coverage and acquisition rules without publishing any state.
+/// The reservation selected by the lock-free check before any publication.
+pub(in crate::verb) struct HeldCheckAcquisition {
+    committed:           Box<CommittedReservationAcquisition>,
+    coordination_run_id: CoordinationRunId,
+    selection:           CheckReservationSelection,
+}
+
+impl HeldCheckAcquisition {
+    /// Publish the selected identity before returning the held-path answer.
+    pub(in crate::verb) fn publish(
+        self,
+        worktree_context: &WorktreeContext,
+    ) -> (ReservationAcquisition, ReservationScopeSet) {
+        let session_mapping_publication = session::republish_current_selection(
+            &worktree_context.ledger_directory(),
+            SessionReservationIdentity::new(
+                self.coordination_run_id,
+                self.committed.reservation_id,
+            ),
+        );
+        let (acquisition, scopes, _) = first_touch_acquisition(
+            *self.committed,
+            self.coordination_run_id,
+            publish_coordination_run_marker(worktree_context, self.coordination_run_id),
+            self.selection
+                .reported_session_mapping_publication(session_mapping_publication),
+        );
+        (acquisition, scopes)
+    }
+}
+
+/// Reuse the locked path's coverage rules without publishing state.
 pub(in crate::verb) fn selected_reservation_check_acquisition(
     reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
@@ -514,17 +540,11 @@ pub(in crate::verb) fn selected_reservation_check_acquisition(
         scopes,
         FirstTouchConflictOutcome::None,
     );
-    let (acquisition, scopes, _) = first_touch_acquisition(
-        committed,
-        identity.coordination_run_id,
-        CoordinationRunMarkerPublication::Published,
-        selection
-            .reported_session_mapping_publication(SessionIdentityMappingPublication::Published),
-    );
-    CheckAcquisitionDecision::HeldBySelectedReservation {
-        scopes,
-        acquisition,
-    }
+    CheckAcquisitionDecision::HeldBySelectedReservation(HeldCheckAcquisition {
+        committed: Box::new(committed),
+        coordination_run_id: identity.coordination_run_id,
+        selection,
+    })
 }
 
 /// A first-touch request whose fixed source and authorization rule exclude permissive answers.
