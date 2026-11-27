@@ -33,6 +33,30 @@ pub(crate) enum SitesFailure {
     ObserverPattern(#[source] regex::Error),
     #[error("cannot compile the Rust literal patterns")]
     LiteralPattern(#[source] regex::Error),
+    #[error("cannot compile the module root item pattern")]
+    ModuleRootPattern(#[source] regex::Error),
+    #[error("cannot compile the Bevy Kana leak pattern")]
+    KanaLeakPattern(#[source] regex::Error),
+    #[error("cannot compile the manifest dependency pattern")]
+    DependencyPattern(#[source] regex::Error),
+    #[error("invalid committed workspace member pattern")]
+    WorkspacePattern(#[source] regex::Error),
+    #[error("manifest is not UTF-8: {0:?}")]
+    ManifestEncoding(String),
+    #[error("{path:?} is not in the subpath of {root:?}")]
+    WorkspaceMemberOutsideRoot { path: PathBuf, root: PathBuf },
+    #[error("invalid committed ignore pattern {pattern:?}")]
+    IgnorePattern {
+        pattern: String,
+        #[source]
+        source:  regex::Error,
+    },
+    #[error("cannot parse committed ignore file {path:?}")]
+    IgnoreConfig {
+        path:   String,
+        #[source]
+        source: Box<toml::de::Error>,
+    },
     #[error("{rule}: candidates kind=struct_fields in {origin} needs field_type_pattern")]
     FieldTypePattern { rule: String, origin: PathBuf },
     #[error("listed site {0} has no committed blob")]

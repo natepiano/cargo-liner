@@ -2,7 +2,6 @@
 
 use regex::Regex;
 
-use super::catalog::Rule;
 use super::constants::OBSERVER_BODY_WINDOW;
 use super::failure::SitesFailure;
 use super::item_scan;
@@ -11,7 +10,6 @@ use super::ledger::ListedCoordinate;
 use super::rust_sources;
 use super::rust_sources::RustCoordinate;
 use super::rust_sources::RustSources;
-use crate::tip_view::RepositoryTip;
 use crate::tokenizer;
 use crate::unicode_tables::SPACE;
 use crate::unicode_tables::WORD;
@@ -79,13 +77,11 @@ impl ObserverScanner {
 
 pub(super) fn observer_guards(
     sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let scanner = ObserverScanner::new()?;
     let candidates = sources.blobs().map(|blob| {
         let lines = blob.masked.lines().collect::<Vec<_>>();
         (blob.paths.as_slice(), scanner.scan(&lines))
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }

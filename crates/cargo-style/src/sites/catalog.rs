@@ -16,8 +16,8 @@ use toml::Value;
 use super::frontmatter;
 use super::frontmatter::Field;
 use super::frontmatter::Fields;
-use super::path_match;
 use super::path_match::WorkspacePattern;
+use crate::tip_view;
 
 pub(super) struct Catalog {
     pub(super) checkout: String,
@@ -52,6 +52,10 @@ pub(super) enum Listing {
         exemptions: Vec<String>,
     },
     TestLiterals,
+    ModuleRootItems,
+    SubmoduleNames,
+    WorkspaceDeps,
+    BevyKanaUsage,
     /// Python lists no sites for a rule without a tier B or D candidates generator, such as a
     /// tier A, C or E rule.
     NoSites,
@@ -406,6 +410,10 @@ fn candidates(fields: &Fields, path: &Path) -> Result<Candidates, String> {
         "observer_guards" => Listing::ObserverGuards,
         "literals" => Listing::Literals { exemptions },
         "test_literals" => Listing::TestLiterals,
+        "module_root_items" => Listing::ModuleRootItems,
+        "submodule_names" => Listing::SubmoduleNames,
+        "workspace_deps" => Listing::WorkspaceDeps,
+        "bevy_kana_usage" => Listing::BevyKanaUsage,
         _ => Listing::Unavailable(UnavailableReason::UnsupportedGenerator),
     };
     Ok(Candidates::Declared { surface, listing })
@@ -564,9 +572,9 @@ fn checkout_members(root: &Path) -> Result<Vec<WorkspaceMember>, CatalogFailure>
         });
     }
     found.sort_by(|left, right| {
-        path_match::path_parts(&right.directory)
+        tip_view::path_parts(&right.directory)
             .count()
-            .cmp(&path_match::path_parts(&left.directory).count())
+            .cmp(&tip_view::path_parts(&left.directory).count())
             .then_with(|| left.directory.cmp(&right.directory))
     });
     Ok(found)
@@ -625,7 +633,7 @@ fn dependencies<'a>(
                 return None;
             }
             let mut parts = Vec::new();
-            for part in path_match::path_parts(base).chain(path_match::path_parts(path)) {
+            for part in tip_view::path_parts(base).chain(tip_view::path_parts(path)) {
                 if part == ".." {
                     let _ = parts.pop()?;
                 } else {

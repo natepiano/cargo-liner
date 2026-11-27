@@ -16,19 +16,22 @@ use super::failure::SitesFailure;
 use super::ledger::ListedCoordinate;
 use super::ledger::ListedHistory;
 use super::literal_sites;
+use super::manifest_sites;
+use super::module_sites;
 use super::observer_sites;
 use super::regex_sites;
+use super::rust_sources;
 use super::rust_sources::RustSources;
+use super::site_scope::SiteScope;
+use super::source_tree::SourceTree;
 use super::trait_sites;
 use super::type_sites;
 use crate::finding_source::FindingSource;
-use crate::tip_view::RepositoryTip;
 
 pub(super) struct CommittedSites<'a, 'repo> {
     pub(super) repo:   &'a Path,
     pub(super) source: &'a mut FindingSource<'repo>,
-    pub(super) tip:    &'a RepositoryTip,
-    pub(super) commit: &'a str,
+    pub(super) tree:   &'a SourceTree,
     pub(super) rule:   &'a Rule,
 }
 
@@ -39,19 +42,36 @@ impl CommittedSites<'_, '_> {
             Listing::FieldAffixes => self.rust(history, type_sites::field_affixes),
             Listing::EnumVariantStutter => self.rust(history, type_sites::enum_variant_stutter),
             Listing::FieldTypeStutter => self.rust(history, type_sites::field_type_stutter),
-            Listing::StructFields(spec) => self.rust(history, |sources, tip, rule| {
-                type_sites::struct_fields(sources, tip, rule, spec)
-            }),
+            Listing::StructFields(spec) => {
+                let rule = self.rule;
+                self.rust(history, |sources| {
+                    type_sites::struct_fields(sources, rule, spec)
+                })
+            },
             Listing::SingleImplTraits => self.rust(history, trait_sites::single_impl_traits),
             Listing::AllowsWithoutReason => self.rust(history, allow_sites::allows_without_reason),
             Listing::TestAllowBoilerplate => {
                 self.rust(history, allow_sites::test_allow_boilerplate)
             },
             Listing::ObserverGuards => self.rust(history, observer_sites::observer_guards),
-            Listing::Literals { exemptions } => self.rust(history, |sources, tip, rule| {
-                literal_sites::literals(sources, tip, rule, exemptions)
+            Listing::Literals { exemptions } => self.rust(history, |sources| {
+                literal_sites::literals(sources, exemptions)
             }),
             Listing::TestLiterals => self.rust(history, literal_sites::test_literals),
+            Listing::ModuleRootItems => self.rust_paths(
+                history,
+                |path| rust_sources::rust_path(path) && module_sites::is_module_root(path),
+                module_sites::module_root_items,
+            ),
+            Listing::SubmoduleNames => self.list(history, |listing| {
+                Ok(module_sites::submodule_names(listing.tree))
+            }),
+            Listing::WorkspaceDeps => self.list(history, |listing| {
+                manifest_sites::workspace_deps(listing.tree, listing.source)
+            }),
+            Listing::BevyKanaUsage => self.list(history, |listing| {
+                manifest_sites::bevy_kana_usage(listing.tree, listing.source)
+            }),
             Listing::NoSites => Ok(SitesOutcome::Listed { sites: Vec::new() }),
             Listing::Unavailable(reason) => Ok(SitesOutcome::Unavailable { reason: *reason }),
         }
@@ -63,8 +83,7 @@ impl CommittedSites<'_, '_> {
             Ok(regex_sites::enumerate(
                 listing.repo,
                 listing.source,
-                listing.tip,
-                listing.commit,
+                listing.tree,
                 listing.rule,
                 spec,
                 &tool,
@@ -75,15 +94,20 @@ impl CommittedSites<'_, '_> {
     fn rust(
         self,
         history: ListedHistory,
-        generate: impl FnOnce(
-            &RustSources,
-            &RepositoryTip,
-            &Rule,
-        ) -> Result<Vec<ListedCoordinate>, SitesFailure>,
+        generate: impl FnOnce(&RustSources) -> Result<Vec<ListedCoordinate>, SitesFailure>,
+    ) -> Result<SitesOutcome, SitesFailure> {
+        self.rust_paths(history, rust_sources::rust_path, generate)
+    }
+
+    fn rust_paths(
+        self,
+        history: ListedHistory,
+        includes: impl Fn(&str) -> bool,
+        generate: impl FnOnce(&RustSources) -> Result<Vec<ListedCoordinate>, SitesFailure>,
     ) -> Result<SitesOutcome, SitesFailure> {
         self.list(history, |listing| {
-            let sources = RustSources::read(listing.repo, listing.source, listing.commit)?;
-            generate(&sources, listing.tip, listing.rule)
+            let sources = RustSources::read(listing.tree, listing.source, includes)?;
+            generate(&sources)
         })
     }
 
@@ -94,12 +118,20 @@ impl CommittedSites<'_, '_> {
     ) -> Result<SitesOutcome, SitesFailure> {
         let coordinates = match history {
             // Enumerate only the requested rule.
-            ListedHistory::Enumerate => generate(&mut self)?,
+            ListedHistory::Enumerate => {
+                self.tree.verify_blobs(self.repo)?;
+                let scope = SiteScope::read(self.tree, self.source, &self.rule.reach)?;
+                let mut coordinates = generate(&mut self)?;
+                coordinates.retain(|coordinate| scope.includes(&coordinate.path));
+                coordinates.sort_unstable();
+                coordinates.dedup();
+                coordinates
+            },
             ListedHistory::UseLegacy(coordinates) => coordinates,
         };
         let sites = coordinates
             .into_iter()
-            .map(|coordinate| site(self.tip, &self.rule.id, &self.rule.pin, coordinate))
+            .map(|coordinate| site(self.tree, &self.rule.id, &self.rule.pin, coordinate))
             .collect::<Result<_, _>>()?;
         Ok(SitesOutcome::Listed { sites })
     }
@@ -121,12 +153,12 @@ pub(super) struct Site {
 }
 
 fn site(
-    tip: &RepositoryTip,
+    tree: &SourceTree,
     rule: &str,
     pin: &str,
     coordinate: ListedCoordinate,
 ) -> Result<Site, SitesFailure> {
-    let blob = tip
+    let blob = tree
         .blob(&coordinate.path)
         .ok_or_else(|| SitesFailure::SiteBlob(coordinate.path.clone()))?;
     let identity = serde_json::to_vec(&(

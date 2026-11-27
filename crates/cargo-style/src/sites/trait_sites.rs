@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 
 use regex::Regex;
 
-use super::catalog::Rule;
 use super::failure::SitesFailure;
 use super::item_scan;
 use super::ledger::ListedCoordinate;
@@ -12,7 +11,6 @@ use super::rust_sources;
 use super::rust_sources::RustBlob;
 use super::rust_sources::RustCoordinate;
 use super::rust_sources::RustSources;
-use crate::tip_view::RepositoryTip;
 use crate::tokenizer;
 use crate::unicode_tables::SPACE;
 use crate::unicode_tables::WORD;
@@ -71,8 +69,6 @@ impl<'a> TraitBlob<'a> {
 
 pub(super) fn single_impl_traits(
     sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let space = item_scan::class_ranges(SPACE);
     let word = item_scan::class_ranges(WORD);
@@ -105,7 +101,7 @@ pub(super) fn single_impl_traits(
             .collect();
         (blob.paths, sites)
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
 fn project_count(blobs: &[TraitBlob<'_>], name: &str) -> usize {
