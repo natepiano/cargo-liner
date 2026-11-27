@@ -1092,29 +1092,24 @@ The copies are deleted. No source changes.
 
 **Ruled out:** a checkpoint fallback when the kept tip is missing (it can include foreign work); declined as unlikely for one user: a branch switch with a `--no-ff` merge of the holder's commit, and shared rebases.
 
-### Phase 51c — repository fixtures and kept releases leave no stale state  · status: todo
+### Phase 51c — repository fixtures and kept releases leave no stale state  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** close the two minor findings and two notes that Phase 51b moved here by the landing rule. Source: Phase 51b closure reviews 4 and 5 and the Astra review, 2026-11-26.
-
-**Spec:**
-1. Repository fixtures never reuse a recorded gate result outside Nextest. A standalone test run must start with an empty fixture cache too (`tests/recorded_templates.rs`, `tests/support/gate_fixtures.rs`).
-2. A rejected kept release leaves no kept-tip ref. `release --keep-work` writes the ref before the journal checks the record size, so a `--why` over 16 KiB leaves the ref (`ledger/handle.rs`). Check the size first, or delete the ref when the append fails.
-3. The other-checkout path of the first-checkpoint guard uses the pending checkpoint, not the kept tip (`reservation/phase_boundary.rs`). Make it use the kept tip, as the same-checkout path does.
-4. A kept release lives 24 h in the journal. Make sure its kept-tip ref and its `KeptWork` state survive journal retention until the tip reaches its target.
-5. Write each case as a failing test first.
-
-**Constraints from prior phases:** Keep the Phase 51 and 51b ownership rule: ambiguous ownership keeps the reservation protected. Never treat an absent object as excluded work.
+- Repository fixtures never reuse a recorded gate result outside Nextest; a standalone run builds fresh observations.
+- The other-checkout first-checkpoint guard checks the recorded checkpoint and the kept tip (identical tips once). A missing kept object still blocks the checkpoint.
+- Compaction keeps a kept release while a live reservation has a different or unrecorded target. It drops one only when the kept ref is absent and Git proves the kept tip and any recorded checkpoint reached the release target (`ledger/history.rs`).
+- The journal separates an open failure from a write or sync failure. A kept release whose append fails at open deletes its kept-tip ref, if the ref still points to the prepared tip. After a write or sync failure the ref stays, because replay can still accept the release.
 
 **Files:**
-- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/reservation/phase_boundary.rs`, `crates/cargo-berth/src/reservation/retention.rs`, `crates/cargo-berth/tests/`
+- `crates/cargo-berth/src/reservation/phase_boundary.rs` — the other-checkout guard.
+- `crates/cargo-berth/src/ledger/history.rs`, `crates/cargo-berth/src/ledger/compaction/` — kept-release retention.
+- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/ledger/journal/mod.rs`, `crates/cargo-berth/src/git/refs.rs` — append failure kinds and ref cleanup.
+- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/recorded_templates.rs` — the regression rows.
 
-**Workers:** 1 writer.
+**Gotchas:** A kept ref with no recorded release only keeps a commit alive; deleting a ref whose release replay can accept strands the release.
 
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- Each new test fails before the fix. No changed test takes 1 s or more.
+**Ruled out:** declined as unlikely for one user: a fetch that rewrites the upstream while compaction runs.
 
 ### Phase 52 — a Mac handler sees each config change at once, also under load  · status: todo
 
