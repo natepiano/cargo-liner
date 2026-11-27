@@ -2,7 +2,6 @@
 
 use regex::Regex;
 
-use super::catalog::Rule;
 use super::constants::FIXED_SPELLINGS;
 use super::constants::FORMAT_MACROS;
 use super::constants::IDENTITY_NUMERICS;
@@ -22,7 +21,6 @@ use super::rust_sources::RustCoordinate;
 use super::rust_sources::RustSources;
 use super::test_spans;
 use super::test_spans::TestSpans;
-use crate::tip_view::RepositoryTip;
 use crate::tokenizer;
 use crate::unicode_tables::DECIMAL;
 use crate::unicode_tables::SPACE;
@@ -152,8 +150,6 @@ impl LiteralScanner {
 
 pub(super) fn literals(
     sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
     exemptions: &[String],
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let exemptions = exemptions
@@ -172,14 +168,10 @@ pub(super) fn literals(
             .collect::<Vec<_>>();
         (!paths.is_empty()).then(|| (paths, scanner.production(blob)))
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
-pub(super) fn test_literals(
-    sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
-) -> Result<Vec<ListedCoordinate>, SitesFailure> {
+pub(super) fn test_literals(sources: &RustSources) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let scanner = LiteralScanner::new()?;
     let candidates = sources.blobs().flat_map(|blob| {
         let (test_paths, other_paths): (Vec<_>, Vec<_>) = blob
@@ -200,7 +192,7 @@ pub(super) fn test_literals(
         };
         [(test_paths, test_sites), (other_paths, other_sites)]
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
 fn is_decimal(character: char) -> bool { tokenizer::in_table(DECIMAL, character) }

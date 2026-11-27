@@ -1,6 +1,5 @@
 //! Run the regex generator against committed file contents.
 
-use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
@@ -16,11 +15,7 @@ use std::process::Output;
 use std::process::Stdio;
 use std::string::FromUtf8Error;
 
-use toml::Table;
-use toml::Value;
-
 use super::catalog::Exclusion;
-use super::catalog::Reach;
 use super::catalog::RegexSpec;
 use super::catalog::Rule;
 use super::constants::CLAUDE_PYTHON;
@@ -35,16 +30,12 @@ use super::frontmatter;
 use super::ledger::ListedCoordinate;
 use super::mask;
 use super::path_match;
-use super::path_match::PathPattern;
 use super::source_tree::SourceReadFailure;
 use super::source_tree::SourceTree;
-use crate::constants::IGNORE_FILES;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
 use crate::finding_source::SourceText;
 use crate::source_lines;
-use crate::tip_view;
-use crate::tip_view::RepositoryTip;
 
 pub(super) struct RegexTool {
     executable:        PathBuf,
@@ -80,18 +71,6 @@ pub(crate) enum RegexFailure {
     },
     #[error(transparent)]
     SourceTree(#[from] SourceReadFailure),
-    #[error("invalid committed ignore pattern {pattern:?}")]
-    IgnorePattern {
-        pattern: String,
-        #[source]
-        source:  regex::Error,
-    },
-    #[error("cannot parse committed ignore file {path:?}")]
-    IgnoreConfig {
-        path:   String,
-        #[source]
-        source: Box<toml::de::Error>,
-    },
 }
 
 impl RegexTool {
@@ -205,14 +184,11 @@ enum RgOperation {
 pub(super) fn enumerate(
     repo: &Path,
     source: &mut FindingSource<'_>,
-    tip: &RepositoryTip,
-    commit: &str,
+    tree: &SourceTree,
     rule: &Rule,
     spec: &RegexSpec,
     tool: &RegexTool,
 ) -> Result<Vec<ListedCoordinate>, RegexFailure> {
-    let tree = SourceTree::read(repo, source, commit)?;
-    let ignored = ignored_paths(source, tip)?;
     if spec.pattern.is_empty() {
         return Err(RegexFailure::EmptyPattern(spec.origin.clone()));
     }
@@ -241,7 +217,7 @@ pub(super) fn enumerate(
         }
     }
     let matches = String::from_utf8(tool.search(root, spec, RgOperation::MatchLines)?.stdout)?;
-    listed_coordinates(&matches, tip, rule, spec, &ignored)
+    listed_coordinates(&matches, rule, spec)
 }
 
 fn without_dot(path: &str) -> &str { path.strip_prefix("./").unwrap_or(path) }
@@ -284,10 +260,8 @@ fn write_blob(
 
 fn listed_coordinates(
     matches: &str,
-    tip: &RepositoryTip,
     rule: &Rule,
     spec: &RegexSpec,
-    ignored: &[Ignore],
 ) -> Result<Vec<ListedCoordinate>, RegexFailure> {
     let matches = source_lines::split_lines(matches)
         .map(frontmatter::without_line_ending)
@@ -305,25 +279,19 @@ fn listed_coordinates(
         Exclusion::Pattern(pattern) => python_excludes(&rule.id, pattern, &matches)?,
     };
 
-    let mut sites = BTreeSet::new();
+    let mut sites = Vec::new();
     for ((raw_path, line, text), excluded) in matches.into_iter().zip(excluded) {
         if excluded {
             continue;
         }
         let path = relative(raw_path)?.to_string_lossy().into_owned();
-        if tip.blob(&path).is_none()
-            || is_ignored(&path, ignored)
-            || matches!(&rule.reach, Reach::Member(directory) if !tip_view::under(&path, directory))
-        {
-            continue;
-        }
-        let _ = sites.insert(ListedCoordinate {
+        sites.push(ListedCoordinate {
             path,
             line,
             text: mask::display_line(text, 1),
         });
     }
-    Ok(sites.into_iter().collect())
+    Ok(sites)
 }
 
 fn python_excludes(
@@ -412,88 +380,4 @@ fn on_path(name: &OsStr) -> Option<PathBuf> {
 fn is_executable(file: &Path) -> bool {
     file.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-struct Ignore {
-    prefix: String,
-    glob:   PathPattern,
-    root:   RootIgnore,
-}
-
-enum RootIgnore {
-    UseFullPattern,
-    AlsoMatch(PathPattern),
-}
-
-fn ignored_paths(
-    source: &mut FindingSource<'_>,
-    tip: &RepositoryTip,
-) -> Result<Vec<Ignore>, RegexFailure> {
-    let mut patterns = Vec::new();
-    for path in IGNORE_FILES {
-        let Some(blob) = tip.blob(path) else { continue };
-        let text = match source.source(blob)? {
-            SourceText::Utf8(text) => text.lines.text(),
-            SourceText::NotUtf8(text) => text,
-        };
-        let table: Table = text.parse().map_err(|source| RegexFailure::IgnoreConfig {
-            path:   path.to_owned(),
-            source: Box::new(source),
-        })?;
-        add_ignores(&table, &mut patterns)?;
-    }
-    Ok(patterns)
-}
-
-fn add_ignores(table: &Table, patterns: &mut Vec<Ignore>) -> Result<(), RegexFailure> {
-    for (key, value) in table {
-        if matches!(
-            key.as_str(),
-            "ignore" | "ignored" | "exclude" | "excludes" | "ignored_paths" | "ignore_paths"
-        ) {
-            for pattern in value
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-            {
-                patterns.push(Ignore::new(pattern)?);
-            }
-        }
-        if let Some(table) = value.as_table() {
-            add_ignores(table, patterns)?;
-        }
-    }
-    Ok(())
-}
-
-impl Ignore {
-    fn new(pattern: &str) -> Result<Self, RegexFailure> {
-        let compile = |raw| {
-            PathPattern::new(raw).map_err(|source| RegexFailure::IgnorePattern {
-                pattern: pattern.to_owned(),
-                source,
-            })
-        };
-        let root = if let Some(raw) = pattern.strip_prefix("**/") {
-            RootIgnore::AlsoMatch(compile(raw)?)
-        } else {
-            RootIgnore::UseFullPattern
-        };
-        Ok(Self {
-            prefix: pattern.trim_end_matches('/').to_owned(),
-            glob: compile(pattern)?,
-            root,
-        })
-    }
-}
-
-fn is_ignored(path: &str, patterns: &[Ignore]) -> bool {
-    path.rsplit_once('/')
-        .is_some_and(|(directory, _)| directory.split('/').any(|part| part == "vendor"))
-        || patterns.iter().any(|pattern| {
-            tip_view::under(path, &pattern.prefix)
-                || pattern.glob.matches(path)
-                || matches!(&pattern.root, RootIgnore::AlsoMatch(root) if root.matches(path))
-        })
 }
