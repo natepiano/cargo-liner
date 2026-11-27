@@ -75,6 +75,7 @@ impl SitesRequest {
             source: &mut source,
             tree: &tree,
             rule,
+            catalog: &catalog,
         }
         .outcome(ledger.history)?;
         let reply = SitesReply {

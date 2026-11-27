@@ -60,10 +60,10 @@ impl KanaScanner {
 pub(super) fn workspace_deps(
     tree: &SourceTree,
     source: &mut FindingSource<'_>,
+    manifests: &mut ManifestBlobs<'_>,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let space = item_scan::class_ranges(SPACE);
     let paths = WorkspacePaths::from(tree);
-    let mut manifests = ManifestBlobs::new(tree);
     let members = paths.members(manifests.read(source, "Cargo.toml")?)?;
     let mut listed = Vec::new();
     for path in members {
@@ -91,10 +91,10 @@ pub(super) fn workspace_deps(
 pub(super) fn bevy_kana_usage(
     tree: &SourceTree,
     source: &mut FindingSource<'_>,
+    manifests: &mut ManifestBlobs<'_>,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let space = item_scan::class_ranges(SPACE);
     let paths = WorkspacePaths::from(tree);
-    let mut manifests = ManifestBlobs::new(tree);
     let members = paths.members(manifests.read(source, "Cargo.toml")?)?;
     let manifest_paths = std::iter::once("Cargo.toml").chain(
         members

@@ -283,8 +283,8 @@ def main(root: Path) -> None:
         check_fixture(oracle, repo)
         cases = [case(rule, rule, FRESH_LEDGER, reply(oracle, repo, rule)) for rule in TYPE_RULES]
         assert listed(oracle, repo, PREFILTER) == ()
-        cases.append(case("prefilter remains unavailable", PREFILTER, FRESH_LEDGER,
-                          reply(oracle, repo, PREFILTER, "prefilter_requires_shared_membership")))
+        cases.append(case("prefilter with no matches lists no sites", PREFILTER, FRESH_LEDGER,
+                          reply(oracle, repo, PREFILTER)))
     print(json.dumps(cases + legacy_cases(root, repo, tip)))
 
 

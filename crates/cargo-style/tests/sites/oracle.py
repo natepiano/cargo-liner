@@ -415,8 +415,8 @@ def main(root: Path) -> None:
         reason = "unsupported_generator"
         cases.append(success(reason, "ignore change.sqlite", "unsupported",
                              reply(oracle, root / "unsupported", "local:docs/style/types.md", reason)))
-        rule, reason = "global:rust/filter.md", "prefilter_requires_shared_membership"
-        cases.append(success(reason, "ignore change.sqlite", "repo", reply(oracle, repo, rule, reason)))
+        rule = "global:rust/filter.md"
+        cases.append(success("prefilter lists the shared universe", "ignore change.sqlite", "repo", reply(oracle, repo, rule)))
         for tier, rule in (
             ("A", "global:rust/format.md"),
             ("C", "global:rust/review.md"),

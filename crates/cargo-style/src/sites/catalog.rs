@@ -9,7 +9,6 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
-use serde::Serialize;
 use toml::Table;
 use toml::Value;
 
@@ -22,7 +21,7 @@ use crate::tip_view;
 pub(super) struct Catalog {
     pub(super) checkout: String,
     pub(super) global:   String,
-    rules:               BTreeMap<String, Rule>,
+    rules:               Vec<Rule>,
 }
 
 pub(super) struct Rule {
@@ -30,7 +29,6 @@ pub(super) struct Rule {
     pub(super) pin:     String,
     pub(super) reach:   Reach,
     pub(super) listing: Listing,
-    refreshes_sites:    bool,
 }
 
 pub(super) enum Reach {
@@ -38,7 +36,16 @@ pub(super) enum Reach {
     Member(String),
 }
 
-pub(super) enum Listing {
+impl Reach {
+    pub(super) fn includes(&self, path: &str) -> bool {
+        match self {
+            Self::Repository => true,
+            Self::Member(directory) => tip_view::under(path, directory),
+        }
+    }
+}
+
+pub(super) enum Generator {
     Regex(RegexSpec),
     FieldAffixes,
     EnumVariantStutter,
@@ -48,31 +55,28 @@ pub(super) enum Listing {
     AllowsWithoutReason,
     TestAllowBoilerplate,
     ObserverGuards,
-    Literals {
-        exemptions: Vec<String>,
-    },
+    Literals { exemptions: Vec<String> },
     TestLiterals,
     ModuleRootItems,
     SubmoduleNames,
     WorkspaceDeps,
     BevyKanaUsage,
-    /// Python lists no sites for a rule without a tier B or D candidates generator, such as a
-    /// tier A, C or E rule.
+    Unsupported { kind: String, origin: PathBuf },
+}
+
+pub(super) enum Listing {
+    Candidates(Generator),
+    Prefilter(String),
     NoSites,
-    Unavailable(UnavailableReason),
 }
 
 impl Listing {
     pub(super) const fn enumerates_sites(&self) -> bool {
-        !matches!(self, Self::NoSites | Self::Unavailable(_))
+        !matches!(
+            self,
+            Self::NoSites | Self::Candidates(Generator::Unsupported { .. })
+        )
     }
-}
-
-#[derive(Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum UnavailableReason {
-    UnsupportedGenerator,
-    PrefilterRequiresSharedMembership,
 }
 
 pub(super) struct RegexSpec {
@@ -133,7 +137,7 @@ impl Catalog {
         let checkout = canonical(checkout)?;
         let global = global_root()?;
         let docs = checkout.join("docs");
-        let mut rules = BTreeMap::new();
+        let mut rules = Vec::new();
         load_directory(
             &global.join("rust"),
             &global,
@@ -199,16 +203,32 @@ impl Catalog {
 
     pub(super) fn rule(&self, id: &str) -> Result<&Rule, CatalogFailure> {
         self.rules
-            .get(id)
+            .iter()
+            .rev()
+            .find(|rule| rule.id == id)
             .ok_or_else(|| CatalogFailure::UnknownRule(id.to_owned()))
     }
 
     pub(super) fn pins(&self) -> BTreeSet<(&str, &str)> {
         self.rules
-            .values()
-            .filter(|rule| rule.refreshes_sites)
+            .iter()
+            .filter(|rule| !matches!(rule.listing, Listing::NoSites))
             .map(|rule| (rule.id.as_str(), rule.pin.as_str()))
             .collect()
+    }
+
+    pub(super) fn generator_rules(&self) -> impl Iterator<Item = (&Rule, &Generator)> {
+        self.rules.iter().filter_map(|rule| match &rule.listing {
+            Listing::Candidates(generator) => Some((rule, generator)),
+            Listing::Prefilter(_) | Listing::NoSites => None,
+        })
+    }
+
+    pub(super) fn prefilter_rules(&self) -> impl Iterator<Item = (&Rule, &str)> {
+        self.rules.iter().filter_map(|rule| match &rule.listing {
+            Listing::Prefilter(pattern) => Some((rule, pattern.as_str())),
+            Listing::Candidates(_) | Listing::NoSites => None,
+        })
     }
 }
 
@@ -233,7 +253,7 @@ impl Rule {
         })?;
         let text = std::str::from_utf8(&bytes).map_err(|error| fail(error.to_string()))?;
         let fields = frontmatter::parse(text).map_err(fail)?;
-        let (listing, refreshes_sites) = classify(&fields, origin, &path).map_err(fail)?;
+        let listing = classify(&fields, origin, &path).map_err(fail)?;
         let pin = gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, &bytes)
             .map_err(|error| fail(error.to_string()))?
             .to_string();
@@ -249,7 +269,6 @@ impl Rule {
                 Reach::Member(path) => Reach::Member(path.clone()),
             },
             listing,
-            refreshes_sites,
         })
     }
 }
@@ -259,7 +278,7 @@ fn load_directory(
     root: &Path,
     origin: Origin,
     reach: &Reach,
-    rules: &mut BTreeMap<String, Rule>,
+    rules: &mut Vec<Rule>,
 ) -> Result<(), CatalogFailure> {
     add_rules(markdown(directory)?, root, origin, reach, rules)
 }
@@ -269,11 +288,10 @@ fn add_rules(
     root: &Path,
     origin: Origin,
     reach: &Reach,
-    rules: &mut BTreeMap<String, Rule>,
+    rules: &mut Vec<Rule>,
 ) -> Result<(), CatalogFailure> {
     for path in paths {
-        let rule = Rule::read(&path, root, origin, reach)?;
-        let _ = rules.insert(rule.id.clone(), rule);
+        rules.push(Rule::read(&path, root, origin, reach)?);
     }
     Ok(())
 }
@@ -346,7 +364,10 @@ fn values(fields: &Fields, key: &str) -> Result<Vec<String>, String> {
 
 enum Candidates {
     Absent,
-    Declared { surface: Surface, listing: Listing },
+    Declared {
+        surface:   Surface,
+        generator: Generator,
+    },
 }
 
 enum Surface {
@@ -387,8 +408,8 @@ fn candidates(fields: &Fields, path: &Path) -> Result<Candidates, String> {
     let paths = values(block, "paths")?;
     let exemptions = values(block, "paths_exempt")?;
     let structs = values(block, "structs")?;
-    let listing = match kind {
-        "regex" => Listing::Regex(RegexSpec {
+    let generator = match kind {
+        "regex" => Generator::Regex(RegexSpec {
             origin: path.to_owned(),
             pattern,
             exclusion,
@@ -396,32 +417,35 @@ fn candidates(fields: &Fields, path: &Path) -> Result<Candidates, String> {
             paths,
             exemptions,
         }),
-        "field_affixes" => Listing::FieldAffixes,
-        "enum_variant_stutter" => Listing::EnumVariantStutter,
-        "field_type_stutter" => Listing::FieldTypeStutter,
-        "struct_fields" => Listing::StructFields(StructFieldsSpec {
+        "field_affixes" => Generator::FieldAffixes,
+        "enum_variant_stutter" => Generator::EnumVariantStutter,
+        "field_type_stutter" => Generator::FieldTypeStutter,
+        "struct_fields" => Generator::StructFields(StructFieldsSpec {
             origin: path.to_owned(),
             structs,
             field_type_pattern,
         }),
-        "single_impl_traits" => Listing::SingleImplTraits,
-        "allows_without_reason" => Listing::AllowsWithoutReason,
-        "test_allow_boilerplate" => Listing::TestAllowBoilerplate,
-        "observer_guards" => Listing::ObserverGuards,
-        "literals" => Listing::Literals { exemptions },
-        "test_literals" => Listing::TestLiterals,
-        "module_root_items" => Listing::ModuleRootItems,
-        "submodule_names" => Listing::SubmoduleNames,
-        "workspace_deps" => Listing::WorkspaceDeps,
-        "bevy_kana_usage" => Listing::BevyKanaUsage,
-        _ => Listing::Unavailable(UnavailableReason::UnsupportedGenerator),
+        "single_impl_traits" => Generator::SingleImplTraits,
+        "allows_without_reason" => Generator::AllowsWithoutReason,
+        "test_allow_boilerplate" => Generator::TestAllowBoilerplate,
+        "observer_guards" => Generator::ObserverGuards,
+        "literals" => Generator::Literals { exemptions },
+        "test_literals" => Generator::TestLiterals,
+        "module_root_items" => Generator::ModuleRootItems,
+        "submodule_names" => Generator::SubmoduleNames,
+        "workspace_deps" => Generator::WorkspaceDeps,
+        "bevy_kana_usage" => Generator::BevyKanaUsage,
+        _ => Generator::Unsupported {
+            kind:   kind.to_owned(),
+            origin: path.to_owned(),
+        },
     };
-    Ok(Candidates::Declared { surface, listing })
+    Ok(Candidates::Declared { surface, generator })
 }
 
 /// Check the rule fields in the order of Python `_rule_from_text`, so the first refusal reason
 /// is the same.
-fn classify(fields: &Fields, origin: Origin, path: &Path) -> Result<(Listing, bool), String> {
+fn classify(fields: &Fields, origin: Origin, path: &Path) -> Result<Listing, String> {
     let candidates = candidates(fields, path)?;
     let classified = matches!(origin, Origin::Local)
         || ["tier", "family", "input_scope"]
@@ -451,22 +475,19 @@ fn classify(fields: &Fields, origin: Origin, path: &Path) -> Result<(Listing, bo
             return Err("approval always requires a family".to_owned());
         }
     }
-    let filtered = match fields.get("pre_filter") {
-        Some(Field::Scalar(value)) => !value.is_empty(),
-        None => false,
+    let prefilter = match fields.get("pre_filter") {
+        Some(Field::Scalar(value)) => value.as_str(),
+        None => "",
         _ => return Err("pre_filter must be a scalar".to_owned()),
     };
-    if tier == "B" && matches!(candidates, Candidates::Absent) && !filtered {
+    if tier == "B" && matches!(candidates, Candidates::Absent) && prefilter.is_empty() {
         return Err("tier B requires candidates or pre_filter".to_owned());
     }
     let _ = scalar(fields, "mode", "")?;
     Ok(match (tier, candidates) {
-        ("B" | "D", Candidates::Declared { listing, .. }) => (listing, true),
-        ("B", Candidates::Absent) if filtered => (
-            Listing::Unavailable(UnavailableReason::PrefilterRequiresSharedMembership),
-            true,
-        ),
-        _ => (Listing::NoSites, false),
+        ("B" | "D", Candidates::Declared { generator, .. }) => Listing::Candidates(generator),
+        ("B", Candidates::Absent) => Listing::Prefilter(prefilter.to_owned()),
+        _ => Listing::NoSites,
     })
 }
 

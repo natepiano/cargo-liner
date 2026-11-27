@@ -16,17 +16,16 @@ use super::frontmatter;
 use super::manifest_syntax;
 use super::path_match;
 use super::path_match::WorkspaceGlob;
+use super::source_tree::SiteText;
 use super::source_tree::SourceTree;
 use crate::finding_source::FindingSource;
-use crate::finding_source::SourceText;
-use crate::finding_source::Utf8Source;
-use crate::source_lines;
+use crate::source_lines::SourceLines;
 use crate::tip_view;
 
 pub(super) enum Manifest {
     Empty,
     Parsed {
-        source: Rc<Utf8Source>,
+        source: Rc<SourceLines>,
         table:  Table,
     },
 }
@@ -46,7 +45,8 @@ impl Manifest {
         let name = regex::escape(name);
         let assignment = Regex::new(&format!(r#"^[{space}]*"?{name}"?[{space}]*="#))
             .map_err(SitesFailure::DependencyPattern)?;
-        Ok(source_lines::split_lines(source.lines.text())
+        Ok(source
+            .lines()
             .map(frontmatter::without_line_ending)
             .position(|line| assignment.is_match(line))
             .map_or(1, |index| index + 1))
@@ -70,6 +70,25 @@ impl<'tree> ManifestBlobs<'tree> {
         }
     }
 
+    pub(super) fn validate_root(
+        &mut self,
+        source: &mut FindingSource<'_>,
+    ) -> Result<(), SitesFailure> {
+        let path = "Cargo.toml";
+        if self.tree.blob(path).is_none() {
+            return Ok(());
+        }
+        let valid = match self.tree.read_text(source, path)? {
+            SiteText::Utf8(_) => matches!(self.read(source, path)?, Manifest::Parsed { .. }),
+            SiteText::NotUtf8(text) => manifest_syntax::manifest_table(&text).is_some(),
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(SitesFailure::RootManifest)
+        }
+    }
+
     pub(super) fn read(
         &mut self,
         source: &mut FindingSource<'_>,
@@ -81,16 +100,16 @@ impl<'tree> ManifestBlobs<'tree> {
         match self.parsed.entry(blob) {
             Entry::Occupied(entry) => Ok(entry.into_mut()),
             Entry::Vacant(entry) => {
-                let SourceText::Utf8(text) = source.source(blob)? else {
+                let SiteText::Utf8(text) = self.tree.read_text(source, path)? else {
                     return Err(SitesFailure::ManifestEncoding(path.to_owned()));
                 };
-                let manifest = manifest_syntax::manifest_table(text.lines.text()).map_or(
-                    Manifest::Empty,
-                    |table| Manifest::Parsed {
-                        source: Rc::clone(text),
-                        table,
-                    },
-                );
+                let manifest =
+                    manifest_syntax::manifest_table(text.text()).map_or(Manifest::Empty, |table| {
+                        Manifest::Parsed {
+                            source: text,
+                            table,
+                        }
+                    });
                 Ok(entry.insert(manifest))
             },
         }

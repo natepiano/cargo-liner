@@ -43,6 +43,8 @@ pub(crate) enum SitesFailure {
     WorkspacePattern(#[source] regex::Error),
     #[error("manifest is not UTF-8: {0:?}")]
     ManifestEncoding(String),
+    #[error("cannot parse committed root manifest \"Cargo.toml\"")]
+    RootManifest,
     #[error("{path:?} is not in the subpath of {root:?}")]
     WorkspaceMemberOutsideRoot { path: PathBuf, root: PathBuf },
     #[error("invalid committed ignore pattern {pattern:?}")]
@@ -59,6 +61,21 @@ pub(crate) enum SitesFailure {
     },
     #[error("{rule}: candidates kind=struct_fields in {origin} needs field_type_pattern")]
     FieldTypePattern { rule: String, origin: PathBuf },
+    #[error(
+        "{rule}: candidates kind '{kind}' in {origin} has no generator in candidate_generators.py"
+    )]
+    UnsupportedGenerator {
+        rule:   String,
+        kind:   String,
+        origin: PathBuf,
+    },
+    #[error("{rule}: invalid pre_filter: {diagnostic}")]
+    PrefilterPattern {
+        rule:       String,
+        diagnostic: String,
+    },
+    #[error("{rule}: pre_filter source is not UTF-8: {path:?}")]
+    PrefilterEncoding { rule: String, path: String },
     #[error("listed site {0} has no committed blob")]
     SiteBlob(String),
     #[error("cannot encode the sites reply")]
