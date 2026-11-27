@@ -1014,38 +1014,20 @@ The copies are deleted. No source changes.
 
 **Ruled out:** Using a sibling's scope to satisfy a named acquisition.
 
-### Phase 50 — mend shortens a path beside a built-in attribute it does not list  · status: todo
+### Phase 50 — mend shortens a path beside a built-in attribute it does not list  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** a built-in attribute in a block, such as `#[link(name = "c")]` on an `extern` block, does not stop `cargo mend --fix` from shortening the paths in that block. Source: review finding F012 of the Phase 47 change, held for its own phase at the repair-round cap. A mend bug always gets a phase.
-
-**Spec:**
-1. The fault: `BlockBindings::collect` (`crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`) treats an attribute that is not in `BUILT_IN_ATTRIBUTES` as a possible macro. It then returns `BlockBindings::Unknown`, so mend leaves every site in the block. `#[link(name = "c")]` on an `extern` block is one case: `std::time::Duration` beside it does not shorten. This is a missed fix only. Mend never writes a wrong import here.
-2. Make `BUILT_IN_ATTRIBUTES.names` the complete list from the Rust Reference built-in attributes index (https://doc.rust-lang.org/reference/attributes.html#built-in-attributes-index). Keep it one named constant. An attribute that is not on the list still counts as a possible macro.
-3. Add `#[link(name = "c")]` on the `unsafe extern "C"` block of `unbound_first_segment` in `BLOCK_BINDINGS_SOURCE`. That fixture is the positive control: `inline_type_fix_leaves_paths_with_block_bindings` asserts that `std::time::Duration` shortens. The assert fails before the fix.
-4. Add a unit table in the `block_bindings.rs` tests: blocks with built-in attributes give `BlockBinding::Absent` for an unbound first segment. Include the `#[link(name = "c")]` `extern` block row; it fails before the fix.
-
-**Constraints from prior phases:**
-- `meta_binding` matches an attribute by `meta.path().get_ident()`, and a path with more than one segment gives `MayBind`. The Reference index lists two-segment entries in the `diagnostic` namespace (`diagnostic::on_unimplemented`, `diagnostic::do_not_recommend`). Match those on the full path.
-- `derive` and `cfg_attr` keep their own checks in `meta_binding`: `derive` accepts only `BUILT_IN_ATTRIBUTES.derives`, and `cfg_attr` checks each attribute after its predicate. A new name goes to the `_ => true` arm.
-- The existing unit test `item_macros_can_bind_the_first_path_segment` holds only `MayBind` rows. Keep it.
-- A fixture that builds a proc-macro crate takes over 1 s on the Mac. Do not add one.
-- The import-hiding checks of other mend fixes (`NamingTokens` in `facade_redirect/source_text.rs`, `ModuleImports::collides` with `RewrittenPaths`, the macro-body footprint in `inline_path_qualified_type/visitor.rs`) are not part of this change.
+- `BUILT_IN_ATTRIBUTES.names` in `block_bindings.rs` is the full Rust Reference built-in attributes index, in one constant.
+- `diagnostic::on_unimplemented` and `diagnostic::do_not_recommend` match on the full path. Every other multi-segment path gives `MayBind`.
+- `meta_binding` checks the inner attribute of `#[unsafe(...)]`, for example `#[unsafe(no_mangle)]`.
+- `derive` and `cfg_attr` keep their own checks.
 
 **Files:**
-- `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs`
-- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — `BLOCK_BINDINGS_SOURCE`, the positive control
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/block_bindings.rs` — the full list, the `unsafe(...)` inner check, and the unit table `built_in_attributes_leave_the_first_path_segment_unbound`.
+- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — `#[link(name = "c")]` on the `unsafe extern "C"` block of `BLOCK_BINDINGS_SOURCE`, the positive control.
 
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- The new row fails before the fix and passes after it.
-- No changed test takes one second or more.
+**Ruled out:** a crate can rename an extern crate to `diagnostic` under `#![no_implicit_prelude]`. Mend still treats `diagnostic::*` as built-in. This case is unlikely for a single user, so it stays.
 
 ### Phase 51 — a release of merged work frees its board slot  · status: done
 
@@ -1067,30 +1049,49 @@ The copies are deleted. No source changes.
 
 **Gotchas:** Declined as unlikely for one user: B rebases a commit that A already merged; A's next release can then retain B's original commit.
 
-### Phase 51b — a release never takes another reservation's work in an interleaved history  · status: todo
+### Phase 51b — a release never takes another reservation's work in an interleaved history  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** close the five closure-review cases that Phase 51 moved here by the landing rule. Source: Phase 51 closure review pass 3, 2026-11-25.
-
-**Spec:**
-1. B claims `b.rs`, commits R and stays active. A claims `a.rs` at R in the same checkout. B commits Q, and A commits P on Q. A's first release must not retain Q (`reservation/phase_boundary.rs`, the older-claim skip).
-2. B commits Q in another checkout. A takes an authorized overlap at S with `--head Q`, merges Q and commits P. A's first release must not retain Q (`verb/release.rs`, the foreign-commit check uses the supplied start).
-3. A checkpoints P and has a pending edit. B claims while HEAD is P. A commits Q, and the target takes only P. Q is A's work, and A must not be released (`reservation/phase_boundary.rs`, B's end at the shared HEAD).
-4. A full landing with a deleted target settles against `main` (`reconcile.rs`, test `tests/board.rs:200` requires it). Decide with the showrunner whether a missing target keeps the reservation and its alert; it is baseline behavior.
-5. Restore the gate test check of board evidence with pending edits (`tests/gate.rs`, the restore of `src` before the board check).
-6. Write each case as a failing test first.
-
-**Constraints from prior phases:** Keep the Phase 51 rulings and the ownership rule: ambiguous ownership keeps the reservation protected.
+- A first release checks the commit range from the holder's observed claim HEAD to the candidate tip. A path in an earlier live reservation's scope, or pending work of an outstanding or kept checkpoint from the same checkout, makes the candidate ambiguous, and the reservation stays active.
+- The foreign-commit check starts at the observed claim HEAD, also when the claim used `--head`. Direct release and reconciliation use the same selector. An import proof (`git/paths.rs`) admits a merged foreign commit only on a linear candidate with the correct merge-parent direction.
+- A later claim proves ownership of a suffix only when it owns the suffix paths exclusively. A claim at the protected tip alone proves nothing.
+- Kept work after a checkpoint is the typed `KeptWork` state (`reservation/lifecycle.rs`): a known tip, a plan hold transfer, or unknown. Fold format 9 rebuilds older replay checkpoints; legacy replay finds a hold transfer only from a `PlanShrink` claim with a `Reconciliation` release.
+- A known kept tip gets its own Git ref before the release appends; a failed ref write aborts the append. Reconciliation deletes the ref after it sees the kept tip on its target.
+- A plan hold transfer does not block the next phase checkpoint. Unknown kept work, or a missing kept object, blocks the same-checkout checkpoint.
+- A full landing with a missing target still settles against `main` (baseline, `tests/board.rs:200`).
 
 **Files:**
-- `crates/cargo-berth/src/reservation/phase_boundary.rs`, `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/tests/`
+- `crates/cargo-berth/src/reservation/phase_boundary.rs` — first-checkpoint tip, same-checkout guard, suffix ownership.
+- `crates/cargo-berth/src/reservation/lifecycle.rs`, `crates/cargo-berth/src/reservation/retention.rs` — `KeptWork` and its replay.
+- `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/git/refs.rs` — kept-tip record and ref.
+- `crates/cargo-berth/src/reconcile.rs` — kept-tip ref cleanup and the shared selector.
+- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/gate.rs` — interleaved-history, hold-transfer, pruned-tip and gate-retry rows.
 
-**Workers:** 1 writer.
+**Binds later work:** Never treat an absent object as excluded work. A kept-tip ref lives until its tip is on the target.
 
-**Verification:**
-- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
-- Each new test fails before the fix. No changed test takes 1 s or more.
+**Gotchas:** Gate fixtures run refusal, predecessor release, landing and retry in one repository; Nextest starts the fixture cache empty.
+
+**Ruled out:** a checkpoint fallback when the kept tip is missing (it can include foreign work); declined as unlikely for one user: a branch switch with a `--no-ff` merge of the holder's commit, and shared rebases.
+
+### Phase 51c — repository fixtures and kept releases leave no stale state  · status: done
+
+#### As-built
+
+- Repository fixtures never reuse a recorded gate result outside Nextest; a standalone run builds fresh observations.
+- The other-checkout first-checkpoint guard checks the recorded checkpoint and the kept tip (identical tips once). A missing kept object still blocks the checkpoint.
+- Compaction keeps a kept release while a live reservation has a different or unrecorded target. It drops one only when the kept ref is absent and Git proves the kept tip and any recorded checkpoint reached the release target (`ledger/history.rs`).
+- The journal separates an open failure from a write or sync failure. A kept release whose append fails at open deletes its kept-tip ref, if the ref still points to the prepared tip. After a write or sync failure the ref stays, because replay can still accept the release.
+
+**Files:**
+- `crates/cargo-berth/src/reservation/phase_boundary.rs` — the other-checkout guard.
+- `crates/cargo-berth/src/ledger/history.rs`, `crates/cargo-berth/src/ledger/compaction/` — kept-release retention.
+- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/ledger/journal/mod.rs`, `crates/cargo-berth/src/git/refs.rs` — append failure kinds and ref cleanup.
+- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/gate.rs`, `crates/cargo-berth/tests/recorded_templates.rs` — the regression rows.
+
+**Gotchas:** A kept ref with no recorded release only keeps a commit alive; deleting a ref whose release replay can accept strands the release.
+
+**Ruled out:** declined as unlikely for one user: a fetch that rewrites the upstream while compaction runs.
 
 ### Phase 52 — a Mac handler sees each config change at once, also under load  · status: todo
 
@@ -1379,3 +1380,51 @@ The copies are deleted. No source changes.
 **Gotchas:** A same-version switch can keep the old build output while the old compiler remains. Mend uses the compiler that matches its linked libraries.
 
 **Ruled out:** Two Cargo builds in the regression test exceed the one-second test limit.
+
+### Phase 60 — a cargo-berth claim retry reports a publication only after it is durable  · status: done
+
+#### As-built
+
+- `ledger/publication.rs` holds the shared durable publication: write and sync a temporary file, replace the destination, then sync the directory.
+- The held-path check (`HeldCheckAcquisition::publish`, called from `verb/check.rs`) republishes the coordination-run marker and any required session index before it reports `published`.
+- A failed write or sync reports `unavailable` with its diagnostic.
+- A `PlanShrink` hold under a harness session reports `left_unmapped`. With no harness session, it reports `published`, because no entry is needed.
+- The fast check path takes no ledger mutation lock. `HeldCheckAcquisition` keeps its committed acquisition in a box for Clippy's large-variant lint.
+- `docs/cargo-berth/generated/output-contract.json` and the as-built pages `check-under-load.md`, `json-contract.md`, `phase-reservations.md` and `worktree-coordination.md` describe the new behavior.
+
+**Files:**
+- `crates/cargo-berth/src/ledger/publication.rs`, `ledger/mod.rs`, `ledger/worktree_context.rs` — durable publication.
+- `crates/cargo-berth/src/session/mod.rs` — session index publication and the `left_unmapped` report.
+- `crates/cargo-berth/src/verb/check.rs`, `verb/claim/acquisition.rs`, `output.rs` — the held-path publication.
+
+**Ruled out:** a lock-free check can restore the marker while a concurrent release removes the last reservation. The locked path publishes the marker outside the lock too. It is unlikely for a single user, so it stays.
+
+### Phase 61 — no cargo-berth test folder goes into /dev/shm  · status: todo
+
+#### Work Order
+
+**Goal:** cargo-berth tests never put a scratch folder in /dev/shm. Source: the user via bob, about 09:35 PST on 2026-11-27: "i want the machineery that puts these folders into memory removed". Relayed by cargo-liner at 12:36 PST.
+
+**Spec:**
+1. In `crates/cargo-berth/tests/check-test-scratch.sh`, remove the /dev/shm selection: the `/proc/mounts` loop, `memory_has_room`, and the /dev/shm fallback branch after `mktemp`.
+2. The scratch parent is the run's own temporary folder, `${profile%/*}/tmp/cargo-berth-templates/private`. `CARGO_BERTH_TEST_SCRATCH_PARENT` stays as the override.
+3. In `crates/cargo-berth/tests/temporary_directories.rs`, remove the `memory-full` mode of `scratch_wrapper_names_leaks_and_preserves_clean_panics`.
+4. Remove `shared_shell_scripts_restore_across_filesystems`. It makes a folder in /dev/shm. Keep the cross-filesystem copy code: the override can name another filesystem.
+5. Remove every other /dev/shm choice in `crates/cargo-berth`, and any comment or as-built text that names it.
+
+**Constraints:**
+- Do not change the shared fixture cache location.
+- No test may take one second or more.
+
+**Files:**
+- `crates/cargo-berth/tests/check-test-scratch.sh`
+- `crates/cargo-berth/tests/temporary_directories.rs`
+- any other `crates/cargo-berth` or `docs/cargo-berth` file that names /dev/shm
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Verification:**
+- `git grep -n /dev/shm -- crates/cargo-berth docs/cargo-berth` finds nothing.
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
