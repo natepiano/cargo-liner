@@ -21,21 +21,23 @@ pub(super) const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 /// Python keeps the first 200 characters of a site's stripped display text.
 pub(super) const DISPLAY_LIMIT: usize = 200;
 
-// exclusion interpreter
+// Python regex interpreter
 /// The variable that names the first Python interpreter that `scripts/lib/py` tries.
 pub(super) const CLAUDE_PYTHON: &str = "CLAUDE_PYTHON";
-pub(super) const MATCH_EXCLUSIONS: &str = r"
+pub(super) const PYTHON_REGEX_SEARCH: &str = r#"
 import json
 import re
 import sys
-pattern, lines = json.load(sys.stdin)
-try:
-    matcher = re.compile(pattern)
-except re.error as error:
-    print(error, file=sys.stderr)
-    sys.exit(1)
-json.dump([matcher.search(line) is not None for line in lines], sys.stdout)
-";
+matches = []
+for index, search in enumerate(json.load(sys.stdin)):
+    try:
+        matcher = re.compile(search["pattern"])
+    except re.error as error:
+        json.dump({"index": index, "diagnostic": str(error)}, sys.stdout)
+        sys.exit(0)
+    matches.extend(matcher.search(line) is not None for line in search["lines"])
+json.dump(matches, sys.stdout)
+"#;
 /// The `python3` paths that `scripts/lib/py` tries after the per-user profile, in order.
 pub(super) const PACKAGE_PYTHONS: [&str; 2] =
     ["/opt/homebrew/bin/python3", "/usr/local/bin/python3"];

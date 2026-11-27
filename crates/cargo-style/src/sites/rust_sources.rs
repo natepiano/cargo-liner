@@ -7,12 +7,12 @@ use std::rc::Rc;
 use super::ledger::ListedCoordinate;
 use super::mask;
 use super::mask::MaskedSource;
+use super::source_tree::SiteText;
 use super::source_tree::SourceTree;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
-use crate::finding_source::SourceText;
-use crate::finding_source::Utf8Source;
 use crate::source_lines::SiteLine;
+use crate::source_lines::SourceLines;
 use crate::tip_view;
 
 pub(super) struct RustSources {
@@ -26,14 +26,14 @@ pub(super) struct RustBlob {
 }
 
 enum OriginalSource {
-    Utf8(Rc<Utf8Source>),
+    Utf8(Rc<SourceLines>),
     Unreadable,
 }
 
 impl RustBlob {
     pub(super) fn display_line(&self, line: usize) -> String {
         if let OriginalSource::Utf8(source) = &self.original
-            && let SiteLine::Text(text) = source.lines.line(line)
+            && let SiteLine::Text(text) = source.line(line)
         {
             return mask::display_line(text, 1);
         }
@@ -52,19 +52,17 @@ impl RustSources {
             match blobs.entry(entry.object.clone()) {
                 Entry::Occupied(mut blob) => blob.get_mut().paths.push(path.clone()),
                 Entry::Vacant(slot) => {
-                    let (masked, original) = match source.source(&entry.object)? {
-                        SourceText::Utf8(source) => {
-                            let text = source.lines.text();
+                    let (masked, original) = match tree.read_text(source, path)? {
+                        SiteText::Utf8(source) => {
+                            let text = source.text();
                             let masked = if text.contains('\r') {
                                 mask::mask_source(&text.replace("\r\n", "\n").replace('\r', "\n"))
                             } else {
                                 mask::mask_source(text)
                             };
-                            (masked, OriginalSource::Utf8(Rc::clone(source)))
+                            (masked, OriginalSource::Utf8(source))
                         },
-                        SourceText::NotUtf8(_) => {
-                            (mask::mask_source(""), OriginalSource::Unreadable)
-                        },
+                        SiteText::NotUtf8(_) => (mask::mask_source(""), OriginalSource::Unreadable),
                     };
                     let _ = slot.insert(RustBlob {
                         masked,

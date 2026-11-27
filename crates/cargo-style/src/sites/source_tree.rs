@@ -1,6 +1,9 @@
 //! Verify that the synced tree and its blobs are available.
 
+use std::cell::RefCell;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::io::Error;
 use std::io::Seek as _;
 use std::io::Write as _;
@@ -15,9 +18,19 @@ use crate::finding_source::FindingSourceFailure;
 use crate::finding_source::TreeBlobs;
 use crate::finding_source::TreeEntries;
 use crate::finding_source::TreeEntry;
+use crate::finding_source::TreeFile;
+use crate::source_lines::SourceLines;
+
+#[derive(Clone)]
+pub(super) enum SiteText {
+    Utf8(Rc<SourceLines>),
+    NotUtf8(Rc<str>),
+}
 
 pub(super) struct SourceTree {
     entries: Rc<TreeEntries>,
+    commit:  String,
+    texts:   RefCell<HashMap<String, SiteText>>,
 }
 
 impl SourceTree {
@@ -30,6 +43,8 @@ impl SourceTree {
         };
         Ok(Self {
             entries: Rc::clone(entries),
+            commit:  commit.to_owned(),
+            texts:   RefCell::default(),
         })
     }
 
@@ -44,6 +59,44 @@ impl SourceTree {
             .get(path)
             .filter(|entry| entry.kind == EntryKind::Blob)
             .map(|entry| entry.object.as_str())
+    }
+
+    pub(super) fn read_bytes<'a>(
+        &self,
+        source: &'a mut FindingSource<'_>,
+        path: &str,
+    ) -> Result<&'a [u8], FindingSourceFailure> {
+        match source.raw_file(&self.commit, path)? {
+            TreeFile::Bytes(bytes) => Ok(bytes),
+            TreeFile::Folder | TreeFile::Missing => Err(self.missing(path)),
+        }
+    }
+
+    pub(super) fn read_text(
+        &self,
+        source: &mut FindingSource<'_>,
+        path: &str,
+    ) -> Result<SiteText, FindingSourceFailure> {
+        let blob = self.blob(path).ok_or_else(|| self.missing(path))?;
+        let mut texts = self.texts.borrow_mut();
+        Ok(match texts.entry(blob.to_owned()) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => {
+                let bytes = self.read_bytes(source, path)?;
+                let text = std::str::from_utf8(bytes).map_or_else(
+                    |_| SiteText::NotUtf8(Rc::from(String::from_utf8_lossy(bytes))),
+                    |text| SiteText::Utf8(Rc::new(SourceLines::from(text.to_owned()))),
+                );
+                entry.insert(text).clone()
+            },
+        })
+    }
+
+    fn missing(&self, path: &str) -> FindingSourceFailure {
+        FindingSourceFailure::MissingPath {
+            commit: self.commit.clone(),
+            path:   path.to_owned(),
+        }
     }
 
     pub(super) fn verify_blobs(&self, repo: &Path) -> Result<(), SourceReadFailure> {

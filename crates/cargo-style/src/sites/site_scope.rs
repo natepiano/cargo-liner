@@ -6,15 +6,14 @@ use toml::Value;
 use super::catalog::Reach;
 use super::failure::SitesFailure;
 use super::path_match::PathPattern;
+use super::source_tree::SiteText;
 use super::source_tree::SourceTree;
 use crate::constants::IGNORE_FILES;
 use crate::finding_source::FindingSource;
-use crate::finding_source::SourceText;
 use crate::tip_view;
 
 pub(super) struct SiteScope<'a> {
     tree:    &'a SourceTree,
-    reach:   &'a Reach,
     ignored: Vec<Ignore>,
 }
 
@@ -22,22 +21,22 @@ impl<'a> SiteScope<'a> {
     pub(super) fn read(
         tree: &'a SourceTree,
         source: &mut FindingSource<'_>,
-        reach: &'a Reach,
     ) -> Result<Self, SitesFailure> {
         Ok(Self {
             tree,
-            reach,
             ignored: ignored_paths(source, tree)?,
         })
     }
 
-    pub(super) fn includes(&self, path: &str) -> bool {
-        self.tree.blob(path).is_some()
-            && !is_ignored(path, &self.ignored)
-            && match self.reach {
-                Reach::Repository => true,
-                Reach::Member(directory) => tip_view::under(path, directory),
-            }
+    pub(super) fn includes(&self, path: &str, reach: &Reach) -> bool {
+        self.tree.blob(path).is_some() && !is_ignored(path, &self.ignored) && reach.includes(path)
+    }
+
+    pub(super) fn rust_paths(&self) -> impl Iterator<Item = &str> {
+        self.tree
+            .blobs()
+            .map(|(path, _)| path.as_str())
+            .filter(|path| tip_view::is_rust_path(path) && !is_ignored(path, &self.ignored))
     }
 }
 
@@ -79,12 +78,13 @@ fn ignored_paths(
 ) -> Result<Vec<Ignore>, SitesFailure> {
     let mut patterns = Vec::new();
     for path in IGNORE_FILES {
-        let Some(blob) = tree.blob(path) else {
+        if tree.blob(path).is_none() {
             continue;
-        };
-        let text = match source.source(blob)? {
-            SourceText::Utf8(text) => text.lines.text(),
-            SourceText::NotUtf8(text) => text,
+        }
+        let input = tree.read_text(source, path)?;
+        let text = match &input {
+            SiteText::Utf8(text) => text.text(),
+            SiteText::NotUtf8(text) => text,
         };
         let table: Table = text.parse().map_err(|source| SitesFailure::IgnoreConfig {
             path:   path.to_owned(),

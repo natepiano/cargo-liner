@@ -10,6 +10,7 @@ use super::item_scan::ItemScanner;
 use super::item_scan::StructDef;
 use super::ledger::ListedCoordinate;
 use super::regex_sites;
+use super::regex_sites::PythonSearch;
 use super::rust_sources;
 use super::rust_sources::RustCoordinate;
 use super::rust_sources::RustSources;
@@ -184,7 +185,11 @@ pub(super) fn struct_fields(
         .iter()
         .flat_map(|(_, fields)| fields.iter().map(|site| site.field.type_text))
         .collect::<Vec<_>>();
-    let matches = regex_sites::python_matches(&rule.id, &spec.field_type_pattern, &type_texts)?;
+    let matches = regex_sites::python_matches(&[PythonSearch {
+        rule:    &rule.id,
+        pattern: &spec.field_type_pattern,
+        lines:   type_texts,
+    }])?;
     let mut matches = matches.into_iter();
     let candidates = groups.into_iter().map(|(paths, fields)| {
         let sites = fields

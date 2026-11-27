@@ -17,6 +17,7 @@ mod mask;
 mod module_sites;
 mod observer_sites;
 mod path_match;
+mod prefilter_sites;
 mod regex_sites;
 mod request;
 mod rust_sources;

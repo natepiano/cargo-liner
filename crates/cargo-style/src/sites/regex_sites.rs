@@ -1,5 +1,6 @@
 //! Run the regex generator against committed file contents.
 
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
@@ -15,26 +16,27 @@ use std::process::Output;
 use std::process::Stdio;
 use std::string::FromUtf8Error;
 
+use serde::Deserialize;
+use serde::Serialize;
+
 use super::catalog::Exclusion;
 use super::catalog::RegexSpec;
 use super::catalog::Rule;
 use super::constants::CLAUDE_PYTHON;
-use super::constants::MATCH_EXCLUSIONS;
 use super::constants::PACKAGE_PYTHONS;
 use super::constants::PER_USER_PROFILES;
 use super::constants::PROFILE_PYTHON;
 use super::constants::PYTHON_COMMAND;
+use super::constants::PYTHON_REGEX_SEARCH;
 use super::constants::PYTHON_VERSION_CHECK;
 use super::constants::SYSTEM_PYTHON;
 use super::frontmatter;
 use super::ledger::ListedCoordinate;
 use super::mask;
 use super::path_match;
-use super::source_tree::SourceReadFailure;
 use super::source_tree::SourceTree;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
-use crate::finding_source::SourceText;
 use crate::source_lines;
 
 pub(super) struct RegexTool {
@@ -65,16 +67,26 @@ pub(crate) enum RegexFailure {
     #[error("no python3 3.12 or newer is available for the exclusion pattern; set CLAUDE_PYTHON")]
     PythonUnavailable,
     #[error("{rule}: {diagnostic}")]
-    Exclusion {
+    InvalidPythonPattern {
         rule:       String,
         diagnostic: String,
     },
-    #[error(transparent)]
-    SourceTree(#[from] SourceReadFailure),
+    #[error("Python regex search failed: {0}")]
+    PythonSearch(String),
+    #[error("Python regex reply does not match the request")]
+    PythonReply,
 }
 
 impl RegexTool {
-    pub(super) fn read() -> Result<Self, RegexFailure> {
+    pub(super) fn read_once(cache: &OnceCell<Self>) -> Result<&Self, RegexFailure> {
+        if let Some(tool) = cache.get() {
+            return Ok(tool);
+        }
+        let tool = Self::read()?;
+        Ok(cache.get_or_init(|| tool))
+    }
+
+    fn read() -> Result<Self, RegexFailure> {
         let executable = on_path(OsStr::new("rg"))
             .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "rg is not on PATH"))?
             .canonicalize()?;
@@ -182,7 +194,6 @@ enum RgOperation {
 }
 
 pub(super) fn enumerate(
-    repo: &Path,
     source: &mut FindingSource<'_>,
     tree: &SourceTree,
     rule: &Rule,
@@ -195,13 +206,13 @@ pub(super) fn enumerate(
     let temporary = tempfile::Builder::new().prefix("style-regex-").tempdir()?;
     let root = temporary.path();
     let blobs = tree.blobs();
-    for (path, entry) in blobs.clone() {
+    for (path, _) in blobs.clone() {
         let target = root.join(relative(path)?);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
         if tool.is_ignore(path) {
-            write_blob(repo, source, &entry.object, &target)?;
+            fs::write(target, tree.read_bytes(source, path)?)?;
         } else {
             let _ = fs::File::create(target)?;
         }
@@ -211,9 +222,9 @@ pub(super) fn enumerate(
         .split_terminator('\0')
         .map(without_dot)
         .collect::<HashSet<_>>();
-    for (path, entry) in blobs {
+    for (path, _) in blobs {
         if selected.contains(path.as_str()) && !tool.is_ignore(path) {
-            write_blob(repo, source, &entry.object, &root.join(path))?;
+            fs::write(root.join(path), tree.read_bytes(source, path)?)?;
         }
     }
     let matches = String::from_utf8(tool.search(root, spec, RgOperation::MatchLines)?.stdout)?;
@@ -232,30 +243,6 @@ fn relative(path: &str) -> Result<PathBuf, RegexFailure> {
         }
     }
     Ok(result)
-}
-
-fn write_blob(
-    repo: &Path,
-    source: &mut FindingSource<'_>,
-    blob: &str,
-    path: &Path,
-) -> Result<(), RegexFailure> {
-    match source.source(blob)? {
-        SourceText::Utf8(text) => fs::write(path, text.lines.text())?,
-        SourceText::NotUtf8(_) => {
-            // The shared text reader replaces invalid bytes. Ripgrep needs the exact bytes.
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(repo)
-                .args(["cat-file", "blob", blob])
-                .output()?;
-            if !output.status.success() {
-                return Err(SourceReadFailure::MissingObject(blob.to_owned()).into());
-            }
-            fs::write(path, output.stdout)?;
-        },
-    }
-    Ok(())
 }
 
 fn listed_coordinates(
@@ -299,37 +286,63 @@ fn python_excludes(
     pattern: &str,
     matches: &[(&str, usize, &str)],
 ) -> Result<Vec<bool>, RegexFailure> {
-    let lines = matches.iter().map(|(_, _, text)| *text).collect::<Vec<_>>();
-    python_matches(rule, pattern, &lines)
+    python_matches(&[PythonSearch {
+        rule,
+        pattern,
+        lines: matches.iter().map(|(_, _, text)| *text).collect(),
+    }])
 }
 
-pub(super) fn python_matches(
-    rule: &str,
-    pattern: &str,
-    lines: &[&str],
-) -> Result<Vec<bool>, RegexFailure> {
-    // Use Python re for rule patterns. Search all supplied strings in one process.
+#[derive(Serialize)]
+pub(super) struct PythonSearch<'a> {
+    #[serde(skip)]
+    pub(super) rule:    &'a str,
+    pub(super) pattern: &'a str,
+    pub(super) lines:   Vec<&'a str>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PythonReply {
+    Matches(Vec<bool>),
+    Invalid {
+        index:      usize,
+        diagnostic: String,
+    },
+}
+
+pub(super) fn python_matches(searches: &[PythonSearch<'_>]) -> Result<Vec<bool>, RegexFailure> {
     let mut input = tempfile::tempfile()?;
-    serde_json::to_writer(&mut input, &(pattern, lines))?;
+    serde_json::to_writer(&mut input, searches)?;
     input.rewind()?;
     let output = Command::new(exclusion_python()?)
-        .args(["-I", "-S", "-c", MATCH_EXCLUSIONS])
+        .args(["-I", "-S", "-c", PYTHON_REGEX_SEARCH])
         .stdin(input)
         .output()?;
     if !output.status.success() {
-        return Err(RegexFailure::Exclusion {
-            rule:       rule.to_owned(),
-            diagnostic: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+        return Err(RegexFailure::PythonSearch(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
     }
-    let result: Vec<bool> = serde_json::from_slice(&output.stdout)?;
-    if result.len() != lines.len() {
-        return Err(RegexFailure::Exclusion {
-            rule:       rule.to_owned(),
-            diagnostic: "exclusion reply has the wrong number of rows".to_owned(),
-        });
+    match serde_json::from_slice(&output.stdout)? {
+        PythonReply::Matches(result)
+            if result.len()
+                == searches
+                    .iter()
+                    .map(|search| search.lines.len())
+                    .sum::<usize>() =>
+        {
+            Ok(result)
+        },
+        PythonReply::Invalid { index, diagnostic } => {
+            let search = searches.get(index).ok_or(RegexFailure::PythonReply)?;
+            Err(RegexFailure::InvalidPythonPattern {
+                rule: search.rule.to_owned(),
+                diagnostic,
+            })
+        },
+        PythonReply::Matches(_) => Err(RegexFailure::PythonReply),
     }
-    Ok(result)
 }
 
 /// Select Python as `scripts/lib/py` does: try `CLAUDE_PYTHON`, then each known `python3`, and
