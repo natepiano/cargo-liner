@@ -1428,3 +1428,33 @@ The copies are deleted. No source changes.
 **Verification:**
 - `git grep -n /dev/shm -- crates/cargo-berth docs/cargo-berth` finds nothing.
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+
+### Phase 62 — mend adds no import through a macro import that has the crate's name  · status: todo
+
+#### Work Order
+
+**Goal:** in a file with `use anyhow::anyhow;` (a macro) and a path `anyhow::Error`, `cargo mend --fix` writes `use anyhow::Error;` or leaves the path. It never writes `use anyhow::anyhow::Error;`. Source: hana's errors unit, Phase 6 lint gate, relayed by cargo-liner at 17:59 EST on 2026-11-27. This blocks that gate: the bad import fails with E0432, and mend rolls back every fix.
+
+**Spec:**
+1. The fault: `absolutize_import_path` (`crates/cargo-mend/src/fixes/inline_path_qualified_type/process.rs`) matches an existing import by its last segment only. `use anyhow::anyhow;` has the last segment `anyhow`, so `anyhow::Error` becomes `anyhow::anyhow::Error`. The match ignores namespaces: a macro, function or value import does not bind the name in the type namespace, so the crate `anyhow` stays visible there.
+2. Phase 50 did not cause this. Phase 50 changed only `block_bindings.rs`. `absolutize_import_path` last changed on 2026-10-25. The hana branch added `use anyhow::anyhow;` beside `anyhow::Error`.
+3. Fix: when the leading segment can also name a crate in the extern prelude, an existing import with that last segment is ambiguous. Mend cannot prove the namespace from syntax. For an ambiguous case, resolve to the crate path (`use anyhow::Error;`) only if mend can prove that the import is not a module or type. Otherwise leave the path unchanged.
+4. Use data that mend already has to know the crate names (for example the package's dependency names, or the compiler data that the driver reads). Do not add a new heuristic list.
+5. Add a fixture in the mend fix tests: `use anyhow::anyhow;` plus `anyhow::Error` in an enum variant. Assert that mend writes no `anyhow::anyhow::Error`. The assert fails before the fix.
+6. Keep the existing behavior: with `use std::fmt;`, `fmt::Display` still becomes `std::fmt::Display`.
+
+**Constraints:**
+- Do not read or change the hana tree. The report gives the case.
+- A fixture that builds a proc-macro crate takes over 1 s on the Mac. Do not add one. No test may take one second or more.
+
+**Files:**
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/process.rs`
+- the mend fix tests under `crates/cargo-mend/tests/`
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
+- The new fixture fails before the fix and passes after it.
