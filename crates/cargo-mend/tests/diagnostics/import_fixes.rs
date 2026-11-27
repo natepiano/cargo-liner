@@ -133,6 +133,7 @@ mod tests {
         macro_rules! Duration {
             () => {};
         }
+        #[link(name = "c")]
         unsafe extern "C" {
             fn ForeignMarker();
         }
