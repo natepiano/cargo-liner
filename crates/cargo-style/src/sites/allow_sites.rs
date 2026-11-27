@@ -2,7 +2,6 @@
 
 use regex::Regex;
 
-use super::catalog::Rule;
 use super::constants::BOILERPLATE_LINTS;
 use super::failure::SitesFailure;
 use super::item_scan;
@@ -15,7 +14,6 @@ use super::ledger::ListedCoordinate;
 use super::rust_sources;
 use super::rust_sources::RustCoordinate;
 use super::rust_sources::RustSources;
-use crate::tip_view::RepositoryTip;
 use crate::tokenizer;
 use crate::unicode_tables::SPACE;
 use crate::unicode_tables::WORD;
@@ -96,8 +94,6 @@ impl BoilerplateScanner {
 
 pub(super) fn allows_without_reason(
     sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let space = item_scan::class_ranges(SPACE);
     let word = item_scan::class_ranges(WORD);
@@ -122,13 +118,11 @@ pub(super) fn allows_without_reason(
             .collect();
         (blob.paths.as_slice(), sites)
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
 pub(super) fn test_allow_boilerplate(
     sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let scanner = BoilerplateScanner::new()?;
     let candidates = sources.blobs().map(|blob| {
@@ -140,7 +134,7 @@ pub(super) fn test_allow_boilerplate(
             .collect();
         (blob.paths.as_slice(), sites)
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
 fn allow_attributes(space: &str) -> Result<Regex, SitesFailure> {

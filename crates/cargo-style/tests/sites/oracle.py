@@ -133,6 +133,8 @@ def write_catalog(root: Path, repo: Path) -> None:
     write(style, "rust/marker.md", MARKER_RULE.replace("\n", "\r\n"))
     write(style, "rust/types.md", "---\ntier: B\nfamily: types\ncandidates:\n"
           + "  kind: module_root_items\n  surface: whole\n---\n# Types\n")
+    write(root / "unsupported", "docs/style/types.md", "---\ntier: B\nfamily: types\ncandidates:\n"
+          + "  kind: unknown_test_generator\n  surface: whole\n---\n# Types\n")
     write(style, "rust/filter.md", "---\ntier: B\nfamily: names\npre_filter: marker\n---\n# Filter\n")
     write(style, "rust/format.md", "---\ntier: A\nmechanism: rustfmt\n---\n# Format\n")
     write(style, "rust/review.md", "---\ntier: C\nfamily: names\n---\n# Review\n")
@@ -410,11 +412,11 @@ def main(root: Path) -> None:
     assert any(row.file == "src/untracked.rs" for row in working.candidates), working
     cases = regex_replies(root, tip, next_tip) + configured_replies(root) + legacy_replies(root, tip)
     with Ledger(repo, root / "oracle.sqlite") as oracle:
-        for rule, reason in (
-            ("global:rust/types.md", "unsupported_generator"),
-            ("global:rust/filter.md", "prefilter_requires_shared_membership"),
-        ):
-            cases.append(success(reason, "ignore change.sqlite", "repo", reply(oracle, repo, rule, reason)))
+        reason = "unsupported_generator"
+        cases.append(success(reason, "ignore change.sqlite", "unsupported",
+                             reply(oracle, root / "unsupported", "local:docs/style/types.md", reason)))
+        rule, reason = "global:rust/filter.md", "prefilter_requires_shared_membership"
+        cases.append(success(reason, "ignore change.sqlite", "repo", reply(oracle, repo, rule, reason)))
         for tier, rule in (
             ("A", "global:rust/format.md"),
             ("C", "global:rust/review.md"),

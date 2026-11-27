@@ -22,18 +22,15 @@ pub(super) struct SourceTree {
 
 impl SourceTree {
     pub(super) fn read(
-        repo: &Path,
         source: &mut FindingSource<'_>,
         commit: &str,
     ) -> Result<Self, SourceReadFailure> {
         let TreeBlobs::Listed(entries) = source.tree(commit)? else {
             return Err(SourceReadFailure::Tree(commit.to_owned()));
         };
-        let tree = Self {
+        Ok(Self {
             entries: Rc::clone(entries),
-        };
-        tree.verify_blobs(repo)?;
-        Ok(tree)
+        })
     }
 
     pub(super) fn blobs(&self) -> impl Iterator<Item = (&String, &TreeEntry)> + Clone {
@@ -42,7 +39,14 @@ impl SourceTree {
             .filter(|(_, entry)| entry.kind == EntryKind::Blob)
     }
 
-    fn verify_blobs(&self, repo: &Path) -> Result<(), SourceReadFailure> {
+    pub(super) fn blob(&self, path: &str) -> Option<&str> {
+        self.entries
+            .get(path)
+            .filter(|entry| entry.kind == EntryKind::Blob)
+            .map(|entry| entry.object.as_str())
+    }
+
+    pub(super) fn verify_blobs(&self, repo: &Path) -> Result<(), SourceReadFailure> {
         // The inventory already opens the root tree and all traversed tree objects.
         let blobs = self
             .blobs()

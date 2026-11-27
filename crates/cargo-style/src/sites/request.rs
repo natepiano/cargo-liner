@@ -12,6 +12,7 @@ use super::committed_sites::SitesOutcome;
 use super::constants::SITES_REPLY_SCHEMA;
 use super::failure::SitesFailure;
 use super::ledger::SitesLedger;
+use super::source_tree::SourceTree;
 use crate::finding_source::FindingSource;
 
 pub(crate) struct SitesRequest {
@@ -68,12 +69,11 @@ impl SitesRequest {
         let mut source = FindingSource::open(&self.repo)?;
         let ledger = SitesLedger::read(&self.ledger, &catalog, rule, &mut source)?;
         let commit = &ledger.synced_tip;
-        let tip = source.tip(commit)?;
+        let tree = SourceTree::read(&mut source, commit)?;
         let outcome = CommittedSites {
             repo: &self.repo,
             source: &mut source,
-            tip: &tip,
-            commit,
+            tree: &tree,
             rule,
         }
         .outcome(ledger.history)?;

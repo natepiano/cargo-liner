@@ -71,6 +71,23 @@ pub(super) const LITERAL_EXEMPTIONS: [&str; 3] = ["examples", "benches", "build.
 pub(super) const MIN_NUMERIC_LITERAL_DIGITS: usize = 2;
 pub(super) const MIN_STRING_LITERAL_CHARACTERS: usize = 2;
 
+// manifests
+pub(super) const BEVY_DEPENDENCY: &str = "bevy";
+pub(super) const DEPENDENCY_SECTIONS: [&str; 3] =
+    ["dependencies", "dev-dependencies", "build-dependencies"];
+pub(super) const KANA_DEPENDENCY: &str = "hana_kana";
+pub(super) const KANA_LEAK_TYPES: &str = "Position|Displacement|Velocity|ToF32|ToI32|ToU32|ToUsize";
+/// The root that Python uses for the committed tree.
+pub(super) const PYTHON_INPUT_ROOT: &str = "/export";
+
+// module structure
+pub(super) const ANTI_PATTERN_MODULE_STEMS: &[&str] = &[
+    "helpers", "utils", "util", "common", "misc", "types", "model",
+];
+pub(super) const MODULE_ROOT_ITEM_KINDS: &str =
+    "fn|struct|enum|trait|impl|const|static|type|union|macro_rules!";
+pub(super) const MODULE_ROOT_PREVIEW_LIMIT: usize = 6;
+
 // observer guards
 pub(super) const OBSERVER_BODY_WINDOW: usize = 6;
 
