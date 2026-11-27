@@ -5,6 +5,8 @@
     reason = "coverage fixtures come from the Python oracle, so the Git helpers stay unused"
 )]
 mod support;
+#[path = "support/wal.rs"]
+mod wal;
 
 use std::fs;
 use std::path::Path;
@@ -17,16 +19,27 @@ use support::ParityCheckout;
 use support::TestResult;
 use support::output_with_input;
 use support::parity_checkout;
+use wal::read_wal;
 
 const ORACLE: &[u8] = include_bytes!("coverage/oracle.py");
 
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OracleCommand {
+    #[default]
+    Coverage,
+    Sites,
+}
+
 #[derive(Deserialize)]
 struct CoverageCase {
-    name:   String,
-    ledger: String,
-    rules:  String,
-    flags:  Vec<String>,
-    result: ExpectedCoverage,
+    name:    String,
+    ledger:  String,
+    rules:   String,
+    flags:   Vec<String>,
+    #[serde(default)]
+    command: OracleCommand,
+    result:  ExpectedCoverage,
 }
 
 #[derive(Deserialize)]
@@ -79,28 +92,32 @@ fn oracle_cases(checkout: &Path, root: &Path) -> TestResult<Vec<CoverageCase>> {
 fn compare_case(root: &Path, case: &CoverageCase) -> TestResult<()> {
     let ledger = root.join(&case.ledger);
     let before = fs::read(&ledger)?;
-    let output = output_with_input(
-        FixtureCommand::new(env!("CARGO_BIN_EXE_cargo-style"))
-            .env("HOME", root.join("home"))
-            .env("XDG_CONFIG_HOME", root.join("xdg-config"))
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .arg("coverage")
-            .arg("--repo")
-            .arg(root.join("repo"))
-            .arg("--ledger")
-            .arg(&ledger)
-            .arg("--rules")
-            .arg(root.join(&case.rules))
-            .args(&case.flags),
-        &[],
-    )?;
+    let wal_before = read_wal(&ledger)?;
+    let mut command = FixtureCommand::new(env!("CARGO_BIN_EXE_cargo-style"));
+    command
+        .env("HOME", root.join("home"))
+        .env("XDG_CONFIG_HOME", root.join("xdg-config"))
+        .env("STYLE_HISTORY_NATE_STYLE_DIR", root.join("global-rules"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .arg(match case.command {
+            OracleCommand::Coverage => "coverage",
+            OracleCommand::Sites => "sites",
+        })
+        .arg("--repo")
+        .arg(root.join("repo"))
+        .arg("--ledger")
+        .arg(&ledger);
+    if matches!(case.command, OracleCommand::Coverage) {
+        command.arg("--rules").arg(root.join(&case.rules));
+    }
+    let output = output_with_input(command.args(&case.flags), &[])?;
     let diagnostic = String::from_utf8(output.stderr)?;
     match &case.result {
         ExpectedCoverage::Reply { body } => {
             assert!(
                 output.status.success(),
-                "{}: the coverage command did not return an answer: {diagnostic}",
+                "{}: the command did not return an answer: {diagnostic}",
                 case.name
             );
             assert!(diagnostic.is_empty(), "{}: {diagnostic}", case.name);
@@ -116,9 +133,15 @@ fn compare_case(root: &Path, case: &CoverageCase) -> TestResult<()> {
         },
     }
     assert_eq!(
-        fs::read(ledger)?,
+        fs::read(&ledger)?,
         before,
         "{} changed the ledger",
+        case.name
+    );
+    assert_eq!(
+        read_wal(&ledger)?,
+        wal_before,
+        "{} changed the WAL",
         case.name
     );
     Ok(())

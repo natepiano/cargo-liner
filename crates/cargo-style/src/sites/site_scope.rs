@@ -5,6 +5,7 @@ use toml::Value;
 
 use super::catalog::Reach;
 use super::failure::SitesFailure;
+use super::manifest_syntax;
 use super::path_match::PathPattern;
 use super::source_tree::SiteText;
 use super::source_tree::SourceTree;
@@ -82,13 +83,14 @@ fn ignored_paths(
             continue;
         }
         let input = tree.read_text(source, path)?;
-        let text = match &input {
-            SiteText::Utf8(text) => text.text(),
-            SiteText::NotUtf8(text) => text,
+        let SiteText::Utf8(text) = input else {
+            return Err(SitesFailure::IgnoreEncoding(path.to_owned()));
         };
-        let table: Table = text.parse().map_err(|source| SitesFailure::IgnoreConfig {
-            path:   path.to_owned(),
-            source: Box::new(source),
+        let table = manifest_syntax::read_toml_1_0(text.text()).map_err(|source| {
+            SitesFailure::IgnoreConfig {
+                path:   path.to_owned(),
+                source: Box::new(source),
+            }
         })?;
         add_ignores(&table, &mut patterns)?;
     }

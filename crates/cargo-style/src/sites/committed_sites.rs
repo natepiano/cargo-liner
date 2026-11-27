@@ -1,9 +1,12 @@
 //! List site coordinates and compute their identities at the synced commit.
 
 use std::cell::OnceCell;
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use rusqlite::Connection;
+use rusqlite::Error;
 use serde::Serialize;
 use sha2::Digest;
 use sha2::Sha256;
@@ -15,8 +18,11 @@ use super::catalog::Listing;
 use super::catalog::Rule;
 use super::constants::HEX_DIGITS;
 use super::failure::SitesFailure;
+use super::ledger;
 use super::ledger::ListedCoordinate;
 use super::ledger::ListedHistory;
+use super::ledger::ListedMembership;
+use super::ledger::SitesLedgerFailure;
 use super::literal_sites;
 use super::manifest_inputs::ManifestBlobs;
 use super::manifest_sites;
@@ -32,26 +38,26 @@ use super::source_tree::SourceTree;
 use super::trait_sites;
 use super::type_sites;
 use crate::finding_source::FindingSource;
+use crate::tip_view::RepositoryTip;
 
 pub(super) struct CommittedSites<'a, 'repo> {
     pub(super) repo:    &'a Path,
     pub(super) source:  &'a mut FindingSource<'repo>,
     pub(super) tree:    &'a SourceTree,
-    pub(super) rule:    &'a Rule,
     pub(super) catalog: &'a Catalog,
 }
 
 impl<'a> CommittedSites<'a, '_> {
-    pub(super) fn outcome(mut self, history: ListedHistory) -> Result<SitesOutcome, SitesFailure> {
-        let rule = self.rule;
+    pub(super) fn outcome(
+        mut self,
+        rule: &Rule,
+        history: ListedHistory,
+    ) -> Result<SitesOutcome, SitesFailure> {
         let mut manifests = ManifestBlobs::new(self.tree);
         manifests.validate_root(self.source)?;
         let checks_regex_tool = match &rule.listing {
             Listing::Candidates(Generator::Regex(_)) => true,
-            Listing::Prefilter(_) => self
-                .catalog
-                .generator_rules()
-                .any(|(_, generator)| matches!(generator, Generator::Regex(_))),
+            Listing::Prefilter(_) => self.catalog.has_regex_generator(),
             _ => false,
         };
         let regex_tool = OnceCell::new();
@@ -78,7 +84,7 @@ impl<'a> CommittedSites<'a, '_> {
             },
             Listing::Prefilter(_) => match history {
                 ListedHistory::UseLegacy(coordinates) => coordinates,
-                ListedHistory::Enumerate => self.prefilter(&regex_tool, &mut manifests)?,
+                ListedHistory::Enumerate => self.prefilter(rule, &regex_tool, &mut manifests)?,
             },
         };
         let sites = coordinates
@@ -88,6 +94,44 @@ impl<'a> CommittedSites<'a, '_> {
         Ok(SitesOutcome::Listed { sites })
     }
 
+    pub(super) fn membership(
+        mut self,
+        connection: &Connection,
+        commit: &str,
+        tip: &RepositoryTip,
+    ) -> Result<SiteMembership, SitesFailure> {
+        let regex_tool = OnceCell::new();
+        if self.catalog.has_regex_generator() {
+            let _ = RegexTool::read_once(&regex_tool)?;
+        }
+        if matches!(
+            ledger::listing_source(connection, self.catalog, commit)
+                .map_err(SitesLedgerFailure::from)?,
+            ListedMembership::KeepRows
+        ) {
+            return Ok(SiteMembership::read_legacy(connection, commit)
+                .map_err(SitesLedgerFailure::from)?);
+        }
+        let scope = self.scope()?;
+        let mut manifests = ManifestBlobs::new(self.tree);
+        let mut membership = self.generator_membership(&scope, &regex_tool, &mut manifests)?;
+        if self.catalog.prefilter_rules().next().is_some() {
+            let universe = membership.universe(tip.rust_paths());
+            prefilter_sites::enumerate(
+                self.source,
+                self.tree,
+                self.catalog,
+                &universe,
+                |rule, line| {
+                    membership.include(&rule.id, line.path.to_owned());
+                },
+            )?;
+        }
+        // Python inserts `listed_rules` after it enumerates all sites.
+        ledger::validate_listing_keys(self.catalog)?;
+        Ok(membership)
+    }
+
     fn scope(&mut self) -> Result<SiteScope<'a>, SitesFailure> {
         self.tree.verify_blobs(self.repo)?;
         SiteScope::read(self.tree, self.source)
@@ -95,19 +139,50 @@ impl<'a> CommittedSites<'a, '_> {
 
     fn prefilter(
         &mut self,
+        requested: &Rule,
         regex_tool: &OnceCell<RegexTool>,
         manifests: &mut ManifestBlobs<'_>,
     ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
         let scope = self.scope()?;
-        let mut universe = scope
-            .rust_paths()
-            .map(str::to_owned)
-            .collect::<BTreeSet<_>>();
+        let membership = self.generator_membership(&scope, regex_tool, manifests)?;
+        let universe = membership.universe(scope.rust_paths());
+        let mut coordinates = Vec::new();
+        prefilter_sites::enumerate(
+            self.source,
+            self.tree,
+            self.catalog,
+            &universe,
+            |rule, line| {
+                if rule.id == requested.id {
+                    coordinates.push(ListedCoordinate {
+                        path: line.path.to_owned(),
+                        line: line.number,
+                        text: line.text.to_owned(),
+                    });
+                }
+            },
+        )?;
+        coordinates.sort_unstable();
+        coordinates.dedup();
+        Ok(coordinates)
+    }
+
+    fn generator_membership(
+        &mut self,
+        scope: &SiteScope<'_>,
+        regex_tool: &OnceCell<RegexTool>,
+        manifests: &mut ManifestBlobs<'_>,
+    ) -> Result<SiteMembership, SitesFailure> {
+        let mut membership = SiteMembership::default();
         for (rule, generator) in self.catalog.generator_rules() {
-            let coordinates = self.generate(rule, generator, &scope, regex_tool, manifests)?;
-            universe.extend(coordinates.into_iter().map(|coordinate| coordinate.path));
+            let coordinates = self.generate(rule, generator, scope, regex_tool, manifests)?;
+            membership
+                .paths
+                .entry(rule.id.clone())
+                .or_default()
+                .extend(coordinates.into_iter().map(|coordinate| coordinate.path));
         }
-        prefilter_sites::enumerate(self.source, self.tree, self.catalog, self.rule, &universe)
+        Ok(membership)
     }
 
     fn generate(
@@ -172,6 +247,72 @@ impl<'a> CommittedSites<'a, '_> {
     ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
         let sources = RustSources::read(self.tree, self.source, rust_sources::rust_path)?;
         generate(&sources)
+    }
+}
+
+impl Catalog {
+    pub(crate) fn membership(
+        &self,
+        repo: &Path,
+        connection: &Connection,
+        commit: &str,
+        source: &mut FindingSource<'_>,
+        tip: &RepositoryTip,
+    ) -> Result<SiteMembership, SitesFailure> {
+        let tree = SourceTree::read(source, commit)?;
+        CommittedSites {
+            repo,
+            source,
+            tree: &tree,
+            catalog: self,
+        }
+        .membership(connection, commit, tip)
+    }
+}
+
+/// Paths that have a listed site at the synced tip, by rule.
+#[derive(Default)]
+pub(crate) struct SiteMembership {
+    paths: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl SiteMembership {
+    pub(crate) fn paths(&self, rule: &str) -> impl Iterator<Item = &str> {
+        self.paths
+            .get(rule)
+            .into_iter()
+            .flatten()
+            .map(String::as_str)
+    }
+
+    fn include(&mut self, rule: &str, path: String) {
+        if let Some(paths) = self.paths.get_mut(rule) {
+            paths.insert(path);
+        } else {
+            self.paths.insert(rule.to_owned(), BTreeSet::from([path]));
+        }
+    }
+
+    fn universe<'p>(&self, rust_paths: impl Iterator<Item = &'p str>) -> BTreeSet<String> {
+        rust_paths
+            .map(str::to_owned)
+            .chain(self.paths.values().flatten().cloned())
+            .collect()
+    }
+
+    fn read_legacy(connection: &Connection, commit: &str) -> Result<Self, Error> {
+        let mut statement =
+            connection.prepare("SELECT DISTINCT rule,path FROM listed_sites WHERE tip=?1")?;
+        let mut membership = Self::default();
+        let mut rows = statement.query([commit])?;
+        while let Some(row) = rows.next()? {
+            membership
+                .paths
+                .entry(row.get(0)?)
+                .or_default()
+                .insert(row.get(1)?);
+        }
+        Ok(membership)
     }
 }
 

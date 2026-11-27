@@ -25,6 +25,10 @@ pub(crate) enum SitesLedgerFailure {
     File(#[from] io::Error),
     #[error("cannot query the sites ledger")]
     Query(#[from] rusqlite::Error),
+    #[error(
+        "UNIQUE constraint failed: listed_rules.rule, listed_rules.rule_blob, listed_rules.tip"
+    )]
+    DuplicateListedRule,
     #[error("unsupported ledger schema {0}")]
     Schema(i64),
     #[error("no synced tip; run set-tip first")]
@@ -115,8 +119,10 @@ impl SitesLedger {
             return Err(SitesLedgerFailure::UnresolvedTip(revision));
         };
         let history = if rule.listing.enumerates_sites()
-            && legacy_markers(&snapshot, catalog, synced_tip)?
-        {
+            && matches!(
+                listing_source(&snapshot, catalog, synced_tip)?,
+                ListedMembership::KeepRows
+            ) {
             let mut statement = snapshot.prepare(
                 "SELECT path,line,text FROM listed_sites WHERE rule=?1 AND tip=?2
                  ORDER BY path,line,text",
@@ -158,11 +164,16 @@ fn read_version(connection: &Connection) -> Result<i64, SitesLedgerFailure> {
     Ok(version)
 }
 
-fn legacy_markers(
+pub(super) enum ListedMembership {
+    KeepRows,
+    Enumerate,
+}
+
+pub(super) fn listing_source(
     connection: &Connection,
     catalog: &Catalog,
     tip: &str,
-) -> Result<bool, rusqlite::Error> {
+) -> Result<ListedMembership, rusqlite::Error> {
     let mut statement =
         connection.prepare("SELECT rule,rule_blob FROM listed_rules WHERE tip=?1")?;
     let markers = statement
@@ -170,13 +181,16 @@ fn legacy_markers(
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<Result<BTreeSet<_>, _>>()?;
-    if markers
+    let pins: BTreeSet<_> = catalog.listing_pins().collect();
+    if markers.is_empty() && pins.is_empty() {
+        return Ok(ListedMembership::KeepRows);
+    }
+    if !markers
         .iter()
         .map(|(rule, blob)| (rule.as_str(), blob.as_str()))
-        .collect::<BTreeSet<_>>()
-        != catalog.pins()
+        .eq(pins.iter().copied())
     {
-        return Ok(false);
+        return Ok(ListedMembership::Enumerate);
     }
     let exists: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='refill_candidates')",
@@ -184,14 +198,27 @@ fn legacy_markers(
         |row| row.get(0),
     )?;
     if !exists {
-        return Ok(true);
+        return Ok(ListedMembership::KeepRows);
     }
-    connection.query_row(
+    let uncached = connection.query_row(
         "SELECT NOT EXISTS(SELECT 1 FROM refill_candidates
          WHERE CASE WHEN json_valid(catalog)
                THEN json_extract(catalog,'$[0]')=?1 AND json_extract(catalog,'$[1]')=?2
                ELSE 0 END)",
         [&catalog.checkout, &catalog.global],
         |row| row.get(0),
-    )
+    )?;
+    Ok(if uncached {
+        ListedMembership::KeepRows
+    } else {
+        ListedMembership::Enumerate
+    })
+}
+
+pub(super) fn validate_listing_keys(catalog: &Catalog) -> Result<(), SitesLedgerFailure> {
+    let mut pins = BTreeSet::new();
+    if catalog.listing_pins().any(|pin| !pins.insert(pin)) {
+        return Err(SitesLedgerFailure::DuplicateListedRule);
+    }
+    Ok(())
 }
