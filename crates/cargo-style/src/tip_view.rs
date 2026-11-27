@@ -22,6 +22,7 @@ use crate::finding_source::TreeEntries;
 use crate::finding_source::TreeEntry;
 use crate::site_ledger::InputScope;
 use crate::site_ledger::ReadScope;
+use crate::sites;
 
 pub(crate) struct RepositoryTip {
     entries:    Rc<TreeEntries>,
@@ -113,6 +114,10 @@ impl RepositoryTip {
             .iter()
             .find(|directory| under(path, directory))
             .map_or(".", String::as_str)
+    }
+
+    pub(crate) fn rust_paths(&self) -> impl Iterator<Item = &str> {
+        self.rust_files.keys().map(String::as_str)
     }
 
     pub(crate) fn has_rust_path(&self, path: &str) -> bool { self.rust_files.contains_key(path) }
@@ -275,11 +280,10 @@ fn is_ignored(path: &str, patterns: &[IgnorePattern<'_>]) -> bool {
 }
 
 fn read_toml(path: &str, text: &str) -> Result<Table, FindingSourceFailure> {
-    text.parse()
-        .map_err(|error| FindingSourceFailure::InvalidTipToml {
-            path:   path.to_owned(),
-            source: Box::new(error),
-        })
+    sites::read_toml_1_0(text).map_err(|error| FindingSourceFailure::InvalidTipToml {
+        path:   path.to_owned(),
+        source: Box::new(error),
+    })
 }
 
 fn workspace_members(

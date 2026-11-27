@@ -12,6 +12,7 @@ pub(crate) const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const WAL_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 // command arguments
+pub(crate) const CHECKOUT_FLAG: &str = "--checkout";
 pub(crate) const COVERAGE_SUBCOMMAND: &str = "coverage";
 /// The flag that names the user's answers on decision files for the declaration reading.
 pub(crate) const FINDING_APPROVALS_FLAG: &str = "--approvals";

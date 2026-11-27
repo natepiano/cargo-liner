@@ -1,7 +1,6 @@
 //! Read current rule pins and resolve member reach from the checkout.
 
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::fs;
 use std::io;
@@ -9,35 +8,85 @@ use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
+use serde::Deserialize;
+use serde::Serialize;
 use toml::Table;
 use toml::Value;
 
 use super::frontmatter;
 use super::frontmatter::Field;
 use super::frontmatter::Fields;
+use super::manifest_syntax;
 use super::path_match::WorkspacePattern;
+use crate::rule_snapshot::CandidateSurface;
+use crate::rule_snapshot::Family;
+use crate::rule_snapshot::RuleFamily;
+use crate::rule_snapshot::Surface;
+use crate::site_ledger::InputScope;
 use crate::tip_view;
 
-pub(super) struct Catalog {
+pub(crate) struct Catalog {
     pub(super) checkout: String,
     pub(super) global:   String,
     rules:               Vec<Rule>,
 }
 
-pub(super) struct Rule {
-    pub(super) id:      String,
-    pub(super) pin:     String,
-    pub(super) reach:   Reach,
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+pub(crate) struct RulePolicy {
+    pub(crate) tier:        Tier,
+    pub(crate) family:      RuleFamily,
+    pub(crate) input_scope: RuleInputScope,
+    #[serde(default)]
+    pub(crate) surface:     CandidateSurface,
+}
+
+pub(crate) struct Rule {
+    pub(crate) id:      String,
+    pub(crate) pin:     String,
+    pub(crate) reach:   Reach,
+    pub(crate) policy:  RulePolicy,
     pub(super) listing: Listing,
 }
 
-pub(super) enum Reach {
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum Tier {
+    A,
+    B,
+    C,
+    D,
+    E,
+    #[serde(rename = "unclassified")]
+    Unclassified,
+}
+
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RuleInputScope {
+    File,
+    Crate,
+    Manifest,
+}
+
+impl From<RuleInputScope> for InputScope {
+    fn from(scope: RuleInputScope) -> Self {
+        match scope {
+            RuleInputScope::File => Self::File,
+            RuleInputScope::Crate => Self::Crate,
+            RuleInputScope::Manifest => Self::Manifest,
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub(crate) enum Reach {
     Repository,
     Member(String),
 }
 
 impl Reach {
-    pub(super) fn includes(&self, path: &str) -> bool {
+    pub(crate) fn includes(&self, path: &str) -> bool {
         match self {
             Self::Repository => true,
             Self::Member(directory) => tip_view::under(path, directory),
@@ -133,7 +182,7 @@ pub(crate) enum CatalogFailure {
 }
 
 impl Catalog {
-    pub(super) fn read(checkout: &Path) -> Result<Self, CatalogFailure> {
+    pub(crate) fn read(checkout: &Path) -> Result<Self, CatalogFailure> {
         let checkout = canonical(checkout)?;
         let global = global_root()?;
         let docs = checkout.join("docs");
@@ -201,7 +250,7 @@ impl Catalog {
         })
     }
 
-    pub(super) fn rule(&self, id: &str) -> Result<&Rule, CatalogFailure> {
+    pub(crate) fn rule(&self, id: &str) -> Result<&Rule, CatalogFailure> {
         self.rules
             .iter()
             .rev()
@@ -209,12 +258,26 @@ impl Catalog {
             .ok_or_else(|| CatalogFailure::UnknownRule(id.to_owned()))
     }
 
-    pub(super) fn pins(&self) -> BTreeSet<(&str, &str)> {
+    pub(crate) fn discoveries(&self, id: &str) -> impl Iterator<Item = &Rule> {
+        self.rules.iter().filter(move |rule| rule.id == id)
+    }
+
+    pub(crate) fn classified_rules(&self) -> impl Iterator<Item = &Rule> {
+        self.rules
+            .iter()
+            .filter(|rule| rule.policy.tier != Tier::Unclassified)
+    }
+
+    pub(super) fn listing_pins(&self) -> impl Iterator<Item = (&str, &str)> {
         self.rules
             .iter()
             .filter(|rule| !matches!(rule.listing, Listing::NoSites))
             .map(|rule| (rule.id.as_str(), rule.pin.as_str()))
-            .collect()
+    }
+
+    pub(super) fn has_regex_generator(&self) -> bool {
+        self.generator_rules()
+            .any(|(_, generator)| matches!(generator, Generator::Regex(_)))
     }
 
     pub(super) fn generator_rules(&self) -> impl Iterator<Item = (&Rule, &Generator)> {
@@ -253,7 +316,7 @@ impl Rule {
         })?;
         let text = std::str::from_utf8(&bytes).map_err(|error| fail(error.to_string()))?;
         let fields = frontmatter::parse(text).map_err(fail)?;
-        let listing = classify(&fields, origin, &path).map_err(fail)?;
+        let (policy, listing) = classify(&fields, origin, &path).map_err(fail)?;
         let pin = gix::objs::compute_hash(gix::hash::Kind::Sha1, gix::objs::Kind::Blob, &bytes)
             .map_err(|error| fail(error.to_string()))?
             .to_string();
@@ -264,10 +327,8 @@ impl Rule {
         Ok(Self {
             id: format!("{prefix}:{}", relative.display()),
             pin,
-            reach: match reach {
-                Reach::Repository => Reach::Repository,
-                Reach::Member(path) => Reach::Member(path.clone()),
-            },
+            reach: reach.clone(),
+            policy,
             listing,
         })
     }
@@ -370,12 +431,6 @@ enum Candidates {
     },
 }
 
-enum Surface {
-    Unclassified,
-    Whole,
-    Partial,
-}
-
 fn candidates(fields: &Fields, path: &Path) -> Result<Candidates, String> {
     let block = match fields.get("candidates") {
         None => return Ok(Candidates::Absent),
@@ -445,14 +500,14 @@ fn candidates(fields: &Fields, path: &Path) -> Result<Candidates, String> {
 
 /// Check the rule fields in the order of Python `_rule_from_text`, so the first refusal reason
 /// is the same.
-fn classify(fields: &Fields, origin: Origin, path: &Path) -> Result<Listing, String> {
+fn classify(fields: &Fields, origin: Origin, path: &Path) -> Result<(RulePolicy, Listing), String> {
     let candidates = candidates(fields, path)?;
     let classified = matches!(origin, Origin::Local)
         || ["tier", "family", "input_scope"]
             .iter()
             .any(|key| fields.contains_key(*key));
-    let tier = if classified {
-        let tier = read_classification(fields)?;
+    let mut policy = if classified {
+        let classification = read_classification(fields)?;
         if matches!(
             candidates,
             Candidates::Declared {
@@ -462,16 +517,21 @@ fn classify(fields: &Fields, origin: Origin, path: &Path) -> Result<Listing, Str
         ) {
             return Err("classified rule's candidates.surface must be whole or partial".to_owned());
         }
-        tier
+        classification
     } else {
-        ""
+        RulePolicy {
+            tier:        Tier::Unclassified,
+            family:      RuleFamily::Unspecified,
+            input_scope: RuleInputScope::Crate,
+            surface:     CandidateSurface::NoCandidates,
+        }
     };
     let approval = scalar(fields, "approval", "")?;
     if !approval.is_empty() {
         if approval != "always" {
             return Err("approval must be always".to_owned());
         }
-        if !matches!(tier, "B" | "C" | "D") {
+        if !matches!(policy.tier, Tier::B | Tier::C | Tier::D) {
             return Err("approval always requires a family".to_owned());
         }
     }
@@ -480,48 +540,69 @@ fn classify(fields: &Fields, origin: Origin, path: &Path) -> Result<Listing, Str
         None => "",
         _ => return Err("pre_filter must be a scalar".to_owned()),
     };
-    if tier == "B" && matches!(candidates, Candidates::Absent) && prefilter.is_empty() {
+    if policy.tier == Tier::B && matches!(candidates, Candidates::Absent) && prefilter.is_empty() {
         return Err("tier B requires candidates or pre_filter".to_owned());
     }
     let _ = scalar(fields, "mode", "")?;
-    Ok(match (tier, candidates) {
-        ("B" | "D", Candidates::Declared { generator, .. }) => Listing::Candidates(generator),
-        ("B", Candidates::Absent) => Listing::Prefilter(prefilter.to_owned()),
+    policy.surface = match &candidates {
+        Candidates::Declared { surface, .. } => CandidateSurface::Declared(*surface),
+        Candidates::Absent => CandidateSurface::NoCandidates,
+    };
+    let listing = match (policy.tier, candidates) {
+        (Tier::B | Tier::D, Candidates::Declared { generator, .. }) => {
+            Listing::Candidates(generator)
+        },
+        (Tier::B, Candidates::Absent) => Listing::Prefilter(prefilter.to_owned()),
         _ => Listing::NoSites,
-    })
+    };
+    Ok((policy, listing))
 }
 
-fn read_classification(fields: &Fields) -> Result<&str, String> {
-    let tier = scalar(fields, "tier", "")?;
-    if !matches!(tier, "A" | "B" | "C" | "D" | "E") {
-        return Err("tier must be A, B, C, D or E".to_owned());
-    }
+fn read_classification(fields: &Fields) -> Result<RulePolicy, String> {
+    let tier = match scalar(fields, "tier", "")? {
+        "A" => Tier::A,
+        "B" => Tier::B,
+        "C" => Tier::C,
+        "D" => Tier::D,
+        "E" => Tier::E,
+        _ => return Err("tier must be A, B, C, D or E".to_owned()),
+    };
     let mechanism = scalar(fields, "mechanism", "")?;
-    if (tier == "A") != matches!(mechanism, "clippy" | "mend" | "rustfmt") {
+    if (tier == Tier::A) != matches!(mechanism, "clippy" | "mend" | "rustfmt") {
         return Err(
             "tier A requires a clippy, mend or rustfmt mechanism, and vice versa".to_owned(),
         );
     }
     let family = scalar(fields, "family", "")?;
-    if matches!(tier, "B" | "C" | "D") && family.is_empty() {
+    if matches!(tier, Tier::B | Tier::C | Tier::D) && family.is_empty() {
         return Err("family is required for tier B, C and D".to_owned());
     }
-    if matches!(tier, "A" | "E") && !family.is_empty() {
+    if matches!(tier, Tier::A | Tier::E) && !family.is_empty() {
         return Err("family is forbidden for tier A and E".to_owned());
     }
-    if !matches!(family, "" | "names" | "values" | "types" | "modules") {
-        return Err("family must be names, values, types or modules".to_owned());
-    }
-    if tier == "D" && family != "modules" {
+    let family = match family {
+        "" => RuleFamily::Unspecified,
+        "names" => RuleFamily::Known(Family::Names),
+        "values" => RuleFamily::Known(Family::Values),
+        "types" => RuleFamily::Known(Family::Types),
+        "modules" => RuleFamily::Known(Family::Modules),
+        _ => return Err("family must be names, values, types or modules".to_owned()),
+    };
+    if tier == Tier::D && family != RuleFamily::Known(Family::Modules) {
         return Err("tier D requires the modules family".to_owned());
     }
-    if !matches!(
-        scalar(fields, "input_scope", "crate")?,
-        "file" | "crate" | "manifest"
-    ) {
-        return Err("input_scope must be file, crate or manifest".to_owned());
-    }
-    Ok(tier)
+    let scope = match scalar(fields, "input_scope", "crate")? {
+        "file" => RuleInputScope::File,
+        "crate" => RuleInputScope::Crate,
+        "manifest" => RuleInputScope::Manifest,
+        _ => return Err("input_scope must be file, crate or manifest".to_owned()),
+    };
+    Ok(RulePolicy {
+        tier,
+        family,
+        input_scope: scope,
+        surface: CandidateSurface::NoCandidates,
+    })
 }
 
 fn checkout_members(root: &Path) -> Result<Vec<WorkspaceMember>, CatalogFailure> {
@@ -626,7 +707,7 @@ fn matches_any(path: &str, patterns: &[WorkspacePattern]) -> bool {
 }
 
 fn manifest(root: &Path, directory: &str, text: &str) -> Result<Table, CatalogFailure> {
-    text.parse().map_err(|source| CatalogFailure::Manifest {
+    manifest_syntax::read_toml_1_0(text).map_err(|source| CatalogFailure::Manifest {
         path:   root.join(directory).join("Cargo.toml"),
         source: Box::new(source),
     })

@@ -2,6 +2,7 @@
 
 use toml::Table;
 use toml::Value;
+use toml::de::Error;
 use toml::value::Offset;
 use toml_parser::Source;
 use toml_parser::lexer::TokenKind;
@@ -11,13 +12,17 @@ enum Container {
     InlineTable,
 }
 
-pub(super) fn manifest_table(text: &str) -> Option<Table> {
-    if !supports_tokens(text) {
-        return None;
+pub(crate) fn read_toml_1_0(text: &str) -> Result<Table, Error> {
+    if supports_tokens(text) {
+        let table = text.parse::<Table>()?;
+        if table.values().all(supports_value) {
+            return Ok(table);
+        }
     }
-    let table = text.parse::<Table>().ok()?;
-    table.values().all(supports_value).then_some(table)
+    Err(serde::de::Error::custom("expected TOML 1.0 syntax"))
 }
+
+pub(super) fn manifest_table(text: &str) -> Option<Table> { read_toml_1_0(text).ok() }
 
 fn supports_tokens(text: &str) -> bool {
     if text.starts_with('\u{feff}')

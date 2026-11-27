@@ -1,7 +1,6 @@
 //! Find the judgment that covers a cell at the synced tip.
 
 use super::CoverageError;
-use super::catalog::CoverageRule;
 use super::comparison::InputComparison;
 use super::comparison::JudgmentComparison;
 use super::ledger::CoverageLedger;
@@ -15,7 +14,9 @@ use super::reply::HeldCoverage;
 use crate::finding_source::CommitResolution;
 use crate::finding_source::FindingSource;
 use crate::rule_snapshot::PinComparison;
+use crate::rule_snapshot::RuleFamily;
 use crate::rule_snapshot::RuleSnapshot;
+use crate::site_ledger::InputScope;
 use crate::tip_view::RepositoryTip;
 
 enum NonCurrentCoverage {
@@ -41,6 +42,13 @@ pub(super) struct JudgmentReader<'a> {
     comparison: InputComparison,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct CellJudgmentPolicy<'a> {
+    pub(super) identity: &'a str,
+    pub(super) scope:    InputScope,
+    pub(super) family:   RuleFamily,
+}
+
 impl<'a> JudgmentReader<'a> {
     pub(super) fn new(covered: CoveredTip<'a>, pins: &'a RuleSnapshot) -> Self {
         Self {
@@ -54,10 +62,14 @@ impl<'a> JudgmentReader<'a> {
         &mut self,
         ledger: &mut CoverageLedger<'_>,
         source: &mut FindingSource<'_>,
-        rule: (&str, &CoverageRule),
+        policy: CellJudgmentPolicy<'_>,
         path: &str,
     ) -> Result<(CellState, HeldCoverage), CoverageError> {
-        let (identity, definition) = rule;
+        let CellJudgmentPolicy {
+            identity,
+            scope,
+            family,
+        } = policy;
         let rows = ledger.judgments(identity, path)?;
         let removals = self.removals(source, &rows)?;
         let rows = surviving_rows(source, &rows, &removals)?;
@@ -97,7 +109,6 @@ impl<'a> JudgmentReader<'a> {
             let HistoricalCommit::Present(judged) = historical_commit(source, &row.commit)? else {
                 continue;
             };
-            let scope = definition.input_scope.into();
             if source.is_ancestor(&judged, self.covered.commit)? {
                 let comparison = JudgmentComparison {
                     judgment: row,
@@ -105,7 +116,7 @@ impl<'a> JudgmentReader<'a> {
                     covered_commit: self.covered.commit,
                     tip: self.covered.tip,
                     scope,
-                    family: definition.family,
+                    family,
                 };
                 if self.comparison.matches(source, path, comparison)? {
                     let held = if row.verdict == Verdict::Held {
@@ -124,7 +135,7 @@ impl<'a> JudgmentReader<'a> {
                     covered_commit: &branch,
                     tip: &tip,
                     scope,
-                    family: definition.family,
+                    family,
                 };
                 if source.is_ancestor(&judged, &branch)?
                     && self.comparison.matches(source, path, comparison)?

@@ -1,6 +1,8 @@
 //! Run a sites oracle and compare its results with cargo-style.
 
-use std::io::ErrorKind;
+#[path = "../support/wal.rs"]
+mod wal;
+
 use std::path::Path;
 use std::process::Output;
 
@@ -8,6 +10,7 @@ use cargo_berth_test_support::FixtureCommand;
 use cargo_berth_test_support::fixture_tempdir;
 use serde::Deserialize;
 use serde_json::Value;
+use wal::read_wal;
 
 use crate::support;
 use crate::support::ParityCheckout;
@@ -28,20 +31,11 @@ enum ExpectedSites {
     Reply(Value),
 }
 
-#[derive(Debug, Eq, PartialEq)]
-enum WalSnapshot {
-    Absent,
-    Present(Vec<u8>),
-}
-
 impl SitesParityCase {
     fn run(&self, root: &Path) -> TestResult<Output> {
         let ledger = root.join(&self.ledger);
         let before = std::fs::read(&ledger)?;
-        let mut wal = ledger.as_os_str().to_os_string();
-        wal.push("-wal");
-        let wal = Path::new(&wal);
-        let wal_before = read_wal(wal)?;
+        let wal_before = read_wal(&ledger)?;
         let output = support::output_with_input(
             FixtureCommand::new(env!("CARGO_BIN_EXE_cargo-style"))
                 .env("HOME", root.join("home"))
@@ -56,12 +50,17 @@ impl SitesParityCase {
             b"",
         )?;
         assert_eq!(
-            std::fs::read(ledger)?,
+            std::fs::read(&ledger)?,
             before,
             "{} changed the ledger",
             self.name
         );
-        assert_eq!(read_wal(wal)?, wal_before, "{} changed the WAL", self.name);
+        assert_eq!(
+            read_wal(&ledger)?,
+            wal_before,
+            "{} changed the WAL",
+            self.name
+        );
         Ok(output)
     }
 }
@@ -103,14 +102,6 @@ fn oracle_cases(checkout: &Path, root: &Path, oracle: &[u8]) -> TestResult<Vec<S
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(serde_json::from_slice(&output.stdout)?)
-}
-
-fn read_wal(path: &Path) -> std::io::Result<WalSnapshot> {
-    match std::fs::read(path) {
-        Ok(bytes) => Ok(WalSnapshot::Present(bytes)),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(WalSnapshot::Absent),
-        Err(error) => Err(error),
-    }
 }
 
 pub(super) fn run_sites_parity(oracle: &[u8], directory_prefix: &str) -> TestResult<()> {
