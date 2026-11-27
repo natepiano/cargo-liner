@@ -1398,3 +1398,34 @@ The copies are deleted. No source changes.
 **Gotchas:** A same-version switch can keep the old build output while the old compiler remains. Mend uses the compiler that matches its linked libraries.
 
 **Ruled out:** Two Cargo builds in the regression test exceed the one-second test limit.
+
+### Phase 60 — a cargo-berth claim retry reports a publication only after it is durable  · status: todo
+
+#### Work Order
+
+**Goal:** a claim retry reports the coordination-run marker and the session mapping as published only after both are on disk with a directory sync. Source: sdlc, from the admin-console review of `phase_reservation.py repair --to`, relayed by cargo-liner at 05:20 PST on 2026-11-27. This is a correctness fix.
+
+**Spec:**
+1. The fault: on a retry of a claim that the reservation already holds, `selected_reservation_check_acquisition` (`crates/cargo-berth/src/verb/claim/acquisition.rs`) passes `CoordinationRunMarkerPublication::Published` and `SessionIdentityMappingPublication::Published` to `first_touch_acquisition`. It does not write or sync anything. The cited sites are `acquisition.rs:465` and `:517`.
+2. A first attempt can write the marker or the mapping and stop before the directory sync. The retry then reports `published`. A crash after that reply can lose the publication.
+3. Make the retry path report `Published` only after the same durable publication that the locked path runs: the file write, the file sync and the directory sync. A failed publication reports `Unavailable` with its diagnostic, as the locked path does.
+4. Find every other site that reports `Published` without a durable write. Fix each one in the same way.
+5. Add a test for each fixed site. Each test fails before the fix and passes after it.
+
+**Constraints from prior phases:**
+- The fast check path exists so that a check of an already-held path takes no ledger lock (Phases 56c–56e). Keep it lock-free. A publication needs no ledger lock.
+- No test may take one second or more. Do not simulate a crash with a child process. Test the publication result and the sync calls directly.
+
+**Files:**
+- `crates/cargo-berth/src/verb/claim/acquisition.rs`
+- `crates/cargo-berth/src/ledger/worktree_context.rs` and `crates/cargo-berth/src/session/mod.rs`, if the publication helpers change.
+
+**Workers:** 1 writer.
+- `impl`: all files.
+
+**State:** none.
+
+**Verification:**
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
+- Each new test fails before the fix and passes after it.
+- No changed test takes one second or more.
