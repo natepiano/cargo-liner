@@ -2,7 +2,18 @@
 
 ## What it is
 
-`cargo-berth check` is the pre-edit question both agent harnesses ask: may this session write these paths? When the caller's selected reservation already covers every requested path and the lock-free snapshot shows no conflict, the check answers `clear` / `already_held` at once. It takes no mutation lock, runs no reconcile and makes no coordination change; a read-only replay can still rewrite its replay checkpoint (`ledger/replay_checkpoint.rs`). When a reconcile is needed, it observes each holder worktree on its own thread instead of one after another. That observation is prepared outside the mutation lock and validated against the journal and session-mapping versions when it publishes; after `MUTATION_PREPARATION_ATTEMPTS` (8) invalidations it prepares under the lock (`ledger/preparation.rs`). A reconcile failure inside `check` answers with its own envelope: at the lock deadline that is `contention`, exit 6.
+Both agent harnesses call `cargo-berth check` before an edit.
+The fast path applies when the selected run already protects the requested paths and the snapshot shows no conflict.
+It writes and syncs the coordination-run marker and any required session index before it returns `clear` / `already_held`.
+It takes no ledger mutation lock and runs no reconciliation.
+A replay can also rewrite its checkpoint (`ledger/replay_checkpoint.rs`).
+
+When reconciliation is necessary, it observes each holder worktree on its own thread.
+It prepares those observations outside the ledger mutation lock.
+It checks the journal and session index versions before publication.
+After `MUTATION_PREPARATION_ATTEMPTS` (8) invalidations, it prepares under the lock (`ledger/preparation.rs`).
+A reconciliation failure returns its own envelope.
+At the ledger mutation lock deadline, it returns `contention` and exit code 6.
 
 The problem was measured on natedev in `hana_catalyst-inspectors` (17 worktrees, load average 63–127). Every check reconciled whenever any foreign reservation was unreleased, which was always true there. One traced run waited 2.6 s for `mutation.lock`, held it for about 10 s, and ended at 14.3 s. Of the time under the lock, 5.5 s was 11 sequential `git status --porcelain -z` calls (0.15–1.32 s each); `update-ref --stdin` took 1.2 s and the rev-lists about 1.5 s. Other runs ended at 5.8 s, at 23 s, or at the 10 s lock deadline. Checks queued behind each other's reconciles, so edit hooks reached their 25 s limit and blocked clean edits.
 
@@ -37,16 +48,18 @@ pub(crate) fn execute(
    - It resolves identity once through `ledger::resolve_identity` and observes `ActingHeadContainment::observe_for_edit`. That observation judges only the holders whose protection touches the requested scopes. A disjoint holder costs no history read and no merge pair, because containment can only remove protection.
    - It validates the coordination identity and the worktree occupancy. A stale or released session mapping fails here with `invalid_input` / `stale_session_mapping`, exit 5, before any lock.
    - It computes `conflicts_for_edit`.
-   - With no conflicts and a parseable `configuration.repository_trunk()`, it calls `claim::selected_reservation_check_acquisition`. Otherwise the acquisition is `NeedsLockedDecision`.
+   - The fast selection requires no conflict, the caller's original authorization, a parseable target, and no change to the session selection.
+   - When those conditions hold, `decide` calls `claim::selected_reservation_check_acquisition`. Otherwise it returns `NeedsLockedDecision`.
    - It sets `MergeObservationRequirement::Required` when any reservation from another worktree is not `Released`.
 2. **Fast return.** `CheckDecision.acquisition` is a `CheckAcquisitionDecision`:
    ```rust
-   pub(super) enum CheckAcquisitionDecision {
-       HeldBySelectedReservation { scopes: ReservationScopeSet, acquisition: ReservationAcquisition },
+   pub(in crate::verb) enum CheckAcquisitionDecision {
+       HeldBySelectedReservation(HeldCheckAcquisition),
        NeedsLockedDecision,
    }
    ```
-   `HeldBySelectedReservation` returns `OutputEnvelope::clear_check(scopes, acquisition, None)` before any other branch.
+   `check` calls `HeldCheckAcquisition::publish` for `HeldBySelectedReservation`.
+   It passes the returned scopes and acquisition to `OutputEnvelope::clear_check`.
 3. **`Required`** goes to `reconcile_and_retry`.
 4. **`NotNeeded` with no conflicts** goes to the locked `acquire_first_touch`. A `Blocked` answer there falls to `reconcile_and_retry`.
 5. **Any other case** goes to `reconcile_and_retry`.
@@ -61,8 +74,8 @@ pub(crate) fn execute(
 ### Fast-path selection (`verb/claim/acquisition.rs`)
 
 ```rust
-pub(super) fn selected_reservation_check_acquisition(
-    reservations: &RetainedReservationSet,
+pub(in crate::verb) fn selected_reservation_check_acquisition(
+    reservations: &ReservationFacts,
     repository_trunk: &IntegrationTarget,
     scopes: ReservationScopeSet,
     selection: CheckReservationSelection,
@@ -84,8 +97,9 @@ The selected reservation must pass `FirstTouchReservationSelection::from_explici
 The answer is built by the helpers the locked path uses:
 
 - `already_held_acquisition` records `kind: AlreadyHeld`, the selected reservation's id, its target and its `phase_start_head`, with `already_held: vec![]`.
-- `first_touch_acquisition` sets `CoordinationRunMarkerPublication::Published`.
-- `selection.reported_session_mapping_publication(SessionIdentityMappingPublication::Published)` sets the mapping publication; `Explicit` maps through `for_explicit_reservation_selection`.
+- `HeldCheckAcquisition::publish` republishes the coordination-run marker and the session index when the session requires an entry.
+- Each publication writes and syncs a temporary file, replaces the destination, and syncs the directory before reporting `published`.
+- A failed sync reports `unavailable` with its diagnostic. An explicit selection without a harness session applies only to the current invocation.
 
 The message is "No foreign reservation overlaps the requested paths; the acting run already holds them." (`output.rs::clear_check`).
 
@@ -147,7 +161,7 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 
 ## Invariants
 
-- The fast path takes no lock and makes no coordination change: no journal append, no session mapping, no marker. A read-only replay may still rewrite the replay checkpoint.
+- The fast path appends no journal records and takes no ledger mutation lock. It republishes the marker and any required mapping. A read-only replay can also rewrite the replay checkpoint.
 - The fast path's envelope (message, scopes, acquisition, publication fields, exit code) is identical to the locked path's answer for the same state. Both are built from the same helpers; do not fork them.
 - The fast path answers only with no conflict, a reservation selected through an existing mapping or a matching explicit id, and the run's active reservations in this worktree covering every exact-file scope. Every other case takes the locked path.
 - Any selection that would create or move a session mapping goes through the lock; remapping is a durable write.
@@ -178,9 +192,9 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
   - Concurrency launches up to one `git status` per live holder key at once, about 20 processes in hana.
 - **Remaining costs.** One checkpoint decode measured 135 ms (hana: 356 MB journal, 25 MB `replay-checkpoint.json`). The fast path still pays one decode, plus `PathCase::read` and head-containment reads, which touch git only when a foreign holder keeps keyed committed protection.
 - **Stale holder state.** The fast path trusts retained foreign protection. If a foreign worktree dirtied a held path since the last reconcile, this edit does not see it; the next reconcile finds it, and resolving it falls to the foreign holder as an incursion.
-- **Marker and mapping report `published` without writing.** That is accurate because the mapping already exists.
+- The fast path reports `published` only after the file sync and the directory sync. A sync failure reports `unavailable` with a diagnostic. The session index uses its own publication lock to preserve concurrent updates.
 - **Sibling coverage answers with the caller's reservation.** A path held by a same-run sibling answers `already_held` naming the caller's mapped reservation, not the sibling, as the locked path does.
-- **`left_unmapped` only for unmapped sessions.** The locked path answers `left_unmapped` only for an unmapped session; a mapped session gets `already_held` with its own reservation, `published`.
+- Sibling coverage for an unmapped session reports `left_unmapped`. A mapped session reports `already_held` under its selected reservation. A plan shrink hold leaves the reservation unmapped and reports `left_unmapped` when a harness session exists.
 - **Explicit selections.**
   - An explicit `--reservation` naming the session's mapped id takes the fast path.
   - With a harness session present, an explicit id that would create or move the mapping locks.
@@ -207,10 +221,9 @@ The hook's contention presentation leads with "cargo-berth rejected this edit be
 
 ## Why
 
-- **Answer held paths first.** A clean edit the session already holds should not wait behind other sessions' reconciles. The locked path's answer for that state is fully determined by the snapshot, so the fast path builds the same answer without the lock.
+- The fast path decides held coverage from the snapshot. This avoids waiting for another session's reconciliation to release the ledger mutation lock.
 - **A sibling-held path counts as held.** Drift treats a run's active reservations in one worktree as one party. Restricting the fast path to the selected reservation's own scopes was ruled out: the locked answer is identical, and the restriction would slow sibling-held edits.
-- **No lock-free remap.** A remap needs a durable mapping write, which belongs under the lock.
-- **No "already current" mapping-publication variant.** `published` is already accurate when the mapping exists.
+- A command that creates or changes a mapping takes the ledger mutation lock. The fast path republishes only the confirmed selection.
 - **Observe holders together.** The `git status` calls are independent per holder key and were the largest share of the time under the lock. Running them concurrently shortens the lock hold without changing what is recorded.
 - **Observe outside the lock, validate at publish.** Preparing observation outside the lock shortens the hold; publication checks the journal and session-mapping versions, and repeated invalidation falls back to preparing under the lock. This shortens lock holds, not the caller's wait: request latency still includes the observation itself.
 - **Busy answers as busy.** Reporting a reconcile failure as `blocked_by_overlap` with no holder sent the caller to resolve an overlap that did not exist. `contention`, exit 6, tells it to retry.
