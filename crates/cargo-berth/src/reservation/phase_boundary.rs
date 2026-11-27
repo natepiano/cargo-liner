@@ -41,7 +41,7 @@ pub(crate) fn first_checkpoint_tip<'head>(
     let foreign = reservations.iter().filter(|other| {
         other.actor().worktree != reservation.actor().worktree
             && (!matches!(other.lifecycle(), ReservationLifecycle::Released { .. })
-                || pending_checkpoint(other).is_some())
+                || !matches!(PendingWork::from(*other), PendingWork::None))
     });
     if !checkout_ranges_are_disjoint(
         repository,
@@ -69,7 +69,12 @@ fn same_checkout_checkpoint_tip<'head>(
     let mut later = None;
     for claim in other_checkout_claims(reservations, reservation) {
         if matches!(claim.lifecycle(), ReservationLifecycle::Released { .. }) {
-            if claim.claimed_at() <= reservation.claimed_at() && pending_checkpoint(claim).is_some()
+            if claim.claimed_at() <= reservation.claimed_at()
+                && matches!(
+                    claim.protected_checkpoint(),
+                    RetainedProtectedTip::Retained(_)
+                )
+                && !matches!(PendingWork::from(claim), PendingWork::None)
             {
                 earlier.push(claim);
             }
@@ -95,20 +100,8 @@ fn same_checkout_checkpoint_tip<'head>(
     let repository_root = repository.repository_root();
     let range_start = reservation.reanchored_claim_head().unwrap_or(start);
     for claim in other_checkout_claims(reservations, reservation) {
-        let pending_tip = match claim.lifecycle() {
-            ReservationLifecycle::Outstanding { protected_tip } => protected_tip.as_ref(),
-            ReservationLifecycle::Released {
-                disposition: ReleaseDisposition::KeptOnBranch(kept),
-            } => match &kept.work {
-                KeptWork::Known(tip)
-                    if repository.object_reader().commit(&tip.to_string()).is_ok() =>
-                {
-                    tip
-                },
-                KeptWork::HoldTransfer => continue,
-                KeptWork::Known(_) | KeptWork::Unknown => return Err(AmbiguousCheckpoint),
-            },
-            ReservationLifecycle::Active | ReservationLifecycle::Released { .. } => continue,
+        let Some(pending_tip) = PendingWork::from(claim).resolved_tip(repository)? else {
+            continue;
         };
         if range_start != tip
             && !excludes_claim_work(
@@ -256,11 +249,19 @@ fn checkout_ranges_are_disjoint<'claim>(
     claims.all(|claim| {
         let excludes_work =
             |tip| excludes_claim_work(repository_root, claim, tip, previous, candidate, target);
-        if pending_checkpoint(claim).is_some_and(|checkpoint| !excludes_work(checkpoint)) {
+        let Ok(pending_tip) = PendingWork::from(claim).resolved_tip(repository) else {
+            return false;
+        };
+        if pending_tip.is_some_and(|tip| !excludes_work(tip)) {
             return false;
         }
         if matches!(claim.lifecycle(), ReservationLifecycle::Released { .. }) {
-            return true;
+            return match claim.protected_checkpoint() {
+                RetainedProtectedTip::NotCheckpointed => true,
+                RetainedProtectedTip::Retained(checkpoint) => {
+                    pending_tip == Some(checkpoint.as_ref()) || excludes_work(checkpoint.as_ref())
+                },
+            };
         }
         let observed =
             registry.classify(reservation.actor().repository, common_git_directory, claim);
@@ -303,23 +304,47 @@ fn excludes_claim_work(
         )
 }
 
-/// Return the recorded tip whose work can still be absent from the target.
-fn pending_checkpoint(reservation: &Reservation) -> Option<&GitObjectId> {
-    match reservation.lifecycle() {
-        ReservationLifecycle::Outstanding { protected_tip } => Some(protected_tip.as_ref()),
-        ReservationLifecycle::Released {
-            disposition:
-                ReleaseDisposition::KeptOnBranch(KeptWorkRelease {
-                    work: KeptWork::Known(_) | KeptWork::Unknown,
-                    ..
-                }),
-        } => {
-            let RetainedProtectedTip::Retained(tip) = reservation.protected_checkpoint() else {
-                return None;
-            };
-            Some(tip.as_ref())
-        },
-        ReservationLifecycle::Active | ReservationLifecycle::Released { .. } => None,
+/// Work that a candidate checkpoint must exclude.
+enum PendingWork<'tip> {
+    None,
+    Checkpoint(&'tip GitObjectId),
+    Kept(&'tip GitObjectId),
+    Unknown,
+}
+
+impl<'tip> PendingWork<'tip> {
+    fn resolved_tip(
+        self,
+        repository: &RepositorySnapshot,
+    ) -> Result<Option<&'tip GitObjectId>, AmbiguousCheckpoint> {
+        match self {
+            Self::None => Ok(None),
+            Self::Checkpoint(tip) => Ok(Some(tip)),
+            Self::Kept(tip) => repository
+                .object_reader()
+                .commit(&tip.to_string())
+                .map(|_| Some(tip))
+                .map_err(|_| AmbiguousCheckpoint),
+            Self::Unknown => Err(AmbiguousCheckpoint),
+        }
+    }
+}
+
+impl<'reservation> From<&'reservation Reservation> for PendingWork<'reservation> {
+    fn from(reservation: &'reservation Reservation) -> Self {
+        match reservation.lifecycle() {
+            ReservationLifecycle::Outstanding { protected_tip } => {
+                Self::Checkpoint(protected_tip.as_ref())
+            },
+            ReservationLifecycle::Released {
+                disposition: ReleaseDisposition::KeptOnBranch(KeptWorkRelease { work, .. }),
+            } => match work {
+                KeptWork::Known(tip) => Self::Kept(tip),
+                KeptWork::HoldTransfer => Self::None,
+                KeptWork::Unknown => Self::Unknown,
+            },
+            ReservationLifecycle::Active | ReservationLifecycle::Released { .. } => Self::None,
+        }
     }
 }
 

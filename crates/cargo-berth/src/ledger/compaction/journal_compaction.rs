@@ -318,18 +318,19 @@ impl Ledger {
         let source = journal.metadata()?;
         let mut bytes = Vec::new();
         journal.read_to_end(&mut bytes)?;
-        let plan = match CompactionPlan::of(&bytes, repo_instance_id, now)? {
-            CompactionPlanning::Rewrite(plan) => plan,
-            CompactionPlanning::Unchanged(basis) => {
-                let marker = HistoryCompactionNoProgress::for_source(
-                    &source,
-                    &journal.metadata()?,
-                    u64::try_from(bytes.len()).map_err(std::io::Error::other)?,
-                    basis,
-                );
-                return Ok(CompactionPreparation::Unchanged(marker));
-            },
-        };
+        let plan =
+            match CompactionPlan::of(&bytes, repo_instance_id, now, &self.paths.repository_root)? {
+                CompactionPlanning::Rewrite(plan) => plan,
+                CompactionPlanning::Unchanged(basis) => {
+                    let marker = HistoryCompactionNoProgress::for_source(
+                        &source,
+                        &journal.metadata()?,
+                        u64::try_from(bytes.len()).map_err(std::io::Error::other)?,
+                        basis,
+                    );
+                    return Ok(CompactionPreparation::Unchanged(marker));
+                },
+            };
         drop(bytes);
         let journal_path = self.paths.directory.join(format!(
             "{JOURNAL_COMPACTION_TEMPORARY_FILE_NAME}.{}",
@@ -410,6 +411,7 @@ impl CompactionPlan {
         journal: &[u8],
         repo_instance_id: RepoInstanceId,
         now: &RecordedAt,
+        repository_root: &Path,
     ) -> Result<CompactionPlanning, JournalCompactionError> {
         let mut merge_extent_observations = Vec::new();
         let (replay, complete_end) =
@@ -434,7 +436,7 @@ impl CompactionPlan {
             .zip(0_u64..)
             .map(|(observation, ordinal)| replay.superseded.keeps(ordinal, observation))
             .collect::<Vec<_>>();
-        let expired = ExpiredHistory::of(&replay, &events, &kept_extents, now)
+        let expired = ExpiredHistory::of(&replay, &events, &kept_extents, now, repository_root)
             .map_err(LedgerError::JournalEncoding)?;
         if replay.superseded.droppable_bytes == 0 && expired.is_empty() {
             return Ok(CompactionPlanning::Unchanged(expired.basis));
@@ -537,6 +539,7 @@ mod tests {
     use std::num::TryFromIntError;
     use std::ops::RangeInclusive;
     use std::os::unix::fs::MetadataExt;
+    use std::path::Path;
     use std::sync::Arc;
     use std::sync::Barrier;
     use std::thread;
@@ -842,7 +845,7 @@ mod tests {
             fixtures::name_repository(&mut events, repository);
             let (bytes, _) = fixtures::journal_bytes(&events)?;
             let CompactionPlanning::Rewrite(plan) =
-                CompactionPlan::of(&bytes, repository, &RecordedAt::now())?
+                CompactionPlan::of(&bytes, repository, &RecordedAt::now(), Path::new(""))?
             else {
                 assert_eq!(fixtures::superseded_record_bytes(&events)?, 0);
                 continue;
@@ -969,13 +972,18 @@ mod tests {
         let (bytes, _) = fixtures::journal_bytes(&accepted)?;
         let incomplete = [bytes.as_slice(), b"{\"schema_version\""].concat();
         assert!(matches!(
-            CompactionPlan::of(&incomplete, repository, &RecordedAt::now()),
+            CompactionPlan::of(&incomplete, repository, &RecordedAt::now(), Path::new("")),
             Err(JournalCompactionError::Refused(
                 CompactionRefusal::IncompleteFinalRecord
             ))
         ));
         assert!(matches!(
-            CompactionPlan::of(&bytes, RepoInstanceId::new(), &RecordedAt::now()),
+            CompactionPlan::of(
+                &bytes,
+                RepoInstanceId::new(),
+                &RecordedAt::now(),
+                Path::new("")
+            ),
             Err(JournalCompactionError::Refused(
                 CompactionRefusal::RepositoryValidation(_)
             ))
@@ -991,10 +999,11 @@ mod tests {
         fixtures::name_repository(&mut events, repository);
         let (bytes, record_ends) = fixtures::journal_bytes(&events)?;
         let removed_bytes = |journal: &[u8]| -> Result<u64, Box<dyn Error>> {
-            let kept = match CompactionPlan::of(journal, repository, &RecordedAt::now())? {
-                CompactionPlanning::Rewrite(plan) => plan.kept.len(),
-                CompactionPlanning::Unchanged(_) => journal.len(),
-            };
+            let kept =
+                match CompactionPlan::of(journal, repository, &RecordedAt::now(), Path::new(""))? {
+                    CompactionPlanning::Rewrite(plan) => plan.kept.len(),
+                    CompactionPlanning::Unchanged(_) => journal.len(),
+                };
             Ok(u64::try_from(journal.len() - kept)?)
         };
 

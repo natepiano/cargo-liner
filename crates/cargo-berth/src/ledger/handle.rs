@@ -1780,18 +1780,6 @@ impl LedgerTransaction {
         } = prepared;
         let next_generation = next_projection_generation(self.replay.generation)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
-        let operation = operation.into_operation();
-        if let JournalOperation::Release {
-            reservation_id,
-            release,
-        } = &operation
-            && let Some(tip) = release.known_kept_tip()
-        {
-            git::write_kept_work_ref(&self.repository_root, *reservation_id, tip)
-                .map_err(std::io::Error::other)
-                .map_err(LedgerError::Io)
-                .map_err(LedgerTransactionError::LedgerUnreadable)?;
-        }
         let event = JournalEvent::for_operation(
             JournalActor {
                 repository: self.repo_instance_id,
@@ -1799,11 +1787,37 @@ impl LedgerTransaction {
                 run:        coordination_run_id,
             },
             next_generation,
-            operation,
+            operation.into_operation(),
         );
-        self.journal
-            .append(&event)
+        let records = PreparedJournalAppend::encode(std::slice::from_ref(&event))
             .map_err(journal_append_transaction_error)?;
+        let kept_work = match &event.operation {
+            JournalOperation::Release {
+                reservation_id,
+                release,
+            } => release.known_kept_tip().map(|tip| (*reservation_id, tip)),
+            _ => None,
+        };
+        if let Some((reservation_id, tip)) = kept_work {
+            git::write_kept_work_ref(&self.repository_root, reservation_id, tip)
+                .map_err(std::io::Error::other)
+                .map_err(LedgerError::Io)
+                .map_err(LedgerTransactionError::LedgerUnreadable)?;
+        }
+        if let Err(error) = self.journal.append_prepared(&records) {
+            if matches!(&error, JournalAppendError::Open(_))
+                && let Some((reservation_id, tip)) = kept_work
+                && let Err(cleanup_error) =
+                    git::delete_kept_work_ref(&self.repository_root, reservation_id, tip)
+            {
+                return Err(LedgerTransactionError::LedgerUnreadable(LedgerError::Io(
+                    std::io::Error::other(format!(
+                        "{error}; kept-tip ref cleanup failed: {cleanup_error}"
+                    )),
+                )));
+            }
+            return Err(journal_append_transaction_error(error));
+        }
         self.journal
             .advance_repairing_tail(&mut self.replay)
             .map_err(LedgerError::from)
@@ -1998,7 +2012,7 @@ pub(super) fn journal_append_transaction_error(
             bytes,
             maximum_bytes: ceiling.maximum_bytes(),
         },
-        JournalAppendError::Io(error) => {
+        JournalAppendError::Open(error) | JournalAppendError::WriteOrSync(error) => {
             LedgerTransactionError::LedgerUnreadable(LedgerError::Io(error))
         },
         JournalAppendError::Serialization(error) => {
@@ -2043,7 +2057,7 @@ pub(super) struct LedgerPaths {
     pub(super) replay_checkpoint:  PathBuf,
     pub(super) lock:               PathBuf,
     pub(super) repo_instance_id:   PathBuf,
-    repository_root:               PathBuf,
+    pub(super) repository_root:    PathBuf,
 }
 
 /// A projection published after a lock-free journal read requires a fresh pair of reads.
@@ -2148,6 +2162,8 @@ mod tests {
     use std::thread::JoinHandle;
 
     use cargo_berth_test_support::ChildDeadlineExt as _;
+    use cargo_berth_test_support::CommandDeadlineExt as _;
+    use cargo_berth_test_support::fixture_git_command;
     use serde_json::Value;
 
     use super::CommittedActionValidation;
@@ -2162,9 +2178,12 @@ mod tests {
     use super::LedgerTransactionError;
     use super::LedgerTransactionOutcome;
     use super::MAXIMUM_JOURNAL_RECORD_BYTES;
+    use super::PreparedOperationSessionChange;
     use super::RetainedPreparation;
     use super::TransactionValidation;
     use crate::drift::WorkingTreeFingerprint;
+    use crate::git;
+    use crate::git::ReferenceLookup;
     use crate::ids::CoordinationRunId;
     use crate::ids::GitObjectId;
     use crate::ids::RepoInstanceId;
@@ -2185,10 +2204,123 @@ mod tests {
     use crate::ledger::test_support;
     use crate::ledger::worktree_context::WorktreeContext;
     use crate::reservation::HolderMergeExtentCoverage;
+    use crate::reservation::KeptWork;
+    use crate::reservation::KeptWorkRelease;
     use crate::reservation::MergeExtent;
     use crate::reservation::MergeExtentKey;
     use crate::reservation::ReleaseDisposition;
+    use crate::reservation::ReservationLifecycle;
     use crate::reservation::ReservationRunStatus;
+    use crate::session::PreparedSessionMappingPublication;
+
+    #[test]
+    fn failed_kept_release_append_removes_its_ref() -> Result<(), Box<dyn std::error::Error>> {
+        assert_kept_release_ref_after_failure(KeptReleaseAppendFailure::Open)
+    }
+
+    #[test]
+    fn failed_kept_release_sync_preserves_its_ref() -> Result<(), Box<dyn std::error::Error>> {
+        assert_kept_release_ref_after_failure(KeptReleaseAppendFailure::Sync)
+    }
+
+    #[derive(Clone, Copy)]
+    enum KeptReleaseAppendFailure {
+        Open,
+        Sync,
+    }
+
+    fn assert_kept_release_ref_after_failure(
+        failure: KeptReleaseAppendFailure,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let repository = test_support::scratch_repository();
+        let root = repository.path();
+        let commit = fixture_git_command()
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--quiet",
+                "--allow-empty",
+                "-m",
+                "kept work",
+            ])
+            .current_dir(root)
+            .bounded_output()?;
+        assert!(commit.status.success(), "{commit:?}");
+        let head = fixture_git_command()
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .bounded_output()?;
+        assert!(head.status.success(), "{head:?}");
+        let tip = GitObjectId::from_str(std::str::from_utf8(&head.stdout)?.trim())?;
+        Ledger::initialize(root)?;
+        let ledger = Ledger::open(root)?;
+        let worktree = WorktreeId::new();
+        let run = CoordinationRunId::new();
+        let reservation_id = ReservationId::new();
+        ledger.transact(worktree, run, |_| {
+            TransactionValidation::<()>::Append(Box::new(ordering_claim(
+                root,
+                reservation_id,
+                TestClaimOrdering::Unordered,
+            )))
+        })?;
+        let (mut transaction, ()) =
+            ledger.prepare_mutation_from_replay(std::time::Duration::ZERO, |_, _| ())?;
+        let operation = transaction.admit(PreparedOperationSessionChange {
+            operation:   JournalOperation::Release {
+                reservation_id,
+                release: JournalRelease::new(
+                    ReleaseDisposition::KeptOnBranch(KeptWorkRelease {
+                        reason: "keep this commit".parse()?,
+                        work:   KeptWork::Known(tip.clone()),
+                    }),
+                    None,
+                ),
+            },
+            publication: PreparedSessionMappingPublication::Unchanged,
+        })?;
+
+        match failure {
+            KeptReleaseAppendFailure::Open => {
+                // Replace the journal path after the transaction opens the original file.
+                let original = ledger.paths.journal.with_extension("original");
+                fs::rename(&ledger.paths.journal, &original)?;
+                fs::create_dir(&ledger.paths.journal)?;
+            },
+            KeptReleaseAppendFailure::Sync => {
+                transaction.journal.set_append_sync_for_test(|_| {
+                    Err(std::io::Error::other("journal sync failed"))
+                });
+            },
+        }
+        let result = transaction.append(worktree, run, operation);
+        assert!(matches!(
+            result,
+            Err(LedgerTransactionError::LedgerUnreadable(LedgerError::Io(_)))
+        ));
+        let reference = git::kept_work_ref_name(reservation_id);
+        let expected = match failure {
+            KeptReleaseAppendFailure::Open => ReferenceLookup::Missing,
+            KeptReleaseAppendFailure::Sync => {
+                let reservations = Journal::replay_read_only(&ledger.paths.journal)?.reservations?;
+                assert!(matches!(
+                    reservations.reservation(reservation_id)?.lifecycle(),
+                    ReservationLifecycle::Released {
+                        disposition: ReleaseDisposition::KeptOnBranch(KeptWorkRelease {
+                            work: KeptWork::Known(replayed_tip),
+                            ..
+                        })
+                    } if replayed_tip == &tip
+                ));
+                ReferenceLookup::Present(tip)
+            },
+        };
+        assert_eq!(git::reference_lookup(root, &reference)?, expected);
+        Ok(())
+    }
 
     #[test]
     fn retained_edit_replay_reloads_a_longer_compacted_replacement()

@@ -2487,6 +2487,7 @@ mod merge_extent {
     use cargo_berth_test_support::SECOND_RUN;
     use cargo_berth_test_support::assert_success;
     use cargo_berth_test_support::berth_command;
+    use cargo_berth_test_support::claim_id;
     use cargo_berth_test_support::is_merge_extent_observation;
     use cargo_berth_test_support::observes_merge_extent_of;
     use serde_json::Value;
@@ -2505,6 +2506,8 @@ mod merge_extent {
     use super::integration_templates::ACTIVE_BEFORE_LATER_PHASE;
     use super::integration_templates::ACTIVE_WITH_BACKDATED_FOREIGN_START;
     use super::integration_templates::ACTIVE_WITH_DISJOINT_FOREIGN_MERGE;
+    use super::integration_templates::ACTIVE_WITH_FOREIGN_KEPT_RELEASE;
+    use super::integration_templates::ACTIVE_WITH_FOREIGN_KEPT_SUFFIX;
     use super::integration_templates::ACTIVE_WITH_INTERLEAVED_OLDER_PHASE;
     use super::integration_templates::ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET;
     use super::integration_templates::ACTIVE_WITH_PRUNED_KEPT_BRANCH;
@@ -4607,6 +4610,15 @@ mod merge_extent {
                     .all(|event| event["op"] != "release" || event["reservation_id"] != id)
             );
             assert!(events(fixture.trunk()).starts_with(&before));
+            assert!(
+                !GIT.output(
+                    fixture.trunk(),
+                    ["show-ref", "--verify", "--quiet", &kept_work_ref(&id)]
+                )
+                .status
+                .success(),
+                "rejected release must leave no kept-tip ref"
+            );
         }
         let release = berth(
             &fixture.holder,
@@ -4936,6 +4948,154 @@ mod merge_extent {
         succeed(&release);
         assert_eq!(json(&release)["payload"]["data"]["status"], "checkpointed");
     }
+
+    #[test]
+    fn first_release_excludes_foreign_kept_work_without_a_checkpoint() {
+        assert_interleaved_first_release_stays_active(ACTIVE_WITH_FOREIGN_KEPT_RELEASE);
+    }
+
+    #[test]
+    fn first_release_excludes_foreign_kept_work_after_its_checkpoint_lands() {
+        assert_interleaved_first_release_stays_active(ACTIVE_WITH_FOREIGN_KEPT_SUFFIX);
+    }
+
+    #[test]
+    fn first_release_excludes_a_foreign_checkpoint_after_its_holder_moves_to_the_base() {
+        let repo = IntegrationRepository::from_recorded_template(super::INITIAL_INTEGRATION_PAIR);
+        repo.git(repo.root(), &["config", "core.hooksPath", "/dev/null"]);
+        let foreign = repo.main_lane("foreign-phase");
+        let holder = repo.main_lane(CHECKPOINT_LANE);
+        let base = repo.git_stdout(&foreign, &["rev-parse", "HEAD"]);
+        let foreign_claim = repo.claim(&foreign, "file:b.rs", SECOND_RUN, None);
+        assert_success(&foreign_claim);
+        let foreign_id = claim_id(&foreign_claim);
+        let holder_claim = repo.claim(&holder, "file:a.rs", FIRST_RUN, None);
+        assert_success(&holder_claim);
+
+        repo.commit_file(&foreign, "b.rs", "foreign work\n", "foreign checkpoint");
+        let checkpoint = repo.run(&foreign, &["release", &foreign_id, "--json"]);
+        assert_success(&checkpoint);
+        assert_eq!(
+            json(&checkpoint)["payload"]["data"]["status"],
+            "checkpointed"
+        );
+        repo.git(&holder, &["merge", "--quiet", "--ff-only", "foreign-phase"]);
+        repo.commit_file(&holder, "a.rs", "holder work\n", "holder work");
+        repo.git(&foreign, &["switch", "--quiet", "--detach", &base]);
+        let kept = repo.run(
+            &foreign,
+            &[
+                "release",
+                &foreign_id,
+                "--keep-work",
+                "--why",
+                "keep the branch",
+                "--json",
+            ],
+        );
+        assert_success(&kept);
+        assert_eq!(
+            repo.git_stdout(repo.root(), &["rev-parse", &kept_work_ref(&foreign_id)]),
+            base
+        );
+        assert_first_release_stays_active(&repo, &claim_id(&holder_claim));
+    }
+
+    #[test]
+    fn compaction_retains_an_expired_kept_release_until_its_tip_lands() {
+        let (repo, _, kept_tip) = checkpoint_fixture(ACTIVE_WITH_FOREIGN_KEPT_RELEASE);
+        let root = repo.root();
+        let kept_release = age_kept_release(root);
+        let id = kept_release["reservation_id"]
+            .as_str()
+            .expect("release should name its reservation");
+        let reference = kept_work_ref(id);
+        assert_eq!(repo.git_stdout(root, &["rev-parse", &reference]), kept_tip);
+        assert_success(&repo.run(root, &["init", "--compact-journal", "--json"]));
+        assert!(
+            events(root).contains(&kept_release),
+            "compaction dropped the unlanded release"
+        );
+        assert_eq!(repo.git_stdout(root, &["rev-parse", &reference]), kept_tip);
+
+        repo.git(root, &["merge", "--quiet", "--ff-only", &kept_tip]);
+        let _ = repo.board();
+        assert!(
+            !GIT.output(root, ["show-ref", "--verify", "--quiet", &reference])
+                .status
+                .success()
+        );
+        assert_success(&repo.run(root, &["init", "--compact-journal", "--json"]));
+        assert!(
+            !events(root).contains(&kept_release),
+            "landed release should expire"
+        );
+    }
+
+    #[test]
+    fn compaction_retains_kept_work_for_a_live_holder_on_another_target() {
+        let (repo, holder_id, kept_tip) = checkpoint_fixture(ACTIVE_WITH_FOREIGN_KEPT_RELEASE);
+        let root = repo.root();
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        assert_success(&repo.run(
+            &holder,
+            &["retarget", &holder_id, "--target", "integration", "--json"],
+        ));
+        let journal = events(root);
+        let foreign_id = journal[kept_release_index(&journal)]["reservation_id"]
+            .as_str()
+            .expect("release should name its reservation");
+        repo.git(root, &["merge", "--quiet", "--ff-only", &kept_tip]);
+        let _ = repo.board();
+        assert!(
+            !GIT.output(
+                root,
+                [
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &kept_work_ref(foreign_id)
+                ]
+            )
+            .status
+            .success()
+        );
+        assert_first_release_stays_active(&repo, &holder_id);
+        let kept_release = age_kept_release(root);
+        assert_success(&repo.run(root, &["init", "--compact-journal", "--json"]));
+        assert!(
+            events(root).contains(&kept_release),
+            "compaction dropped kept work that integration still lacks"
+        );
+        assert_first_release_stays_active(&repo, &holder_id);
+    }
+
+    fn age_kept_release(root: &Path) -> Value {
+        let mut journal = events(root);
+        let index = kept_release_index(&journal);
+        let release = &mut journal[index];
+        release["at"] = serde_json::json!("2020-01-01T00:00:00.000Z");
+        let kept_release = release.clone();
+        let journal = journal
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(root.join(JOURNAL), format!("{journal}\n")).expect("aged journal should write");
+
+        kept_release
+    }
+
+    fn kept_release_index(journal: &[Value]) -> usize {
+        journal
+            .iter()
+            .position(|event| {
+                event["op"] == "release" && event["disposition"]["kind"] == "kept_on_branch"
+            })
+            .expect("kept release should record")
+    }
+
+    fn kept_work_ref(id: &str) -> String { format!("refs/cargo-berth/kept-work/{id}") }
 
     fn assert_interleaved_first_release_stays_active(template: LedgerTemplate) {
         let (repo, id, _) = checkpoint_fixture(template);

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::btree_map::Entry;
+use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -14,12 +15,23 @@ use serde_json::Value;
 use super::journal::JournalEvent;
 use super::journal::JournalOperation;
 use super::journal::JournalReplay;
+use crate::git;
+use crate::git::CommitCandidateReachability;
+use crate::git::CommitTargetReachability;
+use crate::git::ReferenceLookup;
+use crate::git::RepositorySnapshot;
+use crate::ids::GitObjectId;
 use crate::ids::RecordedAt;
 use crate::ids::ReservationId;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::KeptWork;
+use crate::reservation::RecordedTarget;
+use crate::reservation::ReleaseDisposition;
 use crate::reservation::ReleaseRevalidationSubject;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationEvidenceState;
+use crate::reservation::ReservationLifecycle;
+use crate::reservation::RetainedProtectedTip;
 use crate::reservation::RetainedReservationSet;
 
 /// Finished audit history remains available for one day, unless a retained fact needs it.
@@ -114,23 +126,40 @@ impl FinishedHistory {
     pub(super) fn compaction_candidates<'a>(
         replay: &'a JournalReplay,
         now: &'a RecordedAt,
+        repository_root: &'a Path,
     ) -> impl Iterator<Item = ReservationId> + 'a {
-        replay
-            .reservations
-            .iter()
-            .flat_map(RetainedReservationSet::iter)
-            .filter_map(move |reservation| {
+        replay.reservations.iter().flat_map(move |reservations| {
+            reservations.iter().filter_map(move |reservation| {
                 let id = reservation.id();
                 let finished = replay.finished_history.0.get(&id)?;
                 (finished.elapsed_until(now) > FINISHED_HISTORY_RETENTION
-                    && !keeps_evidence(reservation))
+                    && !keeps_evidence(reservation, reservations, repository_root))
                 .then_some(id)
             })
+        })
     }
 }
 
 /// Whether compaction must keep the reservation's evidence.
-fn keeps_evidence(reservation: &Reservation) -> bool {
+fn keeps_evidence(
+    reservation: &Reservation,
+    reservations: &RetainedReservationSet,
+    repository_root: &Path,
+) -> bool {
+    if let ReservationLifecycle::Released {
+        disposition: ReleaseDisposition::KeptOnBranch(kept),
+    } = reservation.lifecycle()
+    {
+        match &kept.work {
+            KeptWork::Known(tip)
+                if !kept_work_can_expire(repository_root, reservation, tip, reservations) =>
+            {
+                return true;
+            },
+            KeptWork::Unknown => return true,
+            KeptWork::HoldTransfer | KeptWork::Known(_) => {},
+        }
+    }
     match reservation.evidence_state() {
         // An outstanding checkpoint may be needed for an orphan alert.
         Ok(ReservationEvidenceState::Outstanding { .. }) | Err(_) => true,
@@ -159,6 +188,48 @@ fn keeps_evidence(reservation: &Reservation) -> bool {
             | ReservationEvidenceState::ReleasedWithoutCheckpoint { .. },
         ) => false,
     }
+}
+
+/// Expire kept work only when each live holder uses the same target and Git proves landing.
+fn kept_work_can_expire(
+    repository_root: &Path,
+    reservation: &Reservation,
+    tip: &GitObjectId,
+    reservations: &RetainedReservationSet,
+) -> bool {
+    let RecordedTarget::Recorded { target, .. } = reservation.target() else {
+        return false;
+    };
+    if reservations.iter().any(|holder| {
+        !matches!(holder.lifecycle(), ReservationLifecycle::Released { .. })
+            && !matches!(holder.target(), RecordedTarget::Recorded { target: other, .. } if other == target)
+    }) {
+        return false;
+    }
+    if !matches!(
+        git::reference_lookup(repository_root, &git::kept_work_ref_name(reservation.id())),
+        Ok(ReferenceLookup::Missing)
+    ) {
+        return false;
+    }
+    // An absent ref can also result from manual deletion. Check the target independently.
+    let Ok(repository) = RepositorySnapshot::discover(repository_root) else {
+        return false;
+    };
+    let mut tips = vec![tip.clone()];
+    if let RetainedProtectedTip::Retained(checkpoint) = reservation.protected_checkpoint()
+        && checkpoint.as_ref() != tip
+    {
+        tips.push(checkpoint.as_ref().clone());
+    }
+    git::branch_commit_reachability(&repository, target.short_name(), &tips)
+        .is_ok_and(|observation| {
+            matches!(
+                observation.reachability,
+                CommitTargetReachability::Resolved { candidates, .. }
+                    if candidates.iter().all(|candidate| *candidate == CommitCandidateReachability::Ancestor)
+            )
+        })
 }
 
 /// The retention facts used by a compaction plan.
@@ -232,6 +303,7 @@ impl ExpiredHistory {
         events: &[JournalEvent],
         kept_extents: &[bool],
         now: &RecordedAt,
+        repository_root: &Path,
     ) -> Result<Self, Error> {
         let Ok(reservations) = &replay.reservations else {
             return Ok(Self {
@@ -247,8 +319,8 @@ impl ExpiredHistory {
             .iter()
             .map(Reservation::id)
             .collect::<BTreeSet<_>>();
-        let candidates =
-            FinishedHistory::compaction_candidates(replay, now).collect::<BTreeSet<_>>();
+        let candidates = FinishedHistory::compaction_candidates(replay, now, repository_root)
+            .collect::<BTreeSet<_>>();
         let mut retained = known
             .difference(&candidates)
             .copied()

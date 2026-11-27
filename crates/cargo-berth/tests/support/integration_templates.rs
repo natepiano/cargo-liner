@@ -701,6 +701,73 @@ fn build_disjoint_foreign_merge(root: &Path) {
     record_checkpoint_fixture(root, &repo, claim_id(&claimed), foreign_tip);
 }
 
+pub(super) const ACTIVE_WITH_FOREIGN_KEPT_RELEASE: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "active-with-foreign-kept-release",
+        build: |root| build_foreign_kept_release(root, ForeignCheckpoint::Absent),
+        ..ACTIVE_WITH_DISJOINT_FOREIGN_MERGE.repository
+    },
+    ..ACTIVE_WITH_DISJOINT_FOREIGN_MERGE
+};
+
+pub(super) const ACTIVE_WITH_FOREIGN_KEPT_SUFFIX: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "active-with-foreign-kept-suffix",
+        build: |root| build_foreign_kept_release(root, ForeignCheckpoint::Landed),
+        ..ACTIVE_WITH_FOREIGN_KEPT_RELEASE.repository
+    },
+    ..ACTIVE_WITH_FOREIGN_KEPT_RELEASE
+};
+
+#[derive(Clone, Copy)]
+enum ForeignCheckpoint {
+    Absent,
+    Landed,
+}
+
+fn build_foreign_kept_release(root: &Path, checkpoint: ForeignCheckpoint) {
+    let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
+    repo.git(repo.root(), &["config", "core.hooksPath", "/dev/null"]);
+    let foreign = repo.main_lane("foreign-phase");
+    let claimed = repo.claim(&foreign, "file:b.rs", SECOND_RUN, None);
+    assert_success(&claimed);
+    let foreign_id = claim_id(&claimed);
+    if matches!(checkpoint, ForeignCheckpoint::Landed) {
+        repo.commit_file(&foreign, "b.rs", "checkpoint work\n", "foreign checkpoint");
+        let release = repo.run(&foreign, &["release", &foreign_id, "--json"]);
+        assert_success(&release);
+        assert_eq!(json(&release)["status"], "outstanding");
+        repo.git(
+            repo.root(),
+            &["merge", "--quiet", "--ff-only", "foreign-phase"],
+        );
+    }
+    repo.commit_file(&foreign, "b.rs", "foreign work\n", "kept work");
+    let kept_tip = repo.git_stdout(&foreign, &["rev-parse", "HEAD"]);
+    let kept = repo.run(
+        &foreign,
+        &[
+            "release",
+            &foreign_id,
+            "--keep-work",
+            "--why",
+            "keep foreign work",
+            "--json",
+        ],
+    );
+    assert_success(&kept);
+    assert_eq!(json(&kept)["status"], "released");
+    let holder = repo.main_lane(CHECKPOINT_LANE);
+    let claimed = repo.claim(&holder, "file:a.rs", FIRST_RUN, None);
+    assert_success(&claimed);
+    repo.commit_file(&holder, "a.rs", "holder work\n", "holder work");
+    repo.git(
+        &holder,
+        &["merge", "--quiet", "--no-ff", "--no-edit", "foreign-phase"],
+    );
+    record_checkpoint_fixture(root, &repo, claim_id(&claimed), kept_tip);
+}
+
 fn build_backdated_foreign_start(root: &Path) {
     let repo = IntegrationRepository::from_recorded_template(crate::INITIAL_INTEGRATION_PAIR);
     repo.git(repo.root(), &["config", "core.hooksPath", "/dev/null"]);

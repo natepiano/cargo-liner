@@ -307,6 +307,8 @@ fn templates_for_setup() -> Vec<LedgerTemplate> {
             board_templates::INCORPORATED_PREDECESSOR,
             ledger_templates::PACKED_CHECKPOINT,
             ledger_templates::PACKED_PREDECESSOR,
+            integration_templates::ACTIVE_WITH_FOREIGN_KEPT_RELEASE,
+            integration_templates::ACTIVE_WITH_FOREIGN_KEPT_SUFFIX,
             gate_fixtures::THREE_COMMIT_REBASE,
             compaction_fixture::PREPARED_COMPACTION,
             answers_fixtures::HOLDER_LIFECYCLE_START,

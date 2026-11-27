@@ -2488,7 +2488,9 @@ pub(super) enum JournalReplaySourceStatus {
 
 /// The journal file opened at its fixed ledger path.
 pub(super) struct Journal {
-    path: PathBuf,
+    path:        PathBuf,
+    #[cfg(test)]
+    append_sync: fn(&File) -> std::io::Result<()>,
 }
 
 /// Validated newline-terminated journal records, encoded before acquisition.
@@ -2526,7 +2528,9 @@ impl Journal {
         };
         Ok((
             Self {
-                path: path.to_owned(),
+                path:                     path.to_owned(),
+                #[cfg(test)]
+                append_sync:              File::sync_all,
             },
             initialization_state,
         ))
@@ -2536,8 +2540,15 @@ impl Journal {
     pub(super) fn open_existing(path: &Path) -> Result<Self, JournalError> {
         OpenOptions::new().read(true).write(true).open(path)?;
         Ok(Self {
-            path: path.to_owned(),
+            path:                     path.to_owned(),
+            #[cfg(test)]
+            append_sync:              File::sync_all,
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_append_sync_for_test(&mut self, sync: fn(&File) -> std::io::Result<()>) {
+        self.append_sync = sync;
     }
 
     /// Replay every complete record and repair one incomplete final record.
@@ -2656,10 +2667,18 @@ impl Journal {
             return Ok(());
         }
 
-        let mut journal_file = OpenOptions::new().append(true).open(&self.path)?;
-        journal_file.write_all(&prepared.records)?;
-        journal_file.sync_all()?;
-        Ok(())
+        let mut journal_file = OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .map_err(JournalAppendError::Open)?;
+        journal_file
+            .write_all(&prepared.records)
+            .map_err(JournalAppendError::WriteOrSync)?;
+        #[cfg(test)]
+        let sync = self.append_sync;
+        #[cfg(not(test))]
+        let sync = File::sync_all;
+        sync(&journal_file).map_err(JournalAppendError::WriteOrSync)
     }
 }
 
@@ -2923,8 +2942,10 @@ impl From<std::io::Error> for JournalError {
 /// A failure while encoding or appending one proposed journal fact.
 #[derive(Debug)]
 pub(super) enum JournalAppendError {
-    /// Filesystem access failed after transaction validation approved the append.
-    Io(std::io::Error),
+    /// Opening the journal failed before the append could write.
+    Open(std::io::Error),
+    /// A write or sync failed. The journal can contain some or all of the record.
+    WriteOrSync(std::io::Error),
     /// The proposed fact could not be encoded.
     Serialization(serde_json::Error),
     /// The proposed fact exceeds the bounded record format.
@@ -2939,7 +2960,9 @@ pub(super) enum JournalAppendError {
 impl Display for JournalAppendError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "journal append failed: {error}"),
+            Self::Open(error) | Self::WriteOrSync(error) => {
+                write!(formatter, "journal append failed: {error}")
+            },
             Self::Serialization(error) => {
                 write!(formatter, "could not serialize journal record: {error}")
             },
@@ -2955,10 +2978,6 @@ impl Display for JournalAppendError {
 }
 
 impl std::error::Error for JournalAppendError {}
-
-impl From<std::io::Error> for JournalAppendError {
-    fn from(error: std::io::Error) -> Self { Self::Io(error) }
-}
 
 #[cfg(test)]
 pub(super) use tests::fold_sequence_events;

@@ -9,6 +9,8 @@
 mod gate_fixtures;
 
 use cargo_berth_test_support::DirectorySnapshot;
+use cargo_berth_test_support::LedgerTemplate;
+use cargo_berth_test_support::fixture_tempdir;
 use edges_templates::INITIAL_INTEGRATION_PAIR;
 use gate_fixtures::AssertReferenceTransactionRejectsSessionWorktreeMismatchHistory;
 use gate_fixtures::AssertReferenceTransactionRejectsStaleMarkerHistory;
@@ -2404,10 +2406,17 @@ fn gate_targets_tracks_live_recorded_targets_and_default_is_empty() {
 
 #[test]
 fn target_gate_rejects_successor_until_predecessor_lands_on_target() {
-    let pair = read_target_pair(IntegrationRepository::from_recorded_template(
-        ORDERED_SUCCESSOR_RETRY,
-    ));
-    let observations: TargetGateRetry = recorded_history::read(pair.repository.root());
+    let repository = gate_retry_repository(ORDERED_SUCCESSOR_RETRY, GateRetrySource::current());
+    let pair: ordered_target_pair_template::TargetPairWitnesses = serde_json::from_slice(
+        &fs::read(
+            repository
+                .path()
+                .join(ordered_target_pair_template::WITNESSES),
+        )
+        .expect("target pair witnesses should read"),
+    )
+    .expect("target pair witnesses should decode");
+    let observations: TargetGateRetry = recorded_history::read(repository.path());
     assert_ne!(
         observations.refusal.exit_code,
         Some(0),
@@ -2475,8 +2484,8 @@ fn target_gate_holds_neither_lane_after_a_default_answered_overlap() {
 #[test]
 fn target_gate_holds_a_default_answered_requester_that_sequence_orders() {
     let repository =
-        IntegrationRepository::from_recorded_template(DEFAULT_ANSWERED_SUCCESSOR_RETRY);
-    let root = repository.root();
+        gate_retry_repository(DEFAULT_ANSWERED_SUCCESSOR_RETRY, GateRetrySource::current());
+    let root = repository.path();
     let state: gate_templates::DefaultAnswerGateState = serde_json::from_slice(
         &fs::read(root.join(gate_templates::DEFAULT_ANSWER_STATE))
             .expect("default answer state should read"),
@@ -2495,6 +2504,54 @@ fn target_gate_holds_a_default_answered_requester_that_sequence_orders() {
         state.integration_before
     );
     assert_target_accepts_landed_predecessor(&observations);
+}
+
+#[derive(Clone, Copy)]
+enum GateRetrySource {
+    Nextest,
+    Standalone,
+}
+
+impl GateRetrySource {
+    fn current() -> Self {
+        if std::env::var_os("NEXTEST_RUN_ID").is_some()
+            && std::env::var_os("CARGO_BERTH_PREBUILT_TEMPLATES").is_some()
+        {
+            Self::Nextest
+        } else {
+            Self::Standalone
+        }
+    }
+}
+
+fn gate_retry_repository(template: LedgerTemplate, source: GateRetrySource) -> TempDir {
+    match source {
+        GateRetrySource::Nextest => template.instantiate(),
+        GateRetrySource::Standalone => {
+            let repository = fixture_tempdir("gate-retry-");
+            let root = fs::canonicalize(repository.path())
+                .expect("standalone gate retry directory should resolve");
+            (template.repository.build)(&root);
+            repository
+        },
+    }
+}
+
+#[test]
+fn standalone_gate_retry_builds_a_fresh_observation() {
+    const OBSERVATION: &str = "gate-probe";
+    let template = recorded_history::template("standalone-gate-retry-probe", |root| {
+        fs::write(root.join(OBSERVATION), uuid::Uuid::now_v7().to_string())
+            .expect("observation should record");
+    });
+    let cached = template.instantiate();
+    let fresh = gate_retry_repository(template, GateRetrySource::Standalone);
+    let read_observation =
+        |root: &Path| fs::read_to_string(root.join(OBSERVATION)).expect("observation should read");
+    assert_ne!(
+        read_observation(cached.path()),
+        read_observation(fresh.path())
+    );
 }
 
 fn assert_target_accepts_landed_predecessor(observations: &TargetGateRetry) {

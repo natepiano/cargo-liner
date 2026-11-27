@@ -381,7 +381,8 @@ pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> S
     ReservationRetentionRef::for_reservation(reservation_id).to_string()
 }
 
-fn kept_work_ref_name(reservation_id: ReservationId) -> String {
+/// Return the private ref for one kept-work release.
+pub(crate) fn kept_work_ref_name(reservation_id: ReservationId) -> String {
     format!("{KEPT_WORK_REF_PREFIX}{reservation_id}")
 }
 
@@ -392,6 +393,16 @@ pub(crate) fn write_kept_work_ref(
     tip: &GitObjectId,
 ) -> Result<(), GitError> {
     write_retention_ref(repository_root, kept_work_ref_name(reservation_id), tip)
+}
+
+/// Remove the ref written for a failed kept release.
+pub(crate) fn delete_kept_work_ref(
+    repository_root: &Path,
+    reservation_id: ReservationId,
+    tip: &GitObjectId,
+) -> Result<(), GitError> {
+    let reference = kept_work_ref_name(reservation_id);
+    apply_transaction(repository_root, &format!("delete {reference} {tip}\n"))
 }
 
 /// Create or update a reservation's retention ref.

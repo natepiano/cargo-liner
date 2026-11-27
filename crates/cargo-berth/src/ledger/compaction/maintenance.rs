@@ -216,7 +216,8 @@ impl Ledger {
             return;
         }
         let now = now();
-        let mut candidates = FinishedHistory::compaction_candidates(replay, &now);
+        let mut candidates =
+            FinishedHistory::compaction_candidates(replay, &now, &self.paths.repository_root);
         if droppable_bytes >= self.compaction_threshold_bytes {
             if check.is_some() || candidates.next().is_none() {
                 std::mem::drop(self.attempt_due_compaction(
@@ -508,9 +509,13 @@ mod tests {
         let original = fixture.journal()?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
         assert!(
-            FinishedHistory::compaction_candidates(&replay, &RecordedAt::now())
-                .next()
-                .is_some()
+            FinishedHistory::compaction_candidates(
+                &replay,
+                &RecordedAt::now(),
+                &ledger.paths.repository_root
+            )
+            .next()
+            .is_some()
         );
         assert_eq!(replay.superseded.droppable_bytes, 0);
 
@@ -557,9 +562,13 @@ mod tests {
         let original = fixture.journal()?;
         let replay = Journal::replay_read_only(&ledger.paths.journal)?;
         assert!(
-            FinishedHistory::compaction_candidates(&replay, &RecordedAt::now())
-                .next()
-                .is_some()
+            FinishedHistory::compaction_candidates(
+                &replay,
+                &RecordedAt::now(),
+                &ledger.paths.repository_root
+            )
+            .next()
+            .is_some()
         );
         assert!(replay.superseded.droppable_bytes >= ledger.compaction_threshold_bytes);
 
