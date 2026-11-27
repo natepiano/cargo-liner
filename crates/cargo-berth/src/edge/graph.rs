@@ -442,7 +442,7 @@ impl OrderingGraph {
                     source:         reservation.source().clone(),
                     purpose:        reservation.purpose().clone(),
                     scopes:         reservation.scopes().clone(),
-                    lifecycle:      reservation.lifecycle().clone(),
+                    lifecycle:      reservation.lifecycle().presentation(),
                     subject:        integration_subject,
                 })
             })

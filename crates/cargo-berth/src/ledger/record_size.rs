@@ -108,12 +108,14 @@ impl<'input> From<&'input JournalOperation> for CallerJournalInput<'input> {
             JournalOperation::ForcedIntegrationPermit { reason, .. } => {
                 Self::ForcedIntegration { reason }
             },
-            JournalOperation::Release {
-                disposition,
-                source: Some(ReleaseSource::Command),
-                ..
-            }
-            | JournalOperation::ReplaceReleaseDisposition {
+            JournalOperation::Release { release, .. } => {
+                if release.source() == Some(ReleaseSource::Command) {
+                    release_input(&release.disposition())
+                } else {
+                    Self::None
+                }
+            },
+            JournalOperation::ReplaceReleaseDisposition {
                 replacement: disposition,
                 ..
             } => release_input(disposition),
@@ -133,10 +135,6 @@ impl<'input> From<&'input JournalOperation> for CallerJournalInput<'input> {
             | JournalOperation::Resnapshot { .. }
             | JournalOperation::UnrecordedTargetsPinned { .. }
             | JournalOperation::Renew { .. }
-            | JournalOperation::Release {
-                source: None | Some(ReleaseSource::Reconciliation),
-                ..
-            }
             | JournalOperation::EvidenceRevalidated { .. }
             | JournalOperation::ScopedPatchEquivalenceChecked { .. }
             | JournalOperation::ScopedPatchComparisonAttempted { .. }
@@ -169,7 +167,7 @@ impl CallerJournalInput<'_> {
     }
 }
 
-fn release_input(disposition: &ReleaseDisposition) -> CallerJournalInput<'_> {
+fn release_input(disposition: &ReleaseDisposition) -> CallerJournalInput<'static> {
     match disposition {
         ReleaseDisposition::KeptOnBranch(reason) => CallerJournalInput::Release {
             reason: reason.to_string(),

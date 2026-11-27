@@ -26,7 +26,7 @@ const GIT: GitDriver = GitDriver {
         "GIT_COMMON_DIR",
     ],
 };
-const WITNESSES: &str = ".git/ordered-target-pair.json";
+pub(super) const WITNESSES: &str = ".git/ordered-target-pair.json";
 
 /// Two independent tips with a real deferred claim and sequence edge.
 pub(crate) const SEPARATE_TARGET_PAIR: LedgerTemplate = LedgerTemplate {

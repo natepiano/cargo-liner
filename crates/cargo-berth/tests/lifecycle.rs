@@ -2499,14 +2499,24 @@ mod merge_extent {
     use super::RELEASE_LANE_READY;
     use super::RETENTION_REF_PREFIX;
     use super::SESSION_MAPPING_PATH;
+    use super::integration_templates::ACTIVE_AFTER_OUTSTANDING_PHASE;
+    use super::integration_templates::ACTIVE_BEFORE_LATER_KEPT_CHECKPOINT;
+    use super::integration_templates::ACTIVE_BEFORE_LATER_KEPT_SUFFIX;
     use super::integration_templates::ACTIVE_BEFORE_LATER_PHASE;
+    use super::integration_templates::ACTIVE_WITH_BACKDATED_FOREIGN_START;
+    use super::integration_templates::ACTIVE_WITH_DISJOINT_FOREIGN_MERGE;
+    use super::integration_templates::ACTIVE_WITH_INTERLEAVED_OLDER_PHASE;
     use super::integration_templates::ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET;
+    use super::integration_templates::ACTIVE_WITH_PRUNED_KEPT_BRANCH;
+    use super::integration_templates::ACTIVE_WITH_SHARED_KEPT_ANCESTOR;
     use super::integration_templates::ACTIVE_WITH_SHARED_PHASE_START;
     use super::integration_templates::CHECKPOINT_BEFORE_BACKDATED_CLAIM;
-    use super::integration_templates::CHECKPOINT_BEFORE_SAME_PATH_PHASE;
+    use super::integration_templates::CHECKPOINT_BEFORE_DISJOINT_PHASE;
     use super::integration_templates::CHECKPOINT_LANE;
+    use super::integration_templates::CHECKPOINT_WITH_EDIT_BEFORE_OVERLAP;
     use super::integration_templates::CHECKPOINT_WITH_FOREIGN_MERGE;
     use super::integration_templates::CheckpointWithLaterWork;
+    use super::integration_templates::FOREIGN_KEPT_ANCESTOR;
     use super::integration_templates::MERGED_TRUNK_ONLY;
     use super::integration_templates::MERGED_TRUNK_WITH_OWN_WORK;
     use super::integration_templates::NEWER_TRUNK;
@@ -4801,6 +4811,184 @@ mod merge_extent {
     }
 
     #[test]
+    fn first_release_excludes_an_older_same_checkout_phases_later_commit() {
+        assert_interleaved_first_release_stays_active(ACTIVE_WITH_INTERLEAVED_OLDER_PHASE);
+    }
+
+    #[test]
+    fn first_release_checks_foreign_commits_before_the_supplied_start() {
+        assert_interleaved_first_release_stays_active(ACTIVE_WITH_BACKDATED_FOREIGN_START);
+    }
+
+    #[test]
+    fn first_release_excludes_an_older_outstanding_phases_recorded_tip() {
+        assert_interleaved_first_release_stays_active(ACTIVE_AFTER_OUTSTANDING_PHASE);
+    }
+
+    #[test]
+    fn first_release_excludes_an_older_phases_kept_checkpoint() {
+        let (repo, id, earlier_tip) = checkpoint_fixture(ACTIVE_AFTER_OUTSTANDING_PHASE);
+        let journal = events(repo.root());
+        let earlier = journal
+            .iter()
+            .find(|event| event["op"] == "resnapshot")
+            .and_then(|event| event["reservation_id"].as_str())
+            .expect("the earlier phase should record its new tip");
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        succeed(&berth(
+            &holder,
+            &[
+                "release",
+                earlier,
+                "--keep-work",
+                "--why",
+                "later phase",
+                "--json",
+            ],
+            FIRST_RUN,
+        ));
+        assert_eq!(
+            repo.git_stdout(&holder, &["rev-parse", "HEAD^"]),
+            earlier_tip
+        );
+        assert_first_release_stays_active(&repo, &id);
+    }
+
+    #[test]
+    fn first_release_excludes_a_later_phases_kept_checkpoint() {
+        assert_interleaved_first_release_stays_active(ACTIVE_BEFORE_LATER_KEPT_CHECKPOINT);
+    }
+
+    #[test]
+    fn first_release_excludes_later_kept_work_after_the_checkpoint_lands() {
+        let (repo, id, kept_tip) = checkpoint_fixture(ACTIVE_BEFORE_LATER_KEPT_SUFFIX);
+        assert_first_release_stays_active(&repo, &id);
+        let journal = events(repo.root());
+        let release = journal
+            .iter()
+            .find(|event| {
+                event["op"] == "release" && event["disposition"]["kind"] == "kept_on_branch"
+            })
+            .expect("later release should be journaled");
+        assert_eq!(
+            release["kept_work"],
+            serde_json::json!({"kind":"known","tip":kept_tip})
+        );
+    }
+
+    #[test]
+    fn first_release_keeps_the_holder_active_without_a_recorded_kept_tip() {
+        let (repo, id, _) = checkpoint_fixture(ACTIVE_BEFORE_LATER_KEPT_SUFFIX);
+        let legacy_journal = events(repo.root())
+            .into_iter()
+            .map(|mut event| {
+                event
+                    .as_object_mut()
+                    .expect("journal event should be an object")
+                    .remove("kept_work");
+                serde_json::to_string(&event).expect("event should serialize")
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(repo.root().join(JOURNAL), format!("{legacy_journal}\n"))
+            .expect("legacy journal should write");
+        assert_first_release_stays_active(&repo, &id);
+    }
+
+    #[test]
+    fn first_release_checkpoints_after_git_prunes_an_abandoned_branch() {
+        let (repo, id, kept_tip) = checkpoint_fixture(ACTIVE_WITH_PRUNED_KEPT_BRANCH);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        let release = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&release);
+        assert_eq!(json(&release)["payload"]["data"]["status"], "checkpointed");
+        assert_eq!(
+            repo.git_stdout(repo.root(), &["cat-file", "-t", &kept_tip]),
+            "commit"
+        );
+    }
+
+    #[test]
+    fn first_release_refuses_a_shared_foreign_ancestor_when_the_kept_tip_is_missing() {
+        let (repo, id, kept_tip) = checkpoint_fixture(ACTIVE_WITH_SHARED_KEPT_ANCESTOR);
+        let foreign = fs::read_to_string(repo.root().join(FOREIGN_KEPT_ANCESTOR))
+            .expect("foreign ancestor should read");
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        assert_eq!(repo.git_stdout(&holder, &["rev-parse", "HEAD^"]), foreign);
+        assert!(
+            !GIT.output(repo.root(), ["cat-file", "-e", &kept_tip])
+                .status
+                .success()
+        );
+        assert_first_release_stays_active(&repo, &id);
+    }
+
+    #[test]
+    fn first_release_waits_for_a_disjoint_foreign_commit_to_land() {
+        let (repo, id, foreign_tip) = checkpoint_fixture(ACTIVE_WITH_DISJOINT_FOREIGN_MERGE);
+        assert_first_release_stays_active(&repo, &id);
+        repo.git(
+            repo.root(),
+            &["merge", "--quiet", "--ff-only", &foreign_tip],
+        );
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        let release = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+        succeed(&release);
+        assert_eq!(json(&release)["payload"]["data"]["status"], "checkpointed");
+    }
+
+    fn assert_interleaved_first_release_stays_active(template: LedgerTemplate) {
+        let (repo, id, _) = checkpoint_fixture(template);
+        assert_first_release_stays_active(&repo, &id);
+    }
+
+    fn assert_first_release_stays_active(repo: &IntegrationRepository, id: &str) {
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        let release = berth(&holder, &["release", id, "--json"], FIRST_RUN);
+        assert!(!release.status.success(), "{}", json(&release));
+        assert_eq!(snapshot(&repo.board(), id)["lifecycle"]["stage"], "active");
+        assert!(
+            events(repo.root())
+                .iter()
+                .all(|event| event["op"] != "checkpoint" || event["reservation_id"] != id)
+        );
+    }
+
+    #[test]
+    fn overlapping_claim_does_not_settle_an_edit_that_predates_it() {
+        std::thread::scope(|scope| {
+            let outcomes = [FirstObservation::Release, FirstObservation::Board]
+                .map(|command| scope.spawn(move || assert_pending_edit_keeps_checkpoint(command)));
+            for outcome in outcomes {
+                outcome.join().expect("pending edit case should pass");
+            }
+        });
+    }
+
+    fn assert_pending_edit_keeps_checkpoint(command: FirstObservation) {
+        let (repo, id, checkpoint) = checkpoint_fixture(CHECKPOINT_WITH_EDIT_BEFORE_OVERLAP);
+        let holder = repo.recorded_lane(CHECKPOINT_LANE);
+        if matches!(command, FirstObservation::Release) {
+            let release = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
+            succeed(&release);
+            assert_eq!(json(&release)["payload"]["data"]["status"], "outstanding");
+        }
+        let observed = repo.board();
+        assert_eq!(
+            snapshot(&observed, &id)["lifecycle"]["stage"],
+            "outstanding",
+            "{observed}"
+        );
+        assert_eq!(
+            GIT.stdout(
+                repo.root(),
+                ["rev-parse", &format!("{RETENTION_REF_PREFIX}{id}")]
+            ),
+            checkpoint
+        );
+    }
+
+    #[test]
     fn a_backdated_claim_does_not_settle_a_checkpoint_with_unmerged_work() {
         let (repo, id, checkpoint) = checkpoint_fixture(CHECKPOINT_BEFORE_BACKDATED_CLAIM);
         let holder = repo.recorded_lane(CHECKPOINT_LANE);
@@ -4858,40 +5046,77 @@ mod merge_extent {
     fn a_later_same_worktree_holder_does_not_keep_the_checkpoint_outstanding() {
         std::thread::scope(|scope| {
             let outcomes = [FirstObservation::Release, FirstObservation::Board].map(|command| {
-                scope.spawn(move || assert_later_same_path_work_stays_with_its_holder(command))
+                scope.spawn(move || assert_later_disjoint_work_stays_with_its_holder(command))
             });
             for outcome in outcomes {
-                outcome.join().expect("same-path case should pass");
+                outcome.join().expect("disjoint case should pass");
             }
         });
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     enum FirstObservation {
         Release,
         Board,
     }
 
-    fn assert_later_same_path_work_stays_with_its_holder(command: FirstObservation) {
-        let (repo, id, _) = checkpoint_fixture(CHECKPOINT_BEFORE_SAME_PATH_PHASE);
+    fn assert_later_disjoint_work_stays_with_its_holder(command: FirstObservation) {
+        let (repo, id, checkpoint) = checkpoint_fixture(CHECKPOINT_BEFORE_DISJOINT_PHASE);
         let holder = repo.recorded_lane(CHECKPOINT_LANE);
         let journal = events(repo.root());
-        let later = journal
+        let later_claim = journal
             .iter()
             .rev()
             .find(|event| event["op"] == "claim")
-            .and_then(|event| event["reservation_id"].as_str())
+            .expect("later claim should exist");
+        let later = later_claim["reservation_id"]
+            .as_str()
             .expect("later claim should name its reservation");
-
+        assert_eq!(later_claim["head_snapshot"]["head"], checkpoint);
         if matches!(command, FirstObservation::Release) {
             let released = berth(&holder, &["release", &id, "--json"], FIRST_RUN);
             succeed(&released);
             assert_eq!(json(&released)["payload"]["data"]["status"], "released");
+            let journal_after_release = events(repo.root());
+            let appended = &journal_after_release[journal.len()..];
+            assert!(
+                appended
+                    .iter()
+                    .any(|event| { event["reservation_id"] == id && event["op"] == "release" })
+            );
+            assert!(appended.iter().all(|event| {
+                event["reservation_id"] != later
+                    || !matches!(event["op"].as_str(), Some("checkpoint" | "release"))
+            }));
         }
         let observed = repo.board();
-        assert_eq!(snapshot(&observed, &id)["lifecycle"]["stage"], "released");
-        assert_eq!(snapshot(&observed, later)["lifecycle"]["stage"], "active");
-        assert_refused(repo.root(), "file:phase.rs", THIRD_RUN, later);
+        assert_eq!(
+            snapshot(&observed, &id)["lifecycle"]["stage"],
+            "released",
+            "first observation: {command:?}"
+        );
+        assert_eq!(
+            snapshot(&observed, later)["lifecycle"]["stage"],
+            "active",
+            "first observation: {command:?}"
+        );
+        let journal_after_observation = events(repo.root());
+        assert!(
+            journal_after_observation.iter().any(|event| {
+                event["op"] == "holder_merge_extent_observed"
+                    && event["extent"]["status"] == "protected"
+                    && event["extent"]["scopes"].as_array().is_some_and(|scopes| {
+                        scopes.iter().any(|scope| scope["path"] == "later.rs")
+                    })
+                    && event["reservations"].as_array().is_some_and(|subjects| {
+                        subjects
+                            .iter()
+                            .any(|subject| subject["reservation_id"] == id)
+                    })
+            }),
+            "the earlier reservation must observe the later path before settlement"
+        );
+        assert_refused(repo.root(), "file:later.rs", THIRD_RUN, later);
     }
 
     #[test]

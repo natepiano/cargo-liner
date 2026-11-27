@@ -38,7 +38,7 @@ use integration_templates::ACTIVE_BEFORE_LATER_PHASE;
 use integration_templates::ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET;
 use integration_templates::ACTIVE_WITH_SHARED_PHASE_START;
 use integration_templates::CHECKPOINT_BEFORE_BACKDATED_CLAIM;
-use integration_templates::CHECKPOINT_BEFORE_SAME_PATH_PHASE;
+use integration_templates::CHECKPOINT_BEFORE_DISJOINT_PHASE;
 use integration_templates::CHECKPOINT_WITH_FOREIGN_MERGE;
 use integration_templates::CHECKPOINT_WITH_LATER_WORK;
 use integration_templates::ENDED_FIRST_COVER;
@@ -367,14 +367,23 @@ fn run_selected_setup_test() -> SetupTestSelection {
     SetupTestSelection::NoSelection
 }
 
-const fn round_two_histories() -> [LedgerTemplate; 33] {
+const fn round_two_histories() -> [LedgerTemplate; 42] {
     [
         ENDED_FIRST_COVER,
         ACTIVE_BEFORE_LATER_PHASE,
+        integration_templates::ACTIVE_BEFORE_LATER_KEPT_CHECKPOINT,
+        integration_templates::ACTIVE_BEFORE_LATER_KEPT_SUFFIX,
+        integration_templates::ACTIVE_WITH_PRUNED_KEPT_BRANCH,
+        integration_templates::ACTIVE_WITH_SHARED_KEPT_ANCESTOR,
         ACTIVE_WITH_LATER_PHASE_AND_MISSING_TARGET,
         ACTIVE_WITH_SHARED_PHASE_START,
+        integration_templates::ACTIVE_WITH_INTERLEAVED_OLDER_PHASE,
+        integration_templates::ACTIVE_AFTER_OUTSTANDING_PHASE,
+        integration_templates::ACTIVE_WITH_DISJOINT_FOREIGN_MERGE,
+        integration_templates::ACTIVE_WITH_BACKDATED_FOREIGN_START,
         CHECKPOINT_BEFORE_BACKDATED_CLAIM,
-        CHECKPOINT_BEFORE_SAME_PATH_PHASE,
+        CHECKPOINT_BEFORE_DISJOINT_PHASE,
+        integration_templates::CHECKPOINT_WITH_EDIT_BEFORE_OVERLAP,
         CHECKPOINT_WITH_FOREIGN_MERGE,
         CHECKPOINT_WITH_LATER_WORK,
         TRUNK_CHECKPOINT_WITH_LATER_WORK,
@@ -597,7 +606,9 @@ const GATE_SLOW_HISTORIES: &[LedgerTemplate] = &[
     gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_1,
     gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_2,
     gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_3,
-    gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_4,
+    gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_5,
+    gate_fixtures::ORDERED_SUCCESSOR_RETRY,
+    gate_fixtures::DEFAULT_ANSWERED_SUCCESSOR_RETRY,
     gate_fixtures::HISTORY_LOCK_DEADLINE,
     gate_fixtures::HISTORY_POST_COMMIT_CELL,
     gate_fixtures::HISTORY_DEFERRED_ENDPOINT_REQUESTER,
@@ -706,6 +717,7 @@ const STARTING_REPOSITORIES: &[LedgerTemplate] = &[
     hook_repository::INITIALIZED_REPOSITORY,
     hook_repository::CONFIGURED_REPOSITORY,
     hook_evidence_templates::PENDING_SIBLING,
+    hook_evidence_templates::TRANSFERRED_PLAN_HOLD,
     ledger_templates::SCRATCH_REPOSITORY,
     drift_fixtures::INITIALIZED_REPOSITORY,
     parallel_templates::INITIALIZED_BEFORE_RUN,

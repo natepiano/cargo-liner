@@ -60,6 +60,7 @@ use crate::ledger::EditAuthorization;
 use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
+use crate::ledger::JournalRelease;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
@@ -90,7 +91,9 @@ use crate::reconcile::DisjointEditProof;
 use crate::reconcile::ReconciliationReport;
 use crate::reconcile::RecoveredBypassReporting;
 use crate::reservation::ActingHeadContainment;
+use crate::reservation::KeptWork;
 use crate::reservation::KeptWorkReason;
+use crate::reservation::KeptWorkRelease;
 use crate::reservation::LiveReservationFacts;
 use crate::reservation::RecordedTarget;
 use crate::reservation::ReleaseDisposition;
@@ -2399,8 +2402,13 @@ fn plan_hold_transfers(
         })
         .map(|hold| JournalOperation::Release {
             reservation_id: hold.id(),
-            disposition:    ReleaseDisposition::KeptOnBranch(reason.clone()),
-            source:         Some(ReleaseSource::Reconciliation),
+            release:        JournalRelease::new(
+                ReleaseDisposition::KeptOnBranch(KeptWorkRelease {
+                    reason: reason.clone(),
+                    work:   KeptWork::HoldTransfer,
+                }),
+                Some(ReleaseSource::Reconciliation),
+            ),
         })
         .collect()
 }

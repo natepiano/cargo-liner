@@ -29,6 +29,7 @@ use super::constants::GIT_REFLOG_SUBJECT_FORMAT_ARG;
 use super::constants::GIT_REV_PARSE_COMMAND;
 use super::constants::GIT_STDIN_ARG;
 use super::constants::GIT_UPDATE_REF_COMMAND;
+use super::constants::KEPT_WORK_REF_PREFIX;
 use super::constants::RESERVATION_RETENTION_REF_PREFIX;
 use super::error;
 use super::error::GitError;
@@ -380,14 +381,38 @@ pub(crate) fn reservation_retention_ref_name(reservation_id: ReservationId) -> S
     ReservationRetentionRef::for_reservation(reservation_id).to_string()
 }
 
+fn kept_work_ref_name(reservation_id: ReservationId) -> String {
+    format!("{KEPT_WORK_REF_PREFIX}{reservation_id}")
+}
+
+/// Retain the kept tip before its release enters the journal.
+pub(crate) fn write_kept_work_ref(
+    repository_root: &Path,
+    reservation_id: ReservationId,
+    tip: &GitObjectId,
+) -> Result<(), GitError> {
+    write_retention_ref(repository_root, kept_work_ref_name(reservation_id), tip)
+}
+
 /// Create or update a reservation's retention ref.
 pub(crate) fn write_reservation_retention_ref(
     repository_root: &Path,
     reservation_id: ReservationId,
     protected_tip: &GitObjectId,
 ) -> Result<(), GitError> {
-    let retention_ref = reservation_retention_ref_name(reservation_id);
-    let protected_tip = protected_tip.to_string();
+    write_retention_ref(
+        repository_root,
+        reservation_retention_ref_name(reservation_id),
+        protected_tip,
+    )
+}
+
+fn write_retention_ref(
+    repository_root: &Path,
+    retention_ref: String,
+    tip: &GitObjectId,
+) -> Result<(), GitError> {
+    let protected_tip = tip.to_string();
     let arguments = [
         GIT_UPDATE_REF_COMMAND.to_owned(),
         retention_ref,
@@ -474,6 +499,7 @@ impl PreparedRetentionRefTransaction {
         objects: &OperationObjectReader,
         repairs: &[ReservationRetentionRefRepair],
         deletions: &[ReservationId],
+        kept_work_deletions: &[ReservationId],
         resolved_candidates: &ResolvedBatchCommitCandidates,
     ) -> Result<Self, GitError> {
         let mut writes = Vec::new();
@@ -488,14 +514,19 @@ impl PreparedRetentionRefTransaction {
                 ));
             }
         }
-        if unresolved.len() == repairs.len() {
-            return Self::prepare(repository_root, objects, repairs, deletions);
-        }
         writes.extend(Self::writes(objects, &unresolved, deletions)?);
+        writes.extend(
+            kept_work_deletions
+                .iter()
+                .map(|id| RetentionRefMutation::Retire {
+                    reference: kept_work_ref_name(*id),
+                }),
+        );
         Self::start(repository_root, writes)
     }
 
     /// Resolve repair tips through the operation's existing reader, before the append.
+    #[cfg(test)]
     pub(crate) fn prepare(
         repository_root: &Path,
         objects: &OperationObjectReader,

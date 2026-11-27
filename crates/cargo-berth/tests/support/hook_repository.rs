@@ -84,6 +84,37 @@ pub(super) const GIT_REPOSITORY: LedgerTemplate = GIT_ONLY.before_run();
 pub(super) const INITIALIZED_REPOSITORY: LedgerTemplate = INITIALIZED.before_run();
 pub(super) const CONFIGURED_REPOSITORY: LedgerTemplate = CONFIGURED.before_run();
 
+pub(super) fn checkpoint_phase(holder: &Path, acquisition: &[&str]) -> TestResult {
+    let finished_path = "finished.rs";
+    let completed = run_berth_with_session(holder, acquisition, "director.phase-1")?;
+    require_success(&completed, "the completed phase's reservation")?;
+    let reservation_id_path = if acquisition.first() == Some(&"check") {
+        "/payload/data/acquisition/reservation_id"
+    } else {
+        "/payload/data/reservation_id"
+    };
+    let envelope = json_output(&completed)?;
+    let completed_id = required_string(
+        &envelope,
+        reservation_id_path,
+        "the completed phase's reservation",
+    )?;
+    fs::write(holder.join(finished_path), "// completed work\n")?;
+    GIT.run_without_hooks(holder, ["add", finished_path]);
+    GIT.run_without_hooks(holder, ["commit", "--quiet", "-m", "complete phase one"]);
+    let release = run_berth_with_session(
+        holder,
+        &["release", completed_id, "--json"],
+        "director.phase-1",
+    )?;
+    require_success(&release, "the phase checkpoint")?;
+    assert_eq!(
+        json_output(&release)?["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    Ok(())
+}
+
 pub(super) fn dirty_source(root: &Path, path: &str) -> TestResult {
     let file = root.join(path);
     let parent = file

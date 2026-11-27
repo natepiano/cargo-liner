@@ -21,6 +21,7 @@ pub(super) use cargo_berth_test_support::json;
 pub(super) use cargo_berth_test_support::write_file;
 
 use crate::edges_templates::INITIAL_INTEGRATION_PAIR;
+use crate::ordered_target_pair_template;
 
 /// The `cargo-berth` a managed hook must run, in place of any installed copy.
 pub(super) const BERTH_EXECUTABLE: &str = env!("CARGO_BIN_EXE_cargo-berth");
@@ -2476,6 +2477,111 @@ pub(super) fn update_branch(
     command.output().expect("git update-ref should run")
 }
 
+pub(super) const ORDERED_SUCCESSOR_RETRY: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template(
+        "gate-ordered-successor-retry",
+        record_ordered_successor_retry,
+    );
+
+pub(super) const DEFAULT_ANSWERED_SUCCESSOR_RETRY: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template(
+        "gate-default-answered-successor-retry",
+        record_default_answered_successor_retry,
+    );
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct TargetGateRetry {
+    pub(super) integration_after_refusal: String,
+    pub(super) refusal:                   GateAttempt,
+    pub(super) retry:                     Option<GateAttempt>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(super) struct GateAttempt {
+    pub(super) exit_code:  Option<i32>,
+    pub(super) diagnostic: String,
+}
+
+impl From<Output> for GateAttempt {
+    fn from(output: Output) -> Self {
+        Self {
+            exit_code:  output.status.code(),
+            diagnostic: String::from_utf8_lossy(&output.stderr).into_owned(),
+        }
+    }
+}
+
+fn record_ordered_successor_retry(destination: &Path) {
+    let repository = IntegrationRepository::from_recorded_template(
+        ordered_target_pair_template::MERGED_TARGET_PAIR,
+    );
+    let witnesses: ordered_target_pair_template::TargetPairWitnesses = serde_json::from_slice(
+        &fs::read(
+            repository
+                .root()
+                .join(ordered_target_pair_template::WITNESSES),
+        )
+        .expect("target pair witnesses should read"),
+    )
+    .expect("target pair witnesses should decode");
+    record_target_gate_retry(
+        destination,
+        &repository,
+        &witnesses.predecessor_id,
+        &witnesses.integration_before,
+        &witnesses.predecessor_tip,
+        &witnesses.successor_tip,
+    );
+}
+
+fn record_default_answered_successor_retry(destination: &Path) {
+    let repository =
+        IntegrationRepository::from_recorded_template(gate_templates::DEFAULT_ANSWERED_GATE);
+    let state: gate_templates::DefaultAnswerGateState = serde_json::from_slice(
+        &fs::read(repository.root().join(gate_templates::DEFAULT_ANSWER_STATE))
+            .expect("default answer state should read"),
+    )
+    .expect("default answer state should decode");
+    record_target_gate_retry(
+        destination,
+        &repository,
+        &state.holder_id,
+        &state.integration_before,
+        &state.holder_tip,
+        &state.requester_tip,
+    );
+}
+
+fn record_target_gate_retry(
+    destination: &Path,
+    repository: &IntegrationRepository,
+    predecessor_id: &str,
+    integration_before: &str,
+    predecessor_tip: &str,
+    successor_tip: &str,
+) {
+    let root = repository.root();
+    set_gate_mode(root, "enforce");
+    let refusal = propose_branch(root, "integration", integration_before, successor_tip);
+    let integration_after_refusal = repository.git_stdout(root, &["rev-parse", "integration"]);
+    let retry = (!refusal.status.success() && integration_after_refusal == integration_before)
+        .then(|| {
+            let predecessor = repository.recorded_lane("target-a");
+            assert_success(&repository.run(&predecessor, &["release", predecessor_id, "--json"]));
+            repository.merge_fast_forward("target-a");
+            propose_branch(root, "integration", predecessor_tip, successor_tip).into()
+        });
+    recorded_history::save(
+        destination,
+        root,
+        &TargetGateRetry {
+            integration_after_refusal,
+            refusal: refusal.into(),
+            retry,
+        },
+    );
+}
+
 pub(super) fn journal_text(repository_root: &Path) -> String {
     fs::read_to_string(repository_root.join(JOURNAL_PATH)).expect("journal should read")
 }
@@ -2731,9 +2837,9 @@ pub(super) const HISTORY_PREPARED_SUBJECT_PASS_3: cargo_berth_test_support::Ledg
         build_prepared_subject_pass(destination, 3);
     });
 
-pub(super) const HISTORY_PREPARED_SUBJECT_PASS_4: cargo_berth_test_support::LedgerTemplate =
-    recorded_history::template("gate-prepared-subject-pass-4", |destination| {
-        build_prepared_subject_pass(destination, 4);
+pub(super) const HISTORY_PREPARED_SUBJECT_PASS_5: cargo_berth_test_support::LedgerTemplate =
+    recorded_history::template("gate-prepared-subject-pass-5", |destination| {
+        build_prepared_subject_pass(destination, 5);
     });
 
 /// The source and upstream commits before either live three-commit rebase.

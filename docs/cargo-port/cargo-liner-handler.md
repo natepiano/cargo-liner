@@ -1067,24 +1067,48 @@ The copies are deleted. No source changes.
 
 **Gotchas:** Declined as unlikely for one user: B rebases a commit that A already merged; A's next release can then retain B's original commit.
 
-### Phase 51b — a release never takes another reservation's work in an interleaved history  · status: todo
+### Phase 51b — a release never takes another reservation's work in an interleaved history  · status: done
+
+#### As-built
+
+- A first release checks the commit range from the holder's observed claim HEAD to the candidate tip. A path in an earlier live reservation's scope, or pending work of an outstanding or kept checkpoint from the same checkout, makes the candidate ambiguous, and the reservation stays active.
+- The foreign-commit check starts at the observed claim HEAD, also when the claim used `--head`. Direct release and reconciliation use the same selector. An import proof (`git/paths.rs`) admits a merged foreign commit only on a linear candidate with the correct merge-parent direction.
+- A later claim proves ownership of a suffix only when it owns the suffix paths exclusively. A claim at the protected tip alone proves nothing.
+- Kept work after a checkpoint is the typed `KeptWork` state (`reservation/lifecycle.rs`): a known tip, a plan hold transfer, or unknown. Fold format 9 rebuilds older replay checkpoints; legacy replay finds a hold transfer only from a `PlanShrink` claim with a `Reconciliation` release.
+- A known kept tip gets its own Git ref before the release appends; a failed ref write aborts the append. Reconciliation deletes the ref after it sees the kept tip on its target.
+- A plan hold transfer does not block the next phase checkpoint. Unknown kept work, or a missing kept object, blocks the same-checkout checkpoint.
+- A full landing with a missing target still settles against `main` (baseline, `tests/board.rs:200`).
+
+**Files:**
+- `crates/cargo-berth/src/reservation/phase_boundary.rs` — first-checkpoint tip, same-checkout guard, suffix ownership.
+- `crates/cargo-berth/src/reservation/lifecycle.rs`, `crates/cargo-berth/src/reservation/retention.rs` — `KeptWork` and its replay.
+- `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/git/refs.rs` — kept-tip record and ref.
+- `crates/cargo-berth/src/reconcile.rs` — kept-tip ref cleanup and the shared selector.
+- `crates/cargo-berth/tests/lifecycle.rs`, `crates/cargo-berth/tests/hooks.rs`, `crates/cargo-berth/tests/gate.rs` — interleaved-history, hold-transfer, pruned-tip and gate-retry rows.
+
+**Binds later work:** Never treat an absent object as excluded work. A kept-tip ref lives until its tip is on the target.
+
+**Gotchas:** Gate fixtures run refusal, predecessor release, landing and retry in one repository; Nextest starts the fixture cache empty.
+
+**Ruled out:** a checkpoint fallback when the kept tip is missing (it can include foreign work); declined as unlikely for one user: a branch switch with a `--no-ff` merge of the holder's commit, and shared rebases.
+
+### Phase 51c — repository fixtures and kept releases leave no stale state  · status: todo
 
 #### Work Order
 
-**Goal:** close the five closure-review cases that Phase 51 moved here by the landing rule. Source: Phase 51 closure review pass 3, 2026-11-25.
+**Goal:** close the two minor findings and two notes that Phase 51b moved here by the landing rule. Source: Phase 51b closure reviews 4 and 5 and the Astra review, 2026-11-26.
 
 **Spec:**
-1. B claims `b.rs`, commits R and stays active. A claims `a.rs` at R in the same checkout. B commits Q, and A commits P on Q. A's first release must not retain Q (`reservation/phase_boundary.rs`, the older-claim skip).
-2. B commits Q in another checkout. A takes an authorized overlap at S with `--head Q`, merges Q and commits P. A's first release must not retain Q (`verb/release.rs`, the foreign-commit check uses the supplied start).
-3. A checkpoints P and has a pending edit. B claims while HEAD is P. A commits Q, and the target takes only P. Q is A's work, and A must not be released (`reservation/phase_boundary.rs`, B's end at the shared HEAD).
-4. A full landing with a deleted target settles against `main` (`reconcile.rs`, test `tests/board.rs:200` requires it). Decide with the showrunner whether a missing target keeps the reservation and its alert; it is baseline behavior.
-5. Restore the gate test check of board evidence with pending edits (`tests/gate.rs`, the restore of `src` before the board check).
-6. Write each case as a failing test first.
+1. Repository fixtures never reuse a recorded gate result outside Nextest. A standalone test run must start with an empty fixture cache too (`tests/recorded_templates.rs`, `tests/support/gate_fixtures.rs`).
+2. A rejected kept release leaves no kept-tip ref. `release --keep-work` writes the ref before the journal checks the record size, so a `--why` over 16 KiB leaves the ref (`ledger/handle.rs`). Check the size first, or delete the ref when the append fails.
+3. The other-checkout path of the first-checkpoint guard uses the pending checkpoint, not the kept tip (`reservation/phase_boundary.rs`). Make it use the kept tip, as the same-checkout path does.
+4. A kept release lives 24 h in the journal. Make sure its kept-tip ref and its `KeptWork` state survive journal retention until the tip reaches its target.
+5. Write each case as a failing test first.
 
-**Constraints from prior phases:** Keep the Phase 51 rulings and the ownership rule: ambiguous ownership keeps the reservation protected.
+**Constraints from prior phases:** Keep the Phase 51 and 51b ownership rule: ambiguous ownership keeps the reservation protected. Never treat an absent object as excluded work.
 
 **Files:**
-- `crates/cargo-berth/src/reservation/phase_boundary.rs`, `crates/cargo-berth/src/verb/release.rs`, `crates/cargo-berth/src/reconcile.rs`, `crates/cargo-berth/tests/`
+- `crates/cargo-berth/src/ledger/handle.rs`, `crates/cargo-berth/src/reservation/phase_boundary.rs`, `crates/cargo-berth/src/reservation/retention.rs`, `crates/cargo-berth/tests/`
 
 **Workers:** 1 writer.
 

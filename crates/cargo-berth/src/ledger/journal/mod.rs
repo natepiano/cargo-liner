@@ -71,6 +71,8 @@ use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationProofSubjectRevision;
 use crate::reservation::IntegrationWitness;
+use crate::reservation::KeptWork;
+use crate::reservation::KeptWorkRelease;
 use crate::reservation::LiveReservationFacts;
 use crate::reservation::MergeExtent;
 use crate::reservation::ProtectedReservationTip;
@@ -554,11 +556,8 @@ pub(crate) enum JournalOperation {
     Release {
         /// The reservation receiving this disposition.
         reservation_id: ReservationId,
-        /// The verified or user-confirmed outcome of this release.
-        disposition:    ReleaseDisposition,
-        /// What ended the reservation; absent on journals written before sources were recorded.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        source:         Option<ReleaseSource>,
+        #[serde(flatten)]
+        release:        JournalRelease,
     },
     /// Release an absent holder after verifying its recorded head on the trunk.
     IntegrateAbsentHolder {
@@ -953,6 +952,121 @@ pub(crate) enum ReleaseSource {
     Command,
     /// Reconciliation ended it from git evidence, with no command naming it.
     Reconciliation,
+}
+
+/// A release and the provenance needed to replay legacy kept work.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(from = "JournalReleaseFields", into = "JournalReleaseFields")]
+pub(crate) struct JournalRelease {
+    disposition:               ReleaseDisposition<KeptWorkRelease>,
+    source:                    Option<ReleaseSource>,
+    legacy_without_kept_state: bool,
+}
+
+/// The journal format accepts releases written before they recorded kept work.
+#[derive(Deserialize, Serialize)]
+struct JournalReleaseFields {
+    disposition:   ReleaseDisposition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source:        Option<ReleaseSource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kept_work:     Option<KeptWork>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kept_work_tip: Option<GitObjectId>,
+}
+
+impl JournalRelease {
+    pub(crate) const fn new(
+        disposition: ReleaseDisposition<KeptWorkRelease>,
+        source: Option<ReleaseSource>,
+    ) -> Self {
+        Self {
+            disposition,
+            source,
+            legacy_without_kept_state: false,
+        }
+    }
+
+    pub(crate) fn reconciled(disposition: ReleaseDisposition) -> Self {
+        Self::without_kept_tip(disposition, ReleaseSource::Reconciliation)
+    }
+
+    pub(crate) fn without_kept_tip(disposition: ReleaseDisposition, source: ReleaseSource) -> Self {
+        Self::new(
+            disposition.map_kept(|reason| KeptWorkRelease {
+                reason,
+                work: KeptWork::Unknown,
+            }),
+            Some(source),
+        )
+    }
+
+    pub(crate) fn disposition(&self) -> ReleaseDisposition { self.disposition.presentation() }
+
+    pub(crate) const fn source(&self) -> Option<ReleaseSource> { self.source }
+
+    pub(crate) fn replay_disposition(
+        &self,
+        claim_source: &ClaimSource,
+    ) -> ReleaseDisposition<KeptWorkRelease> {
+        self.disposition.clone().map_kept(|mut kept| {
+            if self.legacy_without_kept_state
+                && *claim_source == ClaimSource::PlanShrink
+                && self.source == Some(ReleaseSource::Reconciliation)
+            {
+                kept.work = KeptWork::HoldTransfer;
+            }
+            kept
+        })
+    }
+
+    pub(crate) const fn known_kept_tip(&self) -> Option<&GitObjectId> {
+        match &self.disposition {
+            ReleaseDisposition::KeptOnBranch(KeptWorkRelease {
+                work: KeptWork::Known(tip),
+                ..
+            }) => Some(tip),
+            _ => None,
+        }
+    }
+}
+
+impl From<JournalReleaseFields> for JournalRelease {
+    fn from(fields: JournalReleaseFields) -> Self {
+        let legacy_without_kept_state =
+            matches!(&fields.disposition, ReleaseDisposition::KeptOnBranch(_))
+                && fields.kept_work.is_none()
+                && fields.kept_work_tip.is_none();
+        let disposition = fields.disposition.map_kept(|reason| KeptWorkRelease {
+            reason,
+            work: fields
+                .kept_work
+                .or_else(|| fields.kept_work_tip.map(KeptWork::Known))
+                .unwrap_or(KeptWork::Unknown),
+        });
+        Self {
+            disposition,
+            source: fields.source,
+            legacy_without_kept_state,
+        }
+    }
+}
+
+impl From<JournalRelease> for JournalReleaseFields {
+    fn from(release: JournalRelease) -> Self {
+        let kept_work = match &release.disposition {
+            ReleaseDisposition::KeptOnBranch(kept) if !release.legacy_without_kept_state => {
+                Some(kept.work.clone())
+            },
+            _ => None,
+        };
+        Self {
+            disposition: release.disposition.presentation(),
+            source: release.source,
+            kept_work,
+            kept_work_tip: None,
+        }
+    }
 }
 
 macro_rules! git_commit_role {
@@ -3156,10 +3270,8 @@ mod tests {
         assert!(matches!(
             &operation,
             JournalOperation::Release {
-                disposition: ReleaseDisposition::Integrated,
-                source: None,
-                ..
-            }
+                release, ..
+            } if release.disposition() == ReleaseDisposition::Integrated && release.source().is_none()
         ));
         assert_eq!(serde_json::to_value(&operation)?, legacy);
 
@@ -3169,9 +3281,8 @@ mod tests {
         assert!(matches!(
             &operation,
             JournalOperation::Release {
-                source: Some(ReleaseSource::Reconciliation),
-                ..
-            }
+                release, ..
+            } if release.source() == Some(ReleaseSource::Reconciliation)
         ));
         assert_eq!(serde_json::to_value(&operation)?, recorded);
         Ok(())

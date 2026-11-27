@@ -5,6 +5,7 @@
 //! members return git's output raw — the arguments supplied and the process
 //! result — for `drift/git_output.rs` to parse into attribution records.
 
+use std::collections::HashSet;
 use std::fmt::Write;
 use std::path::Path;
 
@@ -24,6 +25,7 @@ use super::constants::GIT_NO_COMMIT_FORMAT_ARG;
 use super::constants::GIT_NO_MERGE_BASE_EXIT_CODE;
 use super::constants::GIT_NO_RENAMES_ARG;
 use super::constants::GIT_NUL_TERMINATED_ARG;
+use super::constants::GIT_PARENTS_ARG;
 use super::constants::GIT_PATHSPEC_SEPARATOR;
 use super::constants::GIT_RECURSIVE_ARG;
 use super::constants::GIT_REV_LIST_COMMAND;
@@ -98,6 +100,83 @@ pub(crate) fn commit_ranges_are_disjoint(
     );
     command::git_output_dynamic(repository_root, &arguments)
         .is_ok_and(|output| output.status.success() && output.stdout.is_empty())
+}
+
+/// Prove that a foreign checkout obtained a linear candidate only through merge parents.
+pub(crate) fn checkout_imported_linear_candidate(
+    repository_root: &Path,
+    candidate_start: &GitObjectId,
+    candidate: &GitObjectId,
+    foreign_tip: &GitObjectId,
+    excluded: &[&GitObjectId],
+) -> bool {
+    let candidate_revision = candidate.to_string();
+    let candidate_start_revision = candidate_start.to_string();
+    let Some(candidate_history) = revision_parents(repository_root, candidate, &[candidate_start])
+    else {
+        return false;
+    };
+    let mut candidate_commits = HashSet::new();
+    let mut next = candidate_revision.as_str();
+    for line in candidate_history.lines() {
+        let mut fields = line.split_ascii_whitespace();
+        let (Some(commit), Some(parent), None) = (fields.next(), fields.next(), fields.next())
+        else {
+            return false;
+        };
+        if commit != next {
+            return false;
+        }
+        candidate_commits.insert(commit);
+        next = parent;
+    }
+    if next != candidate_start_revision
+        || candidate_commits.contains(foreign_tip.to_string().as_str())
+    {
+        return false;
+    }
+
+    let mut boundaries = vec![candidate];
+    boundaries.extend_from_slice(excluded);
+    let Some(foreign_history) = revision_parents(repository_root, foreign_tip, &boundaries) else {
+        return false;
+    };
+    let mut import_edges = 0;
+    for line in foreign_history.lines() {
+        let mut parents = line.split_ascii_whitespace().skip(1);
+        if parents
+            .next()
+            .is_some_and(|parent| candidate_commits.contains(parent))
+        {
+            return false;
+        }
+        import_edges += parents
+            .filter(|parent| candidate_commits.contains(parent))
+            .count();
+    }
+    import_edges != 0
+}
+
+fn revision_parents(
+    repository_root: &Path,
+    tip: &GitObjectId,
+    excluded: &[&GitObjectId],
+) -> Option<String> {
+    let mut arguments = vec![
+        GIT_REV_LIST_COMMAND.to_owned(),
+        GIT_PARENTS_ARG.to_owned(),
+        tip.to_string(),
+    ];
+    arguments.extend(
+        excluded
+            .iter()
+            .map(|commit| format!("{GIT_EXCLUDE_REVISION_PREFIX}{commit}")),
+    );
+    let output = command::git_output_dynamic(repository_root, &arguments).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
 }
 
 /// Compare every readable phase start with one target, and read what the target itself

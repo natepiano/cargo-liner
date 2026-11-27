@@ -42,7 +42,8 @@ declare_wire_enum! {
 /// How far a reservation has progressed through the coordination protocol.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
 #[serde(tag = "stage", rename_all = "snake_case")]
-pub(crate) enum ReservationLifecycle {
+#[schemars(rename = "ReservationLifecycle", bound = "")]
+pub(crate) enum ReservationLifecycle<K = KeptWorkRelease> {
     /// The holder may still change the reserved paths.
     Active,
     /// The holder checkpointed a fixed commit that has not received a disposition.
@@ -53,11 +54,25 @@ pub(crate) enum ReservationLifecycle {
     /// A verified or user-confirmed disposition ended the work.
     Released {
         /// The evidence or decision that ended the work.
-        disposition: ReleaseDisposition,
+        disposition: ReleaseDisposition<K>,
     },
 }
 
+pub(crate) type PresentedReservationLifecycle = ReservationLifecycle<KeptWorkReason>;
+
 impl ReservationLifecycle {
+    pub(crate) fn presentation(&self) -> PresentedReservationLifecycle {
+        match self {
+            Self::Active => ReservationLifecycle::Active,
+            Self::Outstanding { protected_tip } => ReservationLifecycle::Outstanding {
+                protected_tip: protected_tip.clone(),
+            },
+            Self::Released { disposition } => ReservationLifecycle::Released {
+                disposition: disposition.presentation(),
+            },
+        }
+    }
+
     /// Move an active reservation to its first protected checkpoint.
     pub(crate) fn checkpoint(
         &mut self,
@@ -95,7 +110,7 @@ impl ReservationLifecycle {
     /// Record a terminal disposition while retaining integration evidence.
     pub(crate) fn release(
         &mut self,
-        disposition: ReleaseDisposition,
+        disposition: ReleaseDisposition<KeptWorkRelease>,
     ) -> Result<(), LifecycleTransitionError> {
         match self {
             Self::Outstanding { .. } => {
@@ -115,7 +130,7 @@ impl ReservationLifecycle {
     /// observation. Those dispositions may also end an `Active` run.
     pub(crate) fn release_without_checkpoint(
         &mut self,
-        disposition: ReleaseDisposition,
+        disposition: ReleaseDisposition<KeptWorkRelease>,
     ) -> Result<(), LifecycleTransitionError> {
         if !matches!(
             disposition,
@@ -156,10 +171,12 @@ impl ReservationLifecycle {
     pub(crate) fn replace_release_disposition(
         &mut self,
         superseded_release_disposition: &ReleaseDisposition,
-        replacement_release_disposition: ReleaseDisposition,
+        replacement_release_disposition: ReleaseDisposition<KeptWorkRelease>,
     ) -> Result<(), LifecycleTransitionError> {
         match self {
-            Self::Released { disposition } if disposition == superseded_release_disposition => {
+            Self::Released { disposition }
+                if &disposition.presentation() == superseded_release_disposition =>
+            {
                 *disposition = replacement_release_disposition;
                 Ok(())
             },
@@ -257,9 +274,9 @@ declare_wire_enum! {
 
 /// A verified or user-confirmed terminal reservation outcome.
 #[derive(Clone, Debug, Deserialize, Eq, JsonSchema, PartialEq, Serialize)]
-#[schemars(rename = "release_disposition")]
+#[schemars(rename = "release_disposition", bound = "")]
 #[serde(tag = "kind", content = "evidence", rename_all = "snake_case")]
-pub(crate) enum ReleaseDisposition {
+pub(crate) enum ReleaseDisposition<K = KeptWorkReason> {
     /// A stale reservation had no differing path in its scopes against the recorded target.
     UnchangedScopes(UnchangedScopesEvidence),
     /// Git proved the protected work reached the reservation's integration target.
@@ -274,7 +291,7 @@ pub(crate) enum ReleaseDisposition {
     KeptOnBranch(
         #[schemars(with = "String")]
         #[schemars(length(min = 1))]
-        KeptWorkReason,
+        K,
     ),
     /// The user deliberately discarded the reservation's work.
     Abandoned(
@@ -290,7 +307,40 @@ pub(crate) enum ReleaseDisposition {
     ),
 }
 
-impl ReleaseDisposition {
+/// The work a release leaves after its holder stops editing.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "tip", rename_all = "snake_case")]
+pub(crate) enum KeptWork {
+    Known(GitObjectId),
+    HoldTransfer,
+    Unknown,
+}
+
+/// The reason and state of a kept-work release.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct KeptWorkRelease {
+    pub(crate) reason: KeptWorkReason,
+    pub(crate) work:   KeptWork,
+}
+
+impl ReleaseDisposition<KeptWorkRelease> {
+    pub(crate) fn presentation(&self) -> ReleaseDisposition {
+        self.clone().map_kept(|kept| kept.reason)
+    }
+}
+
+impl<K> ReleaseDisposition<K> {
+    pub(crate) fn map_kept<T>(self, map: impl FnOnce(K) -> T) -> ReleaseDisposition<T> {
+        match self {
+            Self::UnchangedScopes(evidence) => ReleaseDisposition::UnchangedScopes(evidence),
+            Self::Integrated => ReleaseDisposition::Integrated,
+            Self::RewrittenIntegration(commit) => ReleaseDisposition::RewrittenIntegration(commit),
+            Self::KeptOnBranch(kept) => ReleaseDisposition::KeptOnBranch(map(kept)),
+            Self::Abandoned(reason) => ReleaseDisposition::Abandoned(reason),
+            Self::RetiredOrphan(reason) => ReleaseDisposition::RetiredOrphan(reason),
+        }
+    }
+
     /// Return whether future integration-target checks may invalidate this disposition.
     pub(crate) const fn revalidation_subject(&self) -> ReleaseRevalidationSubject<'_> {
         match self {
@@ -521,11 +571,12 @@ mod tests {
     fn revalidation_subject_selection() -> Result<(), Box<dyn std::error::Error>> {
         let witness = "1111111111111111111111111111111111111111".parse::<GitObjectId>()?;
         let trunk = "2222222222222222222222222222222222222222".parse::<GitObjectId>()?;
-        let disposition = ReleaseDisposition::RewrittenIntegration(
+        let disposition: ReleaseDisposition = ReleaseDisposition::RewrittenIntegration(
             RewrittenIntegrationTrunkCommit::from(witness.clone()),
         );
+        let integrated: ReleaseDisposition = ReleaseDisposition::Integrated;
         assert_eq!(
-            ReleaseDisposition::Integrated.revalidation_subject(),
+            integrated.revalidation_subject(),
             ReleaseRevalidationSubject::ProtectedTip
         );
         let ReleaseRevalidationSubject::RewrittenIntegration(subject) =
