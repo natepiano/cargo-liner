@@ -63,3 +63,33 @@
 - `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` passes on natedev and on the Mac.
 - `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` is clean.
 - The repeated Mac loop of the test has no failure.
+
+### Phase 2 — The ownership scenario ends its writer group on every exit path  · status: todo
+
+#### Work Order
+
+**Source:** 2026-11-27 11:07 PST (showrunner, defect from builds). Two Mac processes, pid 15169 (ppid 1) and its child 15240, run the `ownership_victim` writer (`os.fork(); signal.pause()`) since Nov 15 04:56:37 PST. Source: `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` (`ownership_victim`, added in c2107fe89). It is the only such leak in 12 days.
+
+**Goal:** The ownership scenario caller and owner end the writer group on every exit path, so a test never leaves a process behind.
+
+**Spec:**
+
+1. Cause found by a read of main 84c3802bd (the Nov 15 tree) and main 9254b3a31: a readiness or deadline failure in the caller before it records the writer group id. The caller's `finally` closes both pipes and can SIGKILL the owner before the owner finishes its cleanup. If the guardian also dies first (the assertion exit kills it on purpose), nothing ends the writer group. Main still has this at `reader_scenario_cases.py:2323-2333`.
+2. Confirm this path from the code. Rule out the weaker candidate: an external SIGKILL of the owner between the guardian kill and the writer-group kill.
+3. Fix where the defect lives: in that `finally`, close the lifetime pipe, then wait for the owner to finish its cleanup and reap it. Keep SIGKILL of the intermediary for the caller-SIGKILL exit.
+4. Do not add retries or longer waits that hide a race. Do not stop the two live Mac processes; that question is with the user.
+5. Add a test row only if test rule 2 allows it. Else the four existing ownership tests prove the fix.
+
+**Files:**
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — the caller's cleanup.
+- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — only if the Rust entry must change.
+
+**Workers:** 1 writer.
+- `impl` — all files above.
+
+**State:** none
+
+**Acceptance gate:**
+- `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` passes on natedev and on the Mac.
+- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` is clean.
+- After the Mac suite, no new `ownership_victim` writer process is left on the Mac.
