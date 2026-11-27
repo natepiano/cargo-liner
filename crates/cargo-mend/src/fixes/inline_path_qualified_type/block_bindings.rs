@@ -7,6 +7,7 @@ use syn::ForeignItem;
 use syn::Ident;
 use syn::Item;
 use syn::Meta;
+use syn::MetaList;
 use syn::Path;
 use syn::Stmt;
 use syn::Token;
@@ -34,9 +35,61 @@ struct BuiltInAttributes {
 }
 
 const BUILT_IN_ATTRIBUTES: BuiltInAttributes = BuiltInAttributes {
+    // https://doc.rust-lang.org/reference/attributes.html#built-in-attributes-index
     names:   &[
-        "allow", "cfg", "cfg_attr", "deny", "derive", "doc", "expect", "forbid", "inline",
-        "must_use", "repr", "test", "warn",
+        "allow",
+        "automatically_derived",
+        "cfg",
+        "cfg_attr",
+        "cold",
+        "collapse_debuginfo",
+        "crate_name",
+        "crate_type",
+        "debugger_visualizer",
+        "deny",
+        "deprecated",
+        "derive",
+        "diagnostic::do_not_recommend",
+        "diagnostic::on_unimplemented",
+        "doc",
+        "expect",
+        "export_name",
+        "feature",
+        "forbid",
+        "global_allocator",
+        "ignore",
+        "inline",
+        "instruction_set",
+        "link",
+        "link_name",
+        "link_ordinal",
+        "link_section",
+        "macro_export",
+        "macro_use",
+        "must_use",
+        "naked",
+        "no_builtins",
+        "no_implicit_prelude",
+        "no_link",
+        "no_main",
+        "no_mangle",
+        "no_std",
+        "non_exhaustive",
+        "panic_handler",
+        "path",
+        "proc_macro",
+        "proc_macro_attribute",
+        "proc_macro_derive",
+        "recursion_limit",
+        "repr",
+        "should_panic",
+        "target_feature",
+        "test",
+        "track_caller",
+        "type_length_limit",
+        "used",
+        "warn",
+        "windows_subsystem",
     ],
     derives: &[
         "Clone",
@@ -161,10 +214,27 @@ fn attribute_binding(attributes: &[Attribute]) -> BlockBinding {
 }
 
 fn meta_binding(meta: &Meta) -> BlockBinding {
-    let Some(name) = meta.path().get_ident() else {
+    let path = meta.path();
+    if path.is_ident("unsafe") {
+        return meta
+            .require_list()
+            .and_then(MetaList::parse_args::<Meta>)
+            .map_or(BlockBinding::MayBind, |inner| meta_binding(&inner));
+    }
+
+    let name = if let Some(name) = path.get_ident() {
+        name.to_string()
+    } else if path.leading_colon.is_none()
+        && path.segments.len() == 2
+        && path
+            .segments
+            .iter()
+            .all(|segment| segment.arguments.is_empty())
+    {
+        format!("{}::{}", path.segments[0].ident, path.segments[1].ident)
+    } else {
         return BlockBinding::MayBind;
     };
-    let name = name.to_string();
     if !BUILT_IN_ATTRIBUTES.names.contains(&name.as_str()) {
         return BlockBinding::MayBind;
     }
@@ -206,6 +276,44 @@ mod tests {
 
     use super::BlockBinding;
     use super::BlockBindings;
+
+    #[test]
+    fn built_in_attributes_leave_the_first_path_segment_unbound() -> syn::Result<()> {
+        for source in [
+            r#"{
+                #[link(name = "c")]
+                unsafe extern "C" {
+                    #[link_name = "foreign_marker"]
+                    fn marker();
+                }
+            }"#,
+            r#"{
+                #[diagnostic::on_unimplemented(message = "Marker required")]
+                trait Marker {}
+            }"#,
+            "{
+                #[diagnostic::do_not_recommend]
+                impl Marker for () {}
+            }",
+            "{
+                #[cfg_attr(test, deprecated, derive(Clone, Copy))]
+                struct Marker;
+            }",
+            "{
+                #[unsafe(no_mangle)]
+                fn marker() {}
+            }",
+        ] {
+            let block: Block = syn::parse_str(source)?;
+            let first_segment: Ident = syn::parse_str("std")?;
+            let scopes = [BlockBindings::collect(&block)];
+            assert!(
+                BlockBindings::lookup(&scopes, &first_segment) == BlockBinding::Absent,
+                "Expected no binding for {first_segment} in {source}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn item_macros_can_bind_the_first_path_segment() -> syn::Result<()> {
