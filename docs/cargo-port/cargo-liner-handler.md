@@ -1411,3 +1411,33 @@ The copies are deleted. No source changes.
 - `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
 - Each new test fails before the fix and passes after it.
 - No changed test takes one second or more.
+
+### Phase 61 — no cargo-berth test folder goes into /dev/shm  · status: todo
+
+#### Work Order
+
+**Goal:** cargo-berth tests never put a scratch folder in /dev/shm. Source: the user via bob, about 09:35 PST on 2026-11-27: "i want the machineery that puts these folders into memory removed". Relayed by cargo-liner at 12:36 PST.
+
+**Spec:**
+1. In `crates/cargo-berth/tests/check-test-scratch.sh`, remove the /dev/shm selection: the `/proc/mounts` loop, `memory_has_room`, and the /dev/shm fallback branch after `mktemp`.
+2. The scratch parent is the run's own temporary folder, `${profile%/*}/tmp/cargo-berth-templates/private`. `CARGO_BERTH_TEST_SCRATCH_PARENT` stays as the override.
+3. In `crates/cargo-berth/tests/temporary_directories.rs`, remove the `memory-full` mode of `scratch_wrapper_names_leaks_and_preserves_clean_panics`.
+4. Remove `shared_shell_scripts_restore_across_filesystems`. It makes a folder in /dev/shm. Keep the cross-filesystem copy code: the override can name another filesystem.
+5. Remove every other /dev/shm choice in `crates/cargo-berth`, and any comment or as-built text that names it.
+
+**Constraints:**
+- Do not change the shared fixture cache location.
+- No test may take one second or more.
+
+**Files:**
+- `crates/cargo-berth/tests/check-test-scratch.sh`
+- `crates/cargo-berth/tests/temporary_directories.rs`
+- any other `crates/cargo-berth` or `docs/cargo-berth` file that names /dev/shm
+
+**Workers:** 1 writer.
+
+**State:** none.
+
+**Verification:**
+- `git grep -n /dev/shm -- crates/cargo-berth docs/cargo-berth` finds nothing.
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
