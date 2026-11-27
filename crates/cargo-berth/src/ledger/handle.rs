@@ -1640,6 +1640,7 @@ impl Ledger {
                 journal_source: journal_preparation.source,
                 journal_initialization: InitializationState::Existing,
                 ledger_directory: self.paths.directory.clone(),
+                repository_root: self.paths.repository_root.clone(),
                 gate_policy,
                 projection_synchronization,
                 replay,
@@ -1726,6 +1727,7 @@ impl Ledger {
             journal_source: JournalReplaySource::open(&self.paths.journal)?,
             journal_initialization,
             ledger_directory: self.paths.directory.clone(),
+            repository_root: self.paths.repository_root.clone(),
             gate_policy,
             projection_synchronization: ProjectionSynchronization::RebuildRequired,
             replay: JournalReplay::empty(),
@@ -1778,6 +1780,18 @@ impl LedgerTransaction {
         } = prepared;
         let next_generation = next_projection_generation(self.replay.generation)
             .map_err(LedgerTransactionError::LedgerUnreadable)?;
+        let operation = operation.into_operation();
+        if let JournalOperation::Release {
+            reservation_id,
+            release,
+        } = &operation
+            && let Some(tip) = release.known_kept_tip()
+        {
+            git::write_kept_work_ref(&self.repository_root, *reservation_id, tip)
+                .map_err(std::io::Error::other)
+                .map_err(LedgerError::Io)
+                .map_err(LedgerTransactionError::LedgerUnreadable)?;
+        }
         let event = JournalEvent::for_operation(
             JournalActor {
                 repository: self.repo_instance_id,
@@ -1785,7 +1799,7 @@ impl LedgerTransaction {
                 run:        coordination_run_id,
             },
             next_generation,
-            operation.into_operation(),
+            operation,
         );
         self.journal
             .append(&event)
@@ -2009,6 +2023,7 @@ struct LedgerTransaction {
     journal_source:             JournalReplaySource,
     journal_initialization:     InitializationState,
     ledger_directory:           PathBuf,
+    repository_root:            PathBuf,
     gate_policy:                GateTargetPolicy,
     projection_synchronization: ProjectionSynchronization,
     replay:                     JournalReplay,
@@ -2158,6 +2173,7 @@ mod tests {
     use crate::ids::WorktreeId;
     use crate::ledger::BypassedAction;
     use crate::ledger::ForcedIntegrationReason;
+    use crate::ledger::JournalRelease;
     use crate::ledger::ObservedReservation;
     use crate::ledger::ReservationScope;
     use crate::ledger::ScopeKind;
@@ -2318,8 +2334,7 @@ mod tests {
                 ledger.transact(WorktreeId::new(), CoordinationRunId::new(), |_| {
                     TransactionValidation::<()>::Append(Box::new(JournalOperation::Release {
                         reservation_id: RETIRED.parse().expect("retired identity"),
-                        disposition:    ReleaseDisposition::Integrated,
-                        source:         None,
+                        release:        JournalRelease::new(ReleaseDisposition::Integrated, None),
                     }))
                 })?;
             }
@@ -2425,8 +2440,10 @@ mod tests {
                         .iter()
                         .map(|reservation_id| JournalOperation::Release {
                             reservation_id: *reservation_id,
-                            disposition:    ReleaseDisposition::Integrated,
-                            source:         None,
+                            release:        JournalRelease::new(
+                                ReleaseDisposition::Integrated,
+                                None,
+                            ),
                         })
                         .collect(),
                     &std::collections::HashMap::new(),

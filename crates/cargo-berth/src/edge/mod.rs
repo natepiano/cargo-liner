@@ -53,8 +53,8 @@ use crate::ledger::ReservationPurpose;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeSet;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::PresentedReservationLifecycle;
 use crate::reservation::ReleaseDisposition;
-use crate::reservation::ReservationLifecycle;
 
 /// Why one reservation was declared to precede another.
 #[derive(Clone, Debug, Eq, JsonSchema, PartialEq, Serialize)]
@@ -265,7 +265,7 @@ pub(crate) struct IntegrationReservationFacts {
     /// The complete normalized footprint, not only one edge's overlap.
     pub(crate) scopes:         ReservationScopeSet,
     /// The reservation's replayed progress state.
-    pub(crate) lifecycle:      ReservationLifecycle,
+    pub(crate) lifecycle:      PresentedReservationLifecycle,
     /// The commit whose newly-reachable appearance identifies this reservation.
     pub(crate) subject:        IntegrationSubject,
 }

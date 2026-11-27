@@ -27,6 +27,7 @@ use gate_fixtures::BYPASS_ENVIRONMENT;
 use gate_fixtures::CONFIGURATION_PATH;
 use gate_fixtures::Command;
 use gate_fixtures::CommittedFeatureRebaseHookPhasesHistory;
+use gate_fixtures::DEFAULT_ANSWERED_SUCCESSOR_RETRY;
 use gate_fixtures::DeferredEndpointsHistory;
 use gate_fixtures::DeferredPair;
 use gate_fixtures::EXECUTABLE_ENVIRONMENT;
@@ -65,7 +66,7 @@ use gate_fixtures::HISTORY_POST_COMMIT_RESERVATION_CARDINALITY_TRACE_3;
 use gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_1;
 use gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_2;
 use gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_3;
-use gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_4;
+use gate_fixtures::HISTORY_PREPARED_SUBJECT_PASS_5;
 use gate_fixtures::HISTORY_PREPARED_TRUNK_UPDATE_HOOK_PHASES_READY;
 use gate_fixtures::HISTORY_SETTLED_PREDECESSOR_GATE;
 use gate_fixtures::HISTORY_TRACE_RETENTION_REF_RECONCILIATION_DELETE_1;
@@ -82,6 +83,7 @@ use gate_fixtures::ListedTargetHistory;
 use gate_fixtures::ListedTargetInRepositoryPathWithBackslashIsGatedState;
 use gate_fixtures::MARKER_PATH;
 use gate_fixtures::OBSERVED_TRUNK_UPDATE_OF_ONE_HELD_RESERVATION;
+use gate_fixtures::ORDERED_SUCCESSOR_RETRY;
 use gate_fixtures::ObserveEnforceAndOneUseForceApplyToBothDeferredEndpointsState;
 use gate_fixtures::OpenOptions;
 use gate_fixtures::Output;
@@ -110,6 +112,7 @@ use gate_fixtures::SettledPredecessorGateHistory;
 use gate_fixtures::Stdio;
 use gate_fixtures::THIRD_RUN;
 use gate_fixtures::TargetGateHoldsNeitherLaneAfterADefaultAnsweredOverlapState;
+use gate_fixtures::TargetGateRetry;
 use gate_fixtures::TargetPresence;
 use gate_fixtures::TempDir;
 use gate_fixtures::TraceRetentionRefReconciliationHistory;
@@ -348,7 +351,6 @@ exec "$CARGO_BERTH_TEST_REAL_GIT" "$@"
 
 struct TargetPair {
     repository:         IntegrationRepository,
-    predecessor:        PathBuf,
     successor:          PathBuf,
     predecessor_id:     String,
     successor_id:       String,
@@ -363,14 +365,20 @@ fn target_pair(merge_predecessor: bool) -> TargetPair {
     } else {
         ordered_target_pair_template::SEPARATE_TARGET_PAIR
     };
-    let repository = IntegrationRepository::from_recorded_template(template);
+    read_target_pair(IntegrationRepository::from_recorded_template(template))
+}
+
+fn read_target_pair(repository: IntegrationRepository) -> TargetPair {
     let witnesses: ordered_target_pair_template::TargetPairWitnesses = serde_json::from_slice(
-        &fs::read(repository.root().join(".git/ordered-target-pair.json"))
-            .expect("target pair witnesses should read"),
+        &fs::read(
+            repository
+                .root()
+                .join(ordered_target_pair_template::WITNESSES),
+        )
+        .expect("target pair witnesses should read"),
     )
     .expect("target pair witnesses should decode");
     TargetPair {
-        predecessor: repository.recorded_lane("target-a"),
         successor: repository.recorded_lane("target-b"),
         predecessor_id: witnesses.predecessor_id,
         successor_id: witnesses.successor_id,
@@ -2396,19 +2404,16 @@ fn gate_targets_tracks_live_recorded_targets_and_default_is_empty() {
 
 #[test]
 fn target_gate_rejects_successor_until_predecessor_lands_on_target() {
-    let pair = target_pair(true);
-    set_gate_mode(pair.repository.root(), "enforce");
-    let denied = propose_branch(
-        pair.repository.root(),
-        "integration",
-        &pair.integration_before,
-        &pair.successor_tip,
-    );
-    assert!(
-        !denied.status.success(),
+    let pair = read_target_pair(IntegrationRepository::from_recorded_template(
+        ORDERED_SUCCESSOR_RETRY,
+    ));
+    let observations: TargetGateRetry = recorded_history::read(pair.repository.root());
+    assert_ne!(
+        observations.refusal.exit_code,
+        Some(0),
         "successor entered integration before A"
     );
-    let text = String::from_utf8_lossy(&denied.stderr);
+    let text = &observations.refusal.diagnostic;
     assert!(
         text.contains(&format!(
             "Reservation {} cannot enter integration while its integration order is held",
@@ -2420,26 +2425,10 @@ fn target_gate_rejects_successor_until_predecessor_lands_on_target() {
     assert!(text.contains(&pair.predecessor_id), "{text}");
     assert!(text.contains(&pair.successor_id), "{text}");
     assert_eq!(
-        pair.repository
-            .git_stdout(pair.repository.root(), &["rev-parse", "integration"]),
+        observations.integration_after_refusal,
         pair.integration_before
     );
-    assert_success(&pair.repository.run(
-        &pair.predecessor,
-        &["release", &pair.predecessor_id, "--json"],
-    ));
-    pair.repository.merge_fast_forward("target-a");
-    let allowed = propose_branch(
-        pair.repository.root(),
-        "integration",
-        &pair.predecessor_tip,
-        &pair.successor_tip,
-    );
-    assert!(
-        allowed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&allowed.stderr)
-    );
+    assert_target_accepts_landed_predecessor(&observations);
 }
 
 /// `default_answer = "first_ready"` records an override, so the target gate holds neither lane:
@@ -2486,46 +2475,34 @@ fn target_gate_holds_neither_lane_after_a_default_answered_overlap() {
 #[test]
 fn target_gate_holds_a_default_answered_requester_that_sequence_orders() {
     let repository =
-        IntegrationRepository::from_recorded_template(gate_templates::DEFAULT_ANSWERED_GATE);
+        IntegrationRepository::from_recorded_template(DEFAULT_ANSWERED_SUCCESSOR_RETRY);
+    let root = repository.root();
     let state: gate_templates::DefaultAnswerGateState = serde_json::from_slice(
-        &fs::read(repository.root().join(gate_templates::DEFAULT_ANSWER_STATE))
+        &fs::read(root.join(gate_templates::DEFAULT_ANSWER_STATE))
             .expect("default answer state should read"),
     )
     .expect("default answer state should decode");
-    let holder = repository.recorded_lane("target-a");
-    let gate_templates::DefaultAnswerGateState {
-        holder_id,
-        integration_before,
-        holder_tip,
-        requester_tip,
-    } = state;
-    set_gate_mode(repository.root(), "enforce");
-
-    let denied = propose_branch(
-        repository.root(),
-        "integration",
-        &integration_before,
-        &requester_tip,
-    );
-    assert!(
-        !denied.status.success(),
+    let observations: TargetGateRetry = recorded_history::read(root);
+    assert_ne!(
+        observations.refusal.exit_code,
+        Some(0),
         "requester entered integration before the holder"
     );
-    let text = String::from_utf8_lossy(&denied.stderr);
-    assert!(text.contains(&holder_id), "{text}");
-    assert_success(&repository.run(&holder, &["release", &holder_id, "--json"]));
-    repository.merge_fast_forward("target-a");
-    let allowed = propose_branch(
-        repository.root(),
-        "integration",
-        &holder_tip,
-        &requester_tip,
+    let text = &observations.refusal.diagnostic;
+    assert!(text.contains(&state.holder_id), "{text}");
+    assert_eq!(
+        observations.integration_after_refusal,
+        state.integration_before
     );
-    assert!(
-        allowed.status.success(),
-        "{}",
-        String::from_utf8_lossy(&allowed.stderr)
-    );
+    assert_target_accepts_landed_predecessor(&observations);
+}
+
+fn assert_target_accepts_landed_predecessor(observations: &TargetGateRetry) {
+    let retry = observations
+        .retry
+        .as_ref()
+        .expect("the refused update should be retried");
+    assert_eq!(retry.exit_code, Some(0), "{}", retry.diagnostic);
 }
 
 /// `sequence` orders two live reservations that no answer joins, and the edge covers the
@@ -6000,17 +5977,64 @@ prepared_subject_cases! {
 
 #[test]
 fn prepared_gate_advances_each_subject_at_actual_and_proposed_targets() {
-    let fixture = prepared_subject_history(HISTORY_PREPARED_SUBJECT_PASS_4);
-    assert_prepared_subject_pass(&fixture);
+    let fixture = prepared_subject_history(HISTORY_PREPARED_SUBJECT_PASS_5);
+    assert_eq!(
+        git_stdout(
+            fixture.repository.path(),
+            &["diff", "--name-only", "--", "src"]
+        )
+        .lines()
+        .count(),
+        fixture.reservation_ids.len(),
+        "the board must observe the pending edits"
+    );
+    let extra_edit = fixture.repository.path().join("proof-observation.tmp");
+    fs::write(&extra_edit, "pending work\n").expect("pending work should write");
+    let before_board = journal_text(fixture.repository.path());
+    let dirty_board = run_berth(fixture.repository.path(), &["board", "--json"]);
+    assert!(dirty_board.status.success());
+    let dirty_data = &json_output(&dirty_board)["payload"]["data"];
+    for reservation_id in &fixture.reservation_ids {
+        let row = board_reservation_snapshot(dirty_data, reservation_id);
+        assert_eq!(row["lifecycle"]["stage"], "outstanding");
+        assert_eq!(row["merge_extent"]["status"], "protected");
+        assert_eq!(
+            row["integration_evidence"]["status"]["status"],
+            "not_integrated"
+        );
+    }
     for target in [&fixture.actual, &fixture.proposed] {
         assert_target_compared_each_reservation(&fixture, target);
     }
 
+    let after_board = journal_text(fixture.repository.path());
+    assert!(
+        after_board
+            .strip_prefix(&before_board)
+            .expect("the board must preserve existing journal records")
+            .lines()
+            .any(
+                |record| record.contains("\"op\":\"holder_merge_extent_observed\"")
+                    && record.contains("proof-observation.tmp")
+            ),
+        "the board must record a fresh dirty merge extent"
+    );
+    fs::remove_file(extra_edit).expect("pending work should clear");
+    let compared = journal_text(fixture.repository.path())
+        .matches("\"op\":\"scoped_patch_equivalence_checked\"")
+        .count();
     git(
         fixture.repository.path(),
         &["restore", "--worktree", "--", "src"],
     );
     let board = run_berth(fixture.repository.path(), &["board", "--json"]);
+    assert_eq!(
+        journal_text(fixture.repository.path())
+            .matches("\"op\":\"scoped_patch_equivalence_checked\"")
+            .count(),
+        compared,
+        "the next board must reuse the proof retained during the dirty observation"
+    );
     assert!(board.status.success());
     let data = &json_output(&board)["payload"]["data"];
     for reservation_id in &fixture.reservation_ids {
@@ -6024,6 +6048,7 @@ fn prepared_gate_advances_each_subject_at_actual_and_proposed_targets() {
             "scoped_patch_equivalent"
         );
     }
+    assert_target_compared_each_reservation(&fixture, &fixture.actual);
 }
 
 #[test]

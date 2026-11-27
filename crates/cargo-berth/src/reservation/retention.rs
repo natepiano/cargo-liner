@@ -22,6 +22,8 @@ use super::evidence::ProtectedReservationTip;
 use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
 use super::lifecycle::IntegrationProof;
+use super::lifecycle::KeptWork;
+use super::lifecycle::KeptWorkRelease;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReleaseRevalidationSubject;
 use super::lifecycle::ReservationLifecycle;
@@ -71,6 +73,7 @@ use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalActor;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
+use crate::ledger::JournalRelease;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReservationScope;
 use crate::ledger::ReservationScopeAdditionSet;
@@ -662,9 +665,8 @@ impl ReservationFacts {
                 } => self.apply_evidence(*reservation_id, status)?,
                 JournalOperation::Release {
                     reservation_id,
-                    disposition,
-                    ..
-                } => self.apply_release(*reservation_id, disposition)?,
+                    release,
+                } => self.apply_release(*reservation_id, release)?,
                 _ => {},
             }
         }
@@ -1493,9 +1495,8 @@ impl ReservationFacts {
             },
             JournalOperation::Release {
                 reservation_id,
-                disposition,
-                ..
-            } => self.apply_release(*reservation_id, disposition),
+                release,
+            } => self.apply_release(*reservation_id, release),
             JournalOperation::IntegrateAbsentHolder {
                 reservation_id,
                 evidence,
@@ -1704,6 +1705,7 @@ impl ReservationFacts {
                 ),
             purpose:                                           replayed_claim.purpose.clone(),
             head_snapshot:                                     replayed_claim.head_snapshot.clone(),
+            reanchored_claim_head:                             None,
             phase_start_head:                                  replayed_claim
                 .phase_start_head
                 .clone(),
@@ -1792,12 +1794,13 @@ impl ReservationFacts {
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
         match snapshot {
-            ReservationSnapshot::Active { .. } => {
+            ReservationSnapshot::Active { claim_snapshot } => {
                 if !matches!(reservation.lifecycle, ReservationLifecycle::Active) {
                     return Err(ReservationReplayError::SnapshotStateMismatch(
                         reservation_id,
                     ));
                 }
+                reservation.reanchored_claim_head = Some(claim_snapshot.clone());
             },
             ReservationSnapshot::Outstanding {
                 protected_tip,
@@ -1875,9 +1878,10 @@ impl ReservationFacts {
     fn apply_release(
         &mut self,
         reservation_id: ReservationId,
-        disposition: &ReleaseDisposition,
+        release: &JournalRelease,
     ) -> Result<(), ReservationReplayError> {
         let reservation = self.find_mut(reservation_id)?;
+        let disposition = release.replay_disposition(reservation.source());
         if matches!(disposition, ReleaseDisposition::Integrated)
             && !matches!(
                 reservation.integration_status,
@@ -1888,7 +1892,7 @@ impl ReservationFacts {
                 reservation_id,
             ));
         }
-        if let ReleaseDisposition::RewrittenIntegration(trunk_commit) = disposition {
+        if let ReleaseDisposition::RewrittenIntegration(trunk_commit) = &disposition {
             if !matches!(
                 reservation.integration_status,
                 IntegrationEvidenceStatus::Integrated { .. }
@@ -1903,14 +1907,14 @@ impl ReservationFacts {
             | ReleaseDisposition::KeptOnBranch(_)
             | ReleaseDisposition::UnchangedScopes(_) => reservation
                 .lifecycle
-                .release_without_checkpoint(disposition.clone())
+                .release_without_checkpoint(disposition)
                 .map_err(|error| {
                     ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
                 })?,
             ReleaseDisposition::Integrated | ReleaseDisposition::RewrittenIntegration(_) => {
                 reservation
                     .lifecycle
-                    .release(disposition.clone())
+                    .release(disposition)
                     .map_err(|error| {
                         ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
                     })?;
@@ -2110,7 +2114,13 @@ impl ReservationFacts {
         }
         reservation
             .lifecycle
-            .replace_release_disposition(superseded, replacement.clone())
+            .replace_release_disposition(
+                superseded,
+                replacement.clone().map_kept(|reason| KeptWorkRelease {
+                    reason,
+                    work: KeptWork::Unknown,
+                }),
+            )
             .map_err(|error| {
                 ReservationReplayError::InvalidLifecycleTransition(reservation_id, error)
             })?;

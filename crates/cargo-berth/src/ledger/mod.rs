@@ -81,6 +81,7 @@ pub(crate) use journal::IncursionPathSet;
 pub(crate) use journal::JournalActor;
 pub(crate) use journal::JournalEvent;
 pub(crate) use journal::JournalOperation;
+pub(crate) use journal::JournalRelease;
 pub(crate) use journal::NonEmptyReservationPurpose;
 pub(crate) use journal::ObservedReservation;
 pub(crate) use journal::ObservedReservationSet;

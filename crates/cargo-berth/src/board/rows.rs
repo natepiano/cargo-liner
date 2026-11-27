@@ -71,6 +71,7 @@ use crate::reconcile::ReconciliationReport;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::EffectiveMergeExtent;
 use crate::reservation::IntegrationEvidenceStatus;
+use crate::reservation::PresentedReservationLifecycle;
 use crate::reservation::RaceExtent;
 use crate::reservation::Reservation;
 use crate::reservation::ReservationFreshness;
@@ -185,7 +186,7 @@ pub(super) struct BoardReservationSnapshot {
     race_extent:               RaceExtent,
     /// The live branch surface, its evidence retained on failure, or the record kept at release.
     merge_extent:              EffectiveMergeExtent,
-    lifecycle:                 ReservationLifecycle,
+    lifecycle:                 PresentedReservationLifecycle,
     integration_evidence:      BoardIntegrationEvidence,
     edit_blocking_status:      EditBlockingStatus,
     pub(super) visibility:     BoardReservationVisibility,
@@ -509,8 +510,8 @@ enum DeferralIntegrationOutcome {
 impl DeferralConsequence {
     /// Distinguish a live integration hold from a pair whose sides both released.
     fn from_lifecycles(
-        deferred: &ReservationLifecycle,
-        blocker: &ReservationLifecycle,
+        deferred: &PresentedReservationLifecycle,
+        blocker: &PresentedReservationLifecycle,
     ) -> DeferralIntegrationOutcome {
         match (is_released(deferred), is_released(blocker)) {
             (true, true) => DeferralIntegrationOutcome::BothReleased,
@@ -522,7 +523,7 @@ impl DeferralConsequence {
     /// The integrations held while the deferred side is live: the blockers' as well, until every
     /// blocker is released.
     pub(super) fn with_live_deferred<'lifecycle>(
-        blockers: impl IntoIterator<Item = &'lifecycle ReservationLifecycle>,
+        blockers: impl IntoIterator<Item = &'lifecycle PresentedReservationLifecycle>,
     ) -> Self {
         if blockers.into_iter().all(is_released) {
             Self::DeferredOnly
@@ -532,7 +533,7 @@ impl DeferralConsequence {
     }
 }
 
-const fn is_released(lifecycle: &ReservationLifecycle) -> bool {
+const fn is_released(lifecycle: &PresentedReservationLifecycle) -> bool {
     matches!(lifecycle, ReservationLifecycle::Released { .. })
 }
 
@@ -1140,7 +1141,7 @@ fn board_reservation_snapshots(
             scopes: reservation.scopes().clone(),
             race_extent: reservation.race_extent(),
             merge_extent: reservation.effective_merge_extent(),
-            lifecycle: reservation.lifecycle().clone(),
+            lifecycle: reservation.lifecycle().presentation(),
             integration_evidence,
             edit_blocking_status: reservation.edit_blocking_status(),
             visibility,
@@ -1461,16 +1462,18 @@ mod tests {
         }
         assert!(matches!(
             DeferralConsequence::from_lifecycles(
-                report
+                &report
                     .journal_snapshot
                     .reservations()
                     .reservation(requester.reservation_id)?
-                    .lifecycle(),
-                report
+                    .lifecycle()
+                    .presentation(),
+                &report
                     .journal_snapshot
                     .reservations()
                     .reservation(blocker.reservation_id)?
-                    .lifecycle(),
+                    .lifecycle()
+                    .presentation(),
             ),
             super::DeferralIntegrationOutcome::BothReleased
         ));

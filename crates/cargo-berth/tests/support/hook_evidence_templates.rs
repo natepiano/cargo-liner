@@ -6,6 +6,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
 
+use cargo_berth_test_support::AmbientHarnessSession;
 use cargo_berth_test_support::GitDriver;
 use cargo_berth_test_support::LedgerFixture;
 use cargo_berth_test_support::LedgerTemplate;
@@ -14,6 +15,7 @@ use cargo_berth_test_support::OptionalLocks;
 use cargo_berth_test_support::ReleasedWorkEvidence;
 use cargo_berth_test_support::RepositoryTemplate;
 use cargo_berth_test_support::TemplateBuildTiming;
+use cargo_berth_test_support::spawn_hook_verb;
 
 use super::hook_repository;
 use super::hook_repository::CONFIGURED_REPOSITORY;
@@ -69,6 +71,60 @@ pub(super) const REWRITTEN_TRUNK_LOST_EVIDENCE: LedgerTemplate = LedgerTemplate 
     },
     ..INCURSION_ANSWERED_LOST_EVIDENCE
 };
+
+pub(super) const TRANSFERRED_PLAN_HOLD: LedgerTemplate = LedgerTemplate {
+    repository: RepositoryTemplate {
+        name: "hook-transferred-plan-hold",
+        build: |root| {
+            let built = build_transferred_plan_hold(root);
+            assert!(built.is_ok(), "transferred hold fixture failed: {built:?}");
+        },
+        ..INCURSION_ANSWERED_LOST_EVIDENCE.repository
+    },
+    ..INCURSION_ANSWERED_LOST_EVIDENCE
+};
+
+pub(super) const TRANSFERRED_PLAN_HOLD_CHECKOUT: &str = ".git/fixture-worktrees/hold-release";
+pub(super) const TRANSFERRED_PLAN_HOLD_PHASE: &str = ".git/next-phase-id";
+
+fn build_transferred_plan_hold(root: &Path) -> TestResult {
+    CONFIGURED_REPOSITORY.restore_into(root);
+    fs::create_dir_all(root.join(".git/fixture-worktrees"))?;
+    let holder = root.join(TRANSFERRED_PLAN_HOLD_CHECKOUT);
+    GIT.add_worktree_without_hooks(root, &holder, "hold-release", "HEAD");
+    hook_repository::checkpoint_phase(&holder, &["check", "file:finished.rs", "--json"])?;
+    let edit = serde_json::json!({
+        "tool_name": "Edit",
+        "cwd": holder,
+        "tool_input": {"file_path": holder.join("README.md")},
+        "session_id": "director",
+    });
+    let output = spawn_hook_verb(
+        Path::new(EXECUTABLE),
+        &holder,
+        "pre-tool-use",
+        &serde_json::to_vec(&edit)?,
+        &AmbientHarnessSession::Absent,
+    )?;
+    hook_repository::require_success(&output, "the plan shrink edit")?;
+    let next = hook_repository::run_berth_with_session(
+        &holder,
+        &["check", "file:README.md", "--json"],
+        "director.phase-2",
+    )?;
+    hook_repository::require_success(&next, "the next phase's check")?;
+    let envelope = hook_repository::json_output(&next)?;
+    let phase_id = hook_repository::required_string(
+        &envelope,
+        "/payload/data/acquisition/reservation_id",
+        "the next phase's check",
+    )?;
+    fs::write(root.join(TRANSFERRED_PLAN_HOLD_PHASE), phase_id)?;
+    fs::write(holder.join("README.md"), "# Plan for the next phase\n")?;
+    GIT.run_without_hooks(&holder, ["add", "README.md"]);
+    GIT.run_without_hooks(&holder, ["commit", "--quiet", "-m", "update the plan"]);
+    Ok(())
+}
 
 pub(super) const PENDING_SIBLING: LedgerTemplate = LedgerTemplate {
     repository: RepositoryTemplate {

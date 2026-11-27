@@ -37,6 +37,7 @@ use crate::ledger::ClaimHeadSnapshot;
 use crate::ledger::ClaimSource;
 use crate::ledger::FullRefName;
 use crate::ledger::JournalOperation;
+use crate::ledger::JournalRelease;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerTransactionOutcome;
 use crate::ledger::NonEmptyReservationPurpose;
@@ -284,8 +285,7 @@ impl BoardFixture {
             actor,
             JournalOperation::Release {
                 reservation_id,
-                disposition,
-                source: Some(ReleaseSource::Command),
+                release: JournalRelease::without_kept_tip(disposition, ReleaseSource::Command),
             },
         )
     }

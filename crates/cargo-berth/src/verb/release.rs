@@ -27,6 +27,7 @@ use crate::ledger::CommittedActionValidation;
 use crate::ledger::CoordinationRunMarkerRemoval;
 use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalOperation;
+use crate::ledger::JournalRelease;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
@@ -53,7 +54,9 @@ use crate::reservation::AbandonmentReason;
 use crate::reservation::EditBlockingStatus;
 use crate::reservation::IntegrationEvidenceStatus;
 use crate::reservation::IntegrationWitness;
+use crate::reservation::KeptWork;
 use crate::reservation::KeptWorkReason;
+use crate::reservation::KeptWorkRelease;
 use crate::reservation::MergeExtent;
 use crate::reservation::PriorIntegrationStatus;
 use crate::reservation::ProtectedReservationTip;
@@ -68,6 +71,9 @@ use crate::reservation::RetainedReservationSet;
 use crate::reservation::RewrittenIntegrationTrunkCommit;
 use crate::scope::PathCase;
 use crate::session::SessionIdentityMappingPublication;
+use crate::worktree::WorktreeHead;
+use crate::worktree::WorktreeLiveness;
+use crate::worktree::WorktreeRegistry;
 
 /// A parsed request to checkpoint or explicitly end one reservation.
 pub(crate) struct ReleaseRequest {
@@ -526,12 +532,15 @@ fn release_operation_for_request(
     ) {
         return Err(ReleaseRejection::AlreadyReleased);
     }
+    let recorded = disposition.clone().map_kept(|reason| KeptWorkRelease {
+        reason,
+        work: kept_work_tip(context, reservation).map_or(KeptWork::Unknown, KeptWork::Known),
+    });
     Ok(ReleaseAppend {
         prerequisites:  Vec::new(),
         operation:      JournalOperation::Release {
             reservation_id: reservation.id(),
-            disposition:    disposition.clone(),
-            source:         Some(ReleaseSource::Command),
+            release:        JournalRelease::new(recorded, Some(ReleaseSource::Command)),
         },
         payload_seed:   ReleasePayloadSeed::Released {
             reservation_id: reservation.id(),
@@ -539,6 +548,27 @@ fn release_operation_for_request(
         },
         retention_plan: ReleaseRetentionPlan::Preserve,
     })
+}
+
+fn kept_work_tip(
+    context: ReleaseTransactionContext<'_>,
+    reservation: &Reservation,
+) -> Option<GitObjectId> {
+    if context.invoking_worktree_id == reservation.actor().worktree {
+        return context.repository.object_reader().commit("HEAD").ok();
+    }
+    let registry = WorktreeRegistry::read(context.repository).ok()?;
+    let holder = registry.classify(
+        reservation.actor().repository,
+        context.repository.context().common_git_directory(),
+        reservation,
+    );
+    match (holder.liveness, holder.head) {
+        (WorktreeLiveness::Live | WorktreeLiveness::Unavailable, WorktreeHead::Resolved(tip)) => {
+            Some(tip)
+        },
+        _ => None,
+    }
 }
 
 fn explicit_release_output(request: &ReleaseRequest) -> OutputEnvelope {
@@ -637,11 +667,11 @@ fn checkpoint_operation(
     let repository = release_repository_context.repository;
     let reservations = release_repository_context.reservations;
     let tip = reservation::phase_boundary::first_checkpoint_tip(
-        repository.repository_root(),
-        repository.context().common_git_directory(),
+        repository,
         reservations,
         reservation,
         &checkpoint_commits.protected_tip,
+        &checkpoint_commits.trunk,
     )
     .map_err(|_| ReleaseRejection::AmbiguousCheckpoint)?;
     if tip != &checkpoint_commits.protected_tip
@@ -650,16 +680,6 @@ fn checkpoint_operation(
             ReservationJudgingBranch::MissingTargetFallback(_)
         )
     {
-        return Err(ReleaseRejection::AmbiguousCheckpoint);
-    }
-    if !reservation::phase_boundary::foreign_ranges_are_disjoint(
-        repository,
-        reservations,
-        reservation,
-        reservation.phase_start_head().as_ref(),
-        tip,
-        &checkpoint_commits.trunk,
-    ) {
         return Err(ReleaseRejection::AmbiguousCheckpoint);
     }
     let reservation_id = reservation.id();
@@ -795,16 +815,16 @@ fn integrated_release_operation(
             },
         ),
     };
+    let presentation = disposition.presentation();
     ReleaseAppend {
         prerequisites: Vec::new(),
         operation: JournalOperation::Release {
             reservation_id,
-            disposition: disposition.clone(),
-            source: Some(ReleaseSource::Command),
+            release: JournalRelease::new(disposition, Some(ReleaseSource::Command)),
         },
         payload_seed: ReleasePayloadSeed::Released {
             reservation_id,
-            disposition,
+            disposition: presentation,
         },
         retention_plan,
     }
@@ -1628,10 +1648,10 @@ mod tests {
             let release = integrated_release_operation(reservation_id, &protected_tip, &witness);
             assert!(matches!(
                 release.operation,
-                JournalOperation::Release { reservation_id: id, disposition, source }
+                JournalOperation::Release { reservation_id: id, release }
                     if id == reservation_id
-                        && disposition == expected_disposition
-                        && source == Some(ReleaseSource::Command)
+                        && release.disposition() == expected_disposition
+                        && release.source() == Some(ReleaseSource::Command)
             ));
             assert!(matches!(
                 release.payload_seed,

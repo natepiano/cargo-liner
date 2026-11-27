@@ -30,6 +30,7 @@ use crate::ledger::IncursionIncidentId;
 use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalActor;
 use crate::ledger::JournalOperation;
+use crate::ledger::JournalRelease;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
@@ -820,8 +821,10 @@ fn rewritten_integration_operation(
         ReservationEvidenceState::Outstanding { protected_tip, .. } => (
             JournalOperation::Release {
                 reservation_id,
-                disposition: disposition.clone(),
-                source: Some(ReleaseSource::Command),
+                release: JournalRelease::without_kept_tip(
+                    disposition.clone(),
+                    ReleaseSource::Command,
+                ),
             },
             protected_tip,
         ),
@@ -1044,8 +1047,10 @@ fn disposition_operation(
         ReservationLifecycle::Active | ReservationLifecycle::Outstanding { .. } => Ok((
             JournalOperation::Release {
                 reservation_id,
-                disposition: disposition.clone(),
-                source: Some(ReleaseSource::Command),
+                release: JournalRelease::without_kept_tip(
+                    disposition.clone(),
+                    ReleaseSource::Command,
+                ),
             },
             ResolvePayloadSeed::Released {
                 reservation_id,

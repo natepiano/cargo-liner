@@ -13,6 +13,9 @@ use cargo_berth_test_support::SECOND_RUN;
 use hook_evidence_templates::INCURSION_ANSWERED_LOST_EVIDENCE;
 use hook_evidence_templates::REWRITTEN_TRUNK_LOST_EVIDENCE;
 use hook_evidence_templates::STATE as HOOK_EVIDENCE_STATE;
+use hook_evidence_templates::TRANSFERRED_PLAN_HOLD;
+use hook_evidence_templates::TRANSFERRED_PLAN_HOLD_CHECKOUT;
+use hook_evidence_templates::TRANSFERRED_PLAN_HOLD_PHASE;
 pub use prepared_lock_tests::ANCESTOR_CHECKPOINT;
 pub use prepared_lock_tests::AncestorProofCommits;
 pub use prepared_lock_tests::CONTENT_CHECKPOINT;
@@ -65,6 +68,7 @@ use hook_repository::CONFIGURED_REPOSITORY;
 use hook_repository::GIT_REPOSITORY;
 use hook_repository::INITIALIZED_REPOSITORY;
 use hook_repository::bash_payload;
+use hook_repository::checkpoint_phase;
 use hook_repository::claimed_reservation_id;
 use hook_repository::dirty_source;
 use hook_repository::failure;
@@ -3238,6 +3242,62 @@ fn the_next_phase_check_acquires_a_path_from_a_checkpoint_gap_hold() -> TestResu
 }
 
 #[test]
+fn a_transferred_plan_hold_does_not_block_the_next_phase_checkpoint() -> TestResult {
+    assert_checkpoint_after_hold_transfer(HoldTransferJournal::Recorded)
+}
+
+#[test]
+fn a_legacy_transferred_plan_hold_does_not_block_the_next_phase_checkpoint() -> TestResult {
+    assert_checkpoint_after_hold_transfer(HoldTransferJournal::Legacy)
+}
+
+#[derive(Clone, Copy)]
+enum HoldTransferJournal {
+    Recorded,
+    Legacy,
+}
+
+fn assert_checkpoint_after_hold_transfer(journal_format: HoldTransferJournal) -> TestResult {
+    let repository = TRANSFERRED_PLAN_HOLD.instantiate();
+    let trunk = repository.path();
+    let holder = trunk.join(TRANSFERRED_PLAN_HOLD_CHECKOUT);
+    let phase_id = fs::read_to_string(trunk.join(TRANSFERRED_PLAN_HOLD_PHASE))?;
+    let mut events = journal_events(trunk)?;
+    let transfer = events
+        .iter_mut()
+        .find(|event| {
+            event["op"] == "release"
+                && event["source"] == "reconciliation"
+                && event["disposition"]["kind"] == "kept_on_branch"
+        })
+        .ok_or_else(|| failure("the next phase should transfer the hold"))?;
+    if matches!(journal_format, HoldTransferJournal::Legacy) {
+        transfer
+            .as_object_mut()
+            .ok_or_else(|| failure("the transfer must be an object"))?
+            .remove("kept_work");
+        let mut journal = fs::File::create(trunk.join(JOURNAL_PATH))?;
+        for event in events {
+            serde_json::to_writer(&mut journal, &event)?;
+            journal.write_all(b"\n")?;
+        }
+    } else {
+        assert_eq!(transfer["kept_work"]["kind"], "hold_transfer");
+    }
+    let release = run_berth_with_session(
+        &holder,
+        &["release", &phase_id, "--json"],
+        "director.phase-2",
+    )?;
+    require_success(&release, "the next phase's first release")?;
+    assert_eq!(
+        json_output(&release)?["payload"]["data"]["status"],
+        "checkpointed"
+    );
+    Ok(())
+}
+
+#[test]
 fn an_active_phase_edit_widens_the_phase_and_releases_the_checkpoint_gap_hold() -> TestResult {
     let repository = CONFIGURED_REPOSITORY.instantiate();
     let trunk = repository.path();
@@ -3337,37 +3397,6 @@ fn a_plan_shrink_hold_releases_after_squash_integration() -> TestResult {
             && event["disposition"]["kind"] == "rewritten_integration"
             && event["source"] == "reconciliation"
     }));
-    Ok(())
-}
-
-fn checkpoint_phase(holder: &Path, acquisition: &[&str]) -> TestResult {
-    let finished_path = "finished.rs";
-    let completed = run_berth_with_session(holder, acquisition, "director.phase-1")?;
-    require_success(&completed, "the completed phase's reservation")?;
-    let reservation_id_path = if acquisition.first() == Some(&"check") {
-        "/payload/data/acquisition/reservation_id"
-    } else {
-        "/payload/data/reservation_id"
-    };
-    let envelope = json_output(&completed)?;
-    let completed_id = required_string(
-        &envelope,
-        reservation_id_path,
-        "the completed phase's reservation",
-    )?;
-    fs::write(holder.join(finished_path), "// completed work\n")?;
-    GIT.run_without_hooks(holder, ["add", finished_path]);
-    GIT.run_without_hooks(holder, ["commit", "--quiet", "-m", "complete phase one"]);
-    let release = run_berth_with_session(
-        holder,
-        &["release", completed_id, "--json"],
-        "director.phase-1",
-    )?;
-    require_success(&release, "the phase checkpoint")?;
-    assert_eq!(
-        json_output(&release)?["payload"]["data"]["status"],
-        "checkpointed"
-    );
     Ok(())
 }
 

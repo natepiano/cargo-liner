@@ -86,6 +86,7 @@ use crate::ledger::ExistingCoordinationRun;
 use crate::ledger::IntegrationTarget;
 use crate::ledger::JournalEvent;
 use crate::ledger::JournalOperation;
+use crate::ledger::JournalRelease;
 use crate::ledger::Ledger;
 use crate::ledger::LedgerCommittedActionError;
 use crate::ledger::LedgerCommittedActionOutcome;
@@ -97,7 +98,6 @@ use crate::ledger::ObservedReservationSet;
 use crate::ledger::ProtectedPhaseStartHead;
 use crate::ledger::ReconciliationValidation;
 use crate::ledger::RecoverableReconciliationAppendFailures;
-use crate::ledger::ReleaseSource;
 use crate::ledger::ReplayPosition;
 use crate::ledger::ReplayedLedgerState;
 use crate::ledger::ReservationScope;
@@ -362,6 +362,7 @@ struct ObservedRepositoryFacts {
     targets:                          BTreeMap<IntegrationTarget, TargetObservation>,
     reservation_targets:              HashMap<ReservationId, IntegrationTarget>,
     resolved_candidates:              ResolvedBatchCommitCandidates,
+    landed_kept_work:                 Vec<ReservationId>,
     repository_evidence_observations: Vec<RepositoryEvidenceObservation>,
     trunk_reachability:               TargetIntegrationReachability,
     /// How many times resolving the trunk queried git, reported as this reconciliation's cost.
@@ -687,6 +688,7 @@ impl TargetIntegrationReachability {
             if !evidence_read.includes(reservation, reservations, ordering_graph)? {
                 continue;
             }
+            candidate_ancestors.extend(reservation.known_kept_tip().cloned());
             match reservation.evidence_state()? {
                 ReservationEvidenceState::Outstanding {
                     protected_tip,
@@ -1429,6 +1431,22 @@ struct ReconciliationAction {
 }
 
 impl ReconciliationAction {
+    fn prepare_retention(
+        &mut self,
+        landed_kept_work: &[ReservationId],
+        resolved_candidates: &ResolvedBatchCommitCandidates,
+    ) -> Result<(), GitError> {
+        self.retention_transaction = PreparedRetentionRefTransaction::prepare_reconciliation(
+            &self.repository_root,
+            &self.object_reader,
+            &self.retention_repairs,
+            &self.retention_deletions,
+            landed_kept_work,
+            resolved_candidates,
+        )?;
+        Ok(())
+    }
+
     fn cover_is_missing(&self, reservation_id: ReservationId) -> bool {
         cover_is_missing(
             &self.repository_snapshot,
@@ -3098,6 +3116,7 @@ fn build_plan(
         targets,
         reservation_targets,
         resolved_candidates,
+        landed_kept_work,
         repository_evidence_observations,
         trunk_reachability,
         trunk_resolution_calls,
@@ -3181,15 +3200,8 @@ fn build_plan(
         reconciliation_evidence_context,
         &mut plan,
     )?;
-    // Settlement can select a witness absent from the initial candidate batch.
-    plan.action.retention_transaction =
-        git::PreparedRetentionRefTransaction::prepare_reconciliation(
-            worktree_context.repository_root(),
-            &plan.action.object_reader,
-            &plan.action.retention_repairs,
-            &plan.action.retention_deletions,
-            &resolved_candidates,
-        )
+    plan.action
+        .prepare_retention(&landed_kept_work, &resolved_candidates)
         .map_err(ReconciliationBuildError::Git)?;
     Ok(plan)
 }
@@ -3264,15 +3276,14 @@ fn complete_reconciliation_plan(
         for operation in &plan.operations {
             if let JournalOperation::Release {
                 reservation_id,
-                disposition,
-                ..
+                release,
             } = operation
                 && *reservation_id == snapshot.reservation_id
             {
                 snapshot.evidence = match &snapshot.evidence {
                     RepositoryReservationEvidence::Active => {
                         RepositoryReservationEvidence::ReleasedWithoutCheckpoint {
-                            disposition: disposition.clone(),
+                            disposition: release.disposition(),
                         }
                     },
                     RepositoryReservationEvidence::Outstanding {
@@ -3281,7 +3292,7 @@ fn complete_reconciliation_plan(
                     } => RepositoryReservationEvidence::Released {
                         protected_tip:      protected_tip.clone(),
                         integration_status: integration_status.clone(),
-                        disposition:        disposition.clone(),
+                        disposition:        release.disposition(),
                     },
                     RepositoryReservationEvidence::Released { .. }
                     | RepositoryReservationEvidence::IntegrationVerifiedWithoutCheckpoint {
@@ -3422,6 +3433,7 @@ fn later_holder_settlement_extent(
     if later.next().is_some()
         || !reservation::phase_boundary::later_claim_owns_suffix(
             &plan.action.repository_root,
+            reservation,
             next,
             protected_tip.as_ref(),
             &key.head,
@@ -3841,6 +3853,8 @@ fn observe_repository_facts(
             repository_root,
             reconciliation_evidence_context.scoped_patch_evaluation_budget,
         )?;
+        let landed_kept_work =
+            landed_kept_work(reservations, &reservation_targets, &reachabilities);
         let trunk_reachability = reachabilities.remove(&repository_trunk).unwrap_or_default();
         let worktree_registry = worktree_registry
             .join()
@@ -3851,11 +3865,28 @@ fn observe_repository_facts(
             targets: observations,
             reservation_targets,
             resolved_candidates,
+            landed_kept_work,
             repository_evidence_observations,
             trunk_reachability,
             trunk_resolution_calls: groups.len() as u64,
         })
     })
+}
+
+fn landed_kept_work(
+    reservations: &RetainedReservationSet,
+    reservation_targets: &HashMap<ReservationId, IntegrationTarget>,
+    reachabilities: &BTreeMap<IntegrationTarget, TargetIntegrationReachability>,
+) -> Vec<ReservationId> {
+    reservations
+        .iter()
+        .filter_map(|reservation| {
+            let tip = reservation.known_kept_tip()?;
+            let target = reservation_targets.get(&reservation.id())?;
+            let reachability = reachabilities.get(target)?;
+            (reachability.for_ancestor(tip) == Reachability::Ancestor).then(|| reservation.id())
+        })
+        .collect()
 }
 
 /// Branch tips and ancestry that judge one pass of reservation evidence.
@@ -5222,8 +5253,7 @@ fn append_settlement_operations(
             });
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id: reservation.id(),
-            disposition:    disposition.clone(),
-            source:         Some(ReleaseSource::Reconciliation),
+            release:        JournalRelease::reconciled(disposition.clone()),
         });
         reconciliation
             .action
@@ -5360,11 +5390,11 @@ fn merged_run_head<'head>(
     }
     let head = if checkpoint_requested && !reservation.is_plan_shrink() {
         reservation::phase_boundary::first_checkpoint_tip(
-            repository.repository_root(),
-            repository.context().common_git_directory(),
+            repository,
             reservations,
             reservation,
             &key.head,
+            &key.trunk,
         )
         .ok()?
     } else {
@@ -5456,8 +5486,7 @@ fn append_merged_run_endings(
             });
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id: reservation.id(),
-            disposition:    disposition.clone(),
-            source:         Some(ReleaseSource::Reconciliation),
+            release:        JournalRelease::reconciled(disposition.clone()),
         });
         reconciliation
             .action
@@ -5517,7 +5546,7 @@ fn append_orphan_retirements(
         // `append_merged_run_endings` runs first and releases a holder whose work reached trunk.
         // That disposition records the integration this one cannot, so never write a second
         // ending over it.
-        if planned_release(reservation.id(), &reconciliation.operations).is_some() {
+        if has_planned_release(reservation.id(), &reconciliation.operations) {
             continue;
         }
         // Read the extent this pass will commit rather than the one replay produced: observation
@@ -5536,8 +5565,7 @@ fn append_orphan_retirements(
         let disposition = ReleaseDisposition::RetiredOrphan(OrphanRetirementReason::derived());
         reconciliation.operations.push(JournalOperation::Release {
             reservation_id,
-            disposition: disposition.clone(),
-            source: Some(ReleaseSource::Reconciliation),
+            release: JournalRelease::reconciled(disposition.clone()),
         });
         reconciliation
             .action
@@ -5569,7 +5597,7 @@ fn append_stale_unchanged_releases(
         ) || !matches!(
             reservation.freshness(&now),
             reservation::ReservationFreshness::Stale { .. }
-        ) || planned_release(reservation.id(), &plan.operations).is_some()
+        ) || has_planned_release(reservation.id(), &plan.operations)
         {
             continue;
         }
@@ -5617,8 +5645,7 @@ fn append_stale_unchanged_releases(
         let disposition = ReleaseDisposition::UnchangedScopes(evidence);
         plan.operations.push(JournalOperation::Release {
             reservation_id: reservation.id(),
-            disposition:    disposition.clone(),
-            source:         Some(ReleaseSource::Reconciliation),
+            release:        JournalRelease::reconciled(disposition.clone()),
         });
         plan.action.settlements.push(ReconciledSettlement {
             reservation_id: reservation.id(),
@@ -5646,17 +5673,10 @@ fn planned_merge_extent(
 }
 
 /// The disposition this plan already records for a reservation, if it ends one.
-fn planned_release(
-    reservation_id: ReservationId,
-    operations: &[JournalOperation],
-) -> Option<&ReleaseDisposition> {
-    operations.iter().find_map(|operation| match operation {
-        JournalOperation::Release {
-            reservation_id: released,
-            disposition,
-            ..
-        } if *released == reservation_id => Some(disposition),
-        _ => None,
+fn has_planned_release(reservation_id: ReservationId, operations: &[JournalOperation]) -> bool {
+    operations.iter().any(|operation| {
+        matches!(operation,
+        JournalOperation::Release { reservation_id: released, .. } if *released == reservation_id)
     })
 }
 
@@ -5674,14 +5694,13 @@ fn rebuild_settlement_retention(
     for reservation in reservations.iter() {
         let (protected_tip, disposition) = match reservation.evidence_state()? {
             ReservationEvidenceState::Outstanding { protected_tip, .. } => {
-                (protected_tip, settled.get(&reservation.id()))
+                (protected_tip, settled.get(&reservation.id()).cloned())
             },
-            ReservationEvidenceState::Released { protected_tip, .. } => {
-                let ReservationLifecycle::Released { disposition } = reservation.lifecycle() else {
-                    continue;
-                };
-                (protected_tip, Some(disposition))
-            },
+            ReservationEvidenceState::Released {
+                protected_tip,
+                disposition,
+                ..
+            } => (protected_tip, Some(disposition)),
             ReservationEvidenceState::IntegrationVerifiedWithoutCheckpoint {
                 integration, ..
             } => {
@@ -5710,7 +5729,7 @@ fn rebuild_settlement_retention(
                 .retention_deletions
                 .push(reservation.id());
         } else {
-            let retained_commit = match disposition {
+            let retained_commit = match &disposition {
                 Some(ReleaseDisposition::RewrittenIntegration(witness)) => witness.as_ref(),
                 _ => protected_tip.as_ref(),
             };
@@ -6653,6 +6672,51 @@ mod tests {
             return Err(String::from_utf8_lossy(&output.stderr).into_owned().into());
         }
         Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+    }
+
+    #[test]
+    fn settlement_suffix_uses_the_later_claims_observed_head()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (directory, _, checkpoint) = shared_checkpoint_repository()?;
+        let root = directory.path();
+        std::fs::write(root.join("later.rs"), "later work\n")?;
+        fixture_git(root, &["add", "later.rs"])?;
+        fixture_git(root, &["commit", "--quiet", "-m", "later work"])?;
+        let head: GitObjectId = fixture_git(root, &["rev-parse", "HEAD"])?.parse()?;
+        let [claim, _] = checkpoint_events()?;
+        let earlier_id = RESERVATION_ID.parse()?;
+        let later_id = ReservationId::new();
+
+        for (observed_head, owns_suffix) in [(&checkpoint, true), (&head, false)] {
+            let later = journal_event(
+                3,
+                &json!({
+                    "op": "claim", "reservation_id": later_id,
+                    "scopes": [{"path": "later.rs", "kind": "file"}],
+                    "source": {"kind": "explicit"}, "purpose": {"kind": "not_provided_by_caller"},
+                    "trunk_at_claim": TRUNK,
+                    "head_snapshot": {"kind": "branch", "full_ref": "refs/heads/main",
+                        "head": observed_head},
+                    "phase_start_head": checkpoint, "worktree_root": "/repo",
+                    "worktree_administrative_locator": ".", "authorization": {"kind": "no_conflict"},
+                    "coordination_identity_provenance": "presented",
+                }),
+            )?;
+            let reservations = RetainedReservationSet::replay(&[claim.clone(), later])?;
+            assert_eq!(
+                crate::reservation::phase_boundary::later_claim_owns_suffix(
+                    root,
+                    reservations.reservation(earlier_id)?,
+                    reservations.reservation(later_id)?,
+                    &checkpoint,
+                    &head,
+                    super::PathCase::Sensitive,
+                ),
+                owns_suffix,
+                "the later claim observed {observed_head}"
+            );
+        }
+        Ok(())
     }
 
     fn shared_checkpoint_repository()

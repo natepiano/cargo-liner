@@ -1288,12 +1288,12 @@ mod tests {
             fixture.assert_replays_equal_whole_journal_replays(&fixture.rewritten_checkpoint())?,
             whole
         );
-        assert_eq!(fixture.header()?.fold_format_version, 6);
+        assert_eq!(fixture.header()?.fold_format_version, FOLD_FORMAT_VERSION);
         Ok(())
     }
 
     #[test]
-    fn a_version_six_checkpoint_without_claim_ids_is_rebuilt() -> Result<(), Box<dyn Error>> {
+    fn a_checkpoint_without_claim_ids_is_rebuilt() -> Result<(), Box<dyn Error>> {
         let fixture = CheckpointFixture::new()?;
         fixture
             .journal
@@ -1307,20 +1307,20 @@ mod tests {
             Ok(())
         })?;
 
-        assert_eq!(fixture.header()?.fold_format_version, 6);
+        assert_eq!(fixture.header()?.fold_format_version, FOLD_FORMAT_VERSION);
         assert!(
             fixture
                 .kept_checkpoint()
                 .deferred_edit_start(&fixture.journal_path)?
                 .is_none(),
-            "the partial reader must reject the old version 6 core before publication"
+            "the partial reader must reject a core without claim IDs"
         );
         assert_eq!(fixture.load(&fixture.kept_checkpoint())?, None);
         assert_eq!(
             fixture.assert_replays_equal_whole_journal_replays(&fixture.rewritten_checkpoint())?,
             whole
         );
-        assert_eq!(fixture.header()?.fold_format_version, 6);
+        assert_eq!(fixture.header()?.fold_format_version, FOLD_FORMAT_VERSION);
         assert_eq!(fixture.load(&fixture.kept_checkpoint())?, Some(whole));
         Ok(())
     }

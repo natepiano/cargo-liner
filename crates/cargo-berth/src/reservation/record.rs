@@ -17,6 +17,8 @@ use super::absent_holder::AbsentHolderIntegrationRecord;
 use super::evidence::ProtectedReservationTip;
 use super::lifecycle::EditBlockingStatus;
 use super::lifecycle::IntegrationEvidenceStatus;
+use super::lifecycle::KeptWork;
+use super::lifecycle::KeptWorkRelease;
 use super::lifecycle::ReleaseDisposition;
 use super::lifecycle::ReservationLifecycle;
 use super::merge_extent::EffectiveMergeExtent;
@@ -75,6 +77,8 @@ pub(crate) struct Reservation {
     pub(super) target:                                            RecordedTarget,
     pub(super) purpose:                                           ReservationPurpose,
     pub(super) head_snapshot:                                     ClaimHeadSnapshot,
+    /// The active phase boundary established by a recorded rewrite.
+    pub(super) reanchored_claim_head:                             Option<GitObjectId>,
     pub(super) phase_start_head:                                  ProtectedPhaseStartHead,
     pub(super) actor:                                             JournalActor,
     pub(super) coordination_identity_provenance:                  CoordinationIdentityProvenance,
@@ -487,11 +491,30 @@ impl Reservation {
         &self.worktree_locator
     }
 
+    /// Return the recorded tip of known kept work.
+    pub(crate) const fn known_kept_tip(&self) -> Option<&GitObjectId> {
+        match &self.lifecycle {
+            ReservationLifecycle::Released {
+                disposition:
+                    ReleaseDisposition::KeptOnBranch(KeptWorkRelease {
+                        work: KeptWork::Known(tip),
+                        ..
+                    }),
+            } => Some(tip),
+            _ => None,
+        }
+    }
+
     /// Return the reservation's progress state.
     pub(crate) const fn lifecycle(&self) -> &ReservationLifecycle { &self.lifecycle }
 
     /// Return the branch or detached commit recorded at acquisition.
     pub(crate) const fn head_snapshot(&self) -> &ClaimHeadSnapshot { &self.head_snapshot }
+
+    /// Return the phase boundary established by a recorded rewrite.
+    pub(crate) const fn reanchored_claim_head(&self) -> Option<&GitObjectId> {
+        self.reanchored_claim_head.as_ref()
+    }
 
     /// Return when this reservation was claimed.
     pub(crate) const fn claimed_at(&self) -> &RecordedAt { &self.claimed_at }
@@ -556,7 +579,7 @@ impl Reservation {
                     Ok(ReservationEvidenceState::Released {
                         protected_tip,
                         trunk_snapshot,
-                        disposition: disposition.clone(),
+                        disposition: disposition.presentation(),
                         integration_status: self.integration_status.clone(),
                     })
                 },
@@ -585,7 +608,7 @@ impl Reservation {
                     ) =>
                 {
                     Ok(ReservationEvidenceState::ReleasedWithoutCheckpoint {
-                        disposition: disposition.clone(),
+                        disposition: disposition.presentation(),
                     })
                 },
                 RetainedProtectedTip::NotCheckpointed => {

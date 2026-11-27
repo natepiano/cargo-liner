@@ -253,6 +253,7 @@ pub(super) const GIT_REVERT_STATE_PATH: &str = "REVERT_HEAD";
 pub(super) const GIT_SYMMETRIC_RANGE_INFIX: &str = "...";
 /// Suffix selecting a local branch's configured upstream.
 /// The private namespace used to retain reservation commits.
+pub(super) const KEPT_WORK_REF_PREFIX: &str = "refs/cargo-berth/kept-work/";
 pub(super) const RESERVATION_RETENTION_REF_PREFIX: &str = "refs/cargo-berth/reservations/";
 
 // Exit statuses: `GIT_NO_MERGE_BASE_EXIT_CODE` through `GIT_NOT_ANCESTOR_EXIT_CODE`.
