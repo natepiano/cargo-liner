@@ -1,4 +1,80 @@
+use crate::fixes;
 use crate::support::*;
+
+const MACRO_CRATE_NAME_MANIFEST: &str = r#"[package]
+name = "macro_crate_name"
+version = "0.1.0"
+edition = "2024"
+[workspace]
+[dependencies]
+anyhow = "1"
+"#;
+const MACRO_CRATE_NAME_SOURCE: &str = r#"use anyhow::anyhow;
+use std::fmt;
+
+pub mod consumer;
+
+pub enum Failure {
+    Other(anyhow::Error),
+}
+
+pub fn new_error() -> Failure {
+    Failure::Other(anyhow!("test error"))
+}
+
+pub struct Marker;
+impl fmt::Display for Marker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("test marker")
+    }
+}
+"#;
+const MACRO_CRATE_NAME_CONSUMER: &str = r#"use self::macros::anyhow;
+
+mod macros {
+    macro_rules! report {
+        () => { "test error" };
+    }
+    pub(crate) use report as anyhow;
+}
+
+pub enum Failure {
+    FromDependency(anyhow::Error),
+}
+
+pub fn message() -> &'static str {
+    anyhow!()
+}
+"#;
+
+#[test]
+fn macro_import_does_not_redirect_a_crate_path() -> anyhow::Result<()> {
+    let fixture = tempdir()?;
+    let manifest = fixture.path().join("Cargo.toml");
+    let source_path = fixture.path().join("src/lib.rs");
+    let consumer_path = fixture.path().join("src/consumer.rs");
+    fs::create_dir(fixture.path().join("src"))?;
+    fs::write(&manifest, MACRO_CRATE_NAME_MANIFEST)?;
+    fs::write(&source_path, MACRO_CRATE_NAME_SOURCE)?;
+    fs::write(&consumer_path, MACRO_CRATE_NAME_CONSUMER)?;
+
+    let selection = crate::selection::resolve_cargo_selection(Some(&manifest))?;
+    fixes::apply_fixture_inline_paths(&selection)?;
+
+    let source = fs::read_to_string(source_path)?;
+    assert!(!source.contains("anyhow::anyhow::Error"), "{source}");
+    assert!(
+        source.contains("Other(anyhow::Error)") || source.contains("use anyhow::Error;"),
+        "{source}"
+    );
+    assert!(source.contains("use std::fmt::Display;"), "{source}");
+    let consumer = fs::read_to_string(consumer_path)?;
+    assert!(
+        consumer.contains("FromDependency(anyhow::Error)"),
+        "{consumer}"
+    );
+    Ok(())
+}
 
 const ABSOLUTE_PATH_PROJECT_MANIFEST: &str = r#"[package]
 name="project"

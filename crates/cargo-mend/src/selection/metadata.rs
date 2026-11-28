@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
 use std::path::Path;
@@ -50,10 +51,11 @@ pub(crate) struct CargoCheckPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PackageMetadata {
-    pub id:            String,
-    pub manifest_path: PathBuf,
-    pub root:          PathBuf,
-    pub targets:       Vec<TargetMetadata>,
+    pub id:               String,
+    pub manifest_path:    PathBuf,
+    pub root:             PathBuf,
+    pub targets:          Vec<TargetMetadata>,
+    pub dependency_names: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,13 +257,24 @@ fn package_root_from_metadata(package: &Package) -> Result<PathBuf> {
 
 fn package_metadata_from_cargo(package: &Package) -> Result<PackageMetadata> {
     Ok(PackageMetadata {
-        id:            package.id.to_string(),
-        manifest_path: package.manifest_path.clone().into_std_path_buf(),
-        root:          package_root_from_metadata(package)?,
-        targets:       package
+        id:               package.id.to_string(),
+        manifest_path:    package.manifest_path.clone().into_std_path_buf(),
+        root:             package_root_from_metadata(package)?,
+        targets:          package
             .targets
             .iter()
             .map(target_metadata_from_cargo)
+            .collect(),
+        dependency_names: package
+            .dependencies
+            .iter()
+            .map(|dependency| {
+                dependency
+                    .rename
+                    .as_deref()
+                    .unwrap_or(&dependency.name)
+                    .replace('-', "_")
+            })
             .collect(),
     })
 }
@@ -359,10 +372,11 @@ mod tests {
             scope,
             package_roots: vec![PathBuf::from("/workspace/member")],
             packages: vec![PackageMetadata {
-                id:            String::from("path+file:///workspace/member#member@0.1.0"),
-                manifest_path: PathBuf::from("/workspace/member").join("Cargo.toml"),
-                root:          PathBuf::from("/workspace/member"),
-                targets:       vec![TargetMetadata {
+                id:               String::from("path+file:///workspace/member#member@0.1.0"),
+                manifest_path:    PathBuf::from("/workspace/member").join("Cargo.toml"),
+                root:             PathBuf::from("/workspace/member"),
+                dependency_names: BTreeSet::new(),
+                targets:          vec![TargetMetadata {
                     kind:              vec![String::from(CARGO_TARGET_KIND_LIB)],
                     crate_types:       vec![String::from(CARGO_TARGET_KIND_LIB)],
                     name:              String::from("member"),

@@ -969,6 +969,7 @@ fn prune_tree(tree: &mut UseTree, retained: &mut impl Iterator<Item = bool>) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::ops::Range;
     use std::path::Path;
@@ -1001,10 +1002,11 @@ mod tests {
             scope:            SelectionScope::SinglePackage,
             package_roots:    vec![root.to_path_buf()],
             packages:         vec![PackageMetadata {
-                id:            "import_fixture".to_string(),
-                manifest_path: root.join("Cargo.toml"),
-                root:          root.to_path_buf(),
-                targets:       vec![TargetMetadata {
+                id:               "import_fixture".to_string(),
+                manifest_path:    root.join("Cargo.toml"),
+                root:             root.to_path_buf(),
+                dependency_names: BTreeSet::new(),
+                targets:          vec![TargetMetadata {
                     kind:              vec![CARGO_TARGET_KIND_LIB.to_string()],
                     crate_types:       vec![CARGO_TARGET_KIND_LIB.to_string()],
                     name:              "import_fixture".to_string(),

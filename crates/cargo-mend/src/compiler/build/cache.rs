@@ -65,6 +65,7 @@ pub(super) fn invalidate_metadata(paths: &[PathBuf]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
 
@@ -90,10 +91,11 @@ mod tests {
             scope:            SelectionScope::SinglePackage,
             package_roots:    vec![root.into()],
             packages:         vec![PackageMetadata {
-                id:            "selected".into(),
-                manifest_path: root.join("Cargo.toml"),
-                root:          root.into(),
-                targets:       Vec::new(),
+                id:               "selected".into(),
+                manifest_path:    root.join("Cargo.toml"),
+                root:             root.into(),
+                dependency_names: BTreeSet::new(),
+                targets:          Vec::new(),
             }],
         }
     }

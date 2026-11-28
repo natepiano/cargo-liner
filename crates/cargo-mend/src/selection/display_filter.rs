@@ -235,10 +235,11 @@ mod tests {
         }
         let root = temp.path();
         let package = PackageMetadata {
-            id:            "pkg".to_string(),
-            manifest_path: root.join("Cargo.toml"),
-            root:          root.to_path_buf(),
-            targets:       vec![
+            id:               "pkg".to_string(),
+            manifest_path:    root.join("Cargo.toml"),
+            root:             root.to_path_buf(),
+            dependency_names: BTreeSet::new(),
+            targets:          vec![
                 target(CARGO_TARGET_KIND_LIB, "pkg", &root.join("src/lib.rs")),
                 target(
                     CARGO_TARGET_KIND_EXAMPLE,

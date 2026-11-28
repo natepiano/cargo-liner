@@ -40,6 +40,10 @@ pub(super) enum EnclosingModule {
 }
 
 impl ScopeInfo {
+    pub(super) fn has_import_binding(&self, name: &str) -> bool {
+        self.import_attributes.contains_key(name)
+    }
+
     pub(super) fn has_private_import_conflict(&self, name: &str, path: &str) -> bool {
         self.private_imports
             .get(name)

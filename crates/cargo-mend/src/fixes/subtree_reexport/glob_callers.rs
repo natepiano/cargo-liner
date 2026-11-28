@@ -512,6 +512,8 @@ fn declares_name(item: &Item, name: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
     use std::process::Command;
@@ -764,10 +766,11 @@ mod tests {
             "[package]\nname = \"glob_caller\"\nversion = \"0.1.0\"\nedition = \"2024\"\n[lib]\npath = \"library/lib.rs\"\n",
         )?;
         selection.packages.push(PackageMetadata {
-            id:            "glob_caller".to_string(),
-            manifest_path: root.join("Cargo.toml"),
-            root:          root.to_path_buf(),
-            targets:       vec![crate::selection::TargetMetadata {
+            id:               "glob_caller".to_string(),
+            manifest_path:    root.join("Cargo.toml"),
+            root:             root.to_path_buf(),
+            dependency_names: BTreeSet::new(),
+            targets:          vec![crate::selection::TargetMetadata {
                 kind:              vec!["lib".to_string()],
                 crate_types:       vec!["lib".to_string()],
                 name:              "glob_caller".to_string(),

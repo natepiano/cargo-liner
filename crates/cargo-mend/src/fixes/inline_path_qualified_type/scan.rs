@@ -33,11 +33,17 @@ pub(crate) fn scan_selection(
 ) -> Result<InlinePathScan> {
     let mut all_findings = Vec::new();
     let mut all_fixes = Vec::new();
+    let empty_dependency_names = BTreeSet::new();
     for package_root in &selection.package_roots {
         let source_root = package_root.join(SOURCE_DIR_SRC);
         if !source_root.is_dir() {
             continue;
         }
+        let dependency_names = selection
+            .packages
+            .iter()
+            .find(|package| &package.root == package_root)
+            .map_or(&empty_dependency_names, |package| &package.dependency_names);
         let module_map = parsed_sources.module_map(&source_root);
         for entry in WalkDir::new(&source_root)
             .into_iter()
@@ -55,6 +61,7 @@ pub(crate) fn scan_selection(
                 path,
                 &module_map,
                 parsed_sources,
+                dependency_names,
             )?;
             all_findings.extend(findings);
             all_fixes.extend(fixes);
@@ -74,6 +81,7 @@ fn scan_file(
     path: &Path,
     module_map: &ModuleMap,
     parsed_sources: &ParsedSources,
+    dependency_names: &BTreeSet<String>,
 ) -> Result<(Vec<Finding>, Vec<UseFix>)> {
     let Some(base_module_path) = module_map.scannable_module_path(source_root, path)? else {
         return Ok((Vec::new(), Vec::new()));
@@ -118,23 +126,23 @@ fn scan_file(
         .to_string_lossy()
         .replace('\\', "/");
 
-    let resolve_ctx = OccurrenceResolutionContext { scopes: &scopes };
+    let resolve_ctx = OccurrenceResolutionContext {
+        scopes: &scopes,
+        dependency_names,
+    };
     let resolved = visitor
         .occurrences
         .iter()
-        .map(|occurrence| process::resolve_occurrence(occurrence, &resolve_ctx, &indexed))
+        .filter_map(|occurrence| {
+            process::resolve_occurrence(occurrence, &resolve_ctx, &indexed).transpose()
+        })
         .collect::<Result<Vec<_>>>()?;
     let mut findings = Vec::new();
     let mut fixes = Vec::new();
     let mut inserted_use_paths: BTreeSet<(usize, String)> = BTreeSet::new();
 
-    let ctx = resolve_ctx.analyze_collisions(
-        path,
-        &display_path,
-        &visitor.occurrences,
-        &resolved,
-        &visitor.bare_type_names,
-    );
+    let ctx =
+        resolve_ctx.analyze_collisions(path, &display_path, &resolved, &visitor.bare_type_names);
     let import_attribute_plan = process::plan_import_attributes(&resolved);
 
     for resolved in &resolved {
@@ -153,6 +161,7 @@ fn scan_file(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
@@ -181,8 +190,14 @@ mod tests {
         std::fs::write(&path, ABSOLUTE_SHADOWED_SOURCE)?;
         let sources = ParsedSources::default();
         let module_map = sources.module_map(dir.path());
-        let (findings, fixes) =
-            super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+        let (findings, fixes) = super::scan_file(
+            dir.path(),
+            dir.path(),
+            &path,
+            &module_map,
+            &sources,
+            &BTreeSet::new(),
+        )?;
         assert_eq!(findings.len(), 1);
         assert!(
             fixes
@@ -214,8 +229,14 @@ mod tests {
             let sources = ParsedSources::default();
             let module_map = sources.module_map(dir.path());
             let before = ImportSource::construction_count();
-            let (findings, fixes) =
-                super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+            let (findings, fixes) = super::scan_file(
+                dir.path(),
+                dir.path(),
+                &path,
+                &module_map,
+                &sources,
+                &BTreeSet::new(),
+            )?;
             assert_eq!(ImportSource::construction_count() - before, 1);
             assert!(findings.is_empty());
             assert!(fixes.is_empty());
@@ -263,8 +284,14 @@ mod tests {
         std::fs::write(&path, &text)?;
         let sources = ParsedSources::default();
         let module_map = sources.module_map(dir.path());
-        let (findings, fixes) =
-            super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+        let (findings, fixes) = super::scan_file(
+            dir.path(),
+            dir.path(),
+            &path,
+            &module_map,
+            &sources,
+            &BTreeSet::new(),
+        )?;
         assert_eq!(findings.len(), expected_findings, "{text}");
         assert_eq!(fixes.is_empty(), expected_findings == 0, "{text}");
         Ok(())
@@ -284,8 +311,14 @@ mod tests {
             let sources = ParsedSources::default();
             let module_map = sources.module_map(dir.path());
             let before = ImportSource::construction_count();
-            let (findings, fixes) =
-                super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+            let (findings, fixes) = super::scan_file(
+                dir.path(),
+                dir.path(),
+                &path,
+                &module_map,
+                &sources,
+                &BTreeSet::new(),
+            )?;
             assert_eq!(ImportSource::construction_count() - before, 1);
             assert_eq!(findings.len(), 256);
             assert!(!fixes.is_empty());
@@ -308,8 +341,14 @@ mod tests {
         let sources = ParsedSources::default();
         let module_map = sources.module_map(dir.path());
         let before = ImportSource::construction_count();
-        let (findings, fixes) =
-            super::scan_file(dir.path(), dir.path(), &path, &module_map, &sources)?;
+        let (findings, fixes) = super::scan_file(
+            dir.path(),
+            dir.path(),
+            &path,
+            &module_map,
+            &sources,
+            &BTreeSet::new(),
+        )?;
         assert_eq!(ImportSource::construction_count() - before, 1);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].source_line, line);

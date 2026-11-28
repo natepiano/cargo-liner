@@ -25,7 +25,8 @@ use crate::rust_syntax::PathAnchor;
 /// Resolution needs scopes before collision analysis has resolved every import path.
 /// It cannot process occurrences or pretend that an empty set is completed analysis.
 pub(super) struct OccurrenceResolutionContext<'a> {
-    pub(super) scopes: &'a [ScopeInfo],
+    pub(super) scopes:           &'a [ScopeInfo],
+    pub(super) dependency_names: &'a BTreeSet<String>,
 }
 
 /// Processing is available only after resolving paths and analyzing collision names.
@@ -42,25 +43,15 @@ impl<'a> OccurrenceResolutionContext<'a> {
         self,
         path: &'a Path,
         display_path: &'a str,
-        occurrences: &[InlinePathOccurrence],
         resolved: &[ResolvedOccurrence<'_>],
         bare_type_names: &BTreeSet<String>,
     ) -> OccurrenceContext<'a> {
-        let resolved_import_paths = resolved
-            .iter()
-            .map(|item| item.import_path.clone())
-            .collect::<Vec<_>>();
         let existing_imports = self
             .scopes
             .iter()
             .flat_map(|scope| scope.existing_imports.keys().cloned())
             .collect();
-        let collision_names = find_collision_names(
-            occurrences,
-            &resolved_import_paths,
-            bare_type_names,
-            &existing_imports,
-        );
+        let collision_names = find_collision_names(resolved, bare_type_names, &existing_imports);
         OccurrenceContext {
             path,
             display_path,
@@ -129,13 +120,15 @@ enum ImportResolution {
     Unresolved {
         spelling: String,
     },
+    Ambiguous,
 }
 
 impl ImportResolution {
-    fn into_parts(self) -> (String, ConditionalAttributes) {
+    fn into_parts(self) -> Option<(String, ConditionalAttributes)> {
         match self {
-            Self::Resolved { path, attributes } => (path, attributes),
-            Self::Unresolved { spelling } => (spelling, ConditionalAttributes::default()),
+            Self::Resolved { path, attributes } => Some((path, attributes)),
+            Self::Unresolved { spelling } => Some((spelling, ConditionalAttributes::default())),
+            Self::Ambiguous => None,
         }
     }
 }
@@ -289,7 +282,7 @@ pub(super) fn resolve_occurrence<'a>(
     occurrence: &'a InlinePathOccurrence,
     ctx: &OccurrenceResolutionContext<'_>,
     source: &ImportSource<'a>,
-) -> Result<ResolvedOccurrence<'a>> {
+) -> Result<Option<ResolvedOccurrence<'a>>> {
     let location = OccurrenceLocation::new(source, occurrence.span_start, occurrence.span_end)?;
     let enclosing_module = scope::find_innermost_scope(ctx.scopes, location.byte_start);
     // A leading `::` names an external crate, regardless of local imports.
@@ -300,35 +293,40 @@ pub(super) fn resolve_occurrence<'a>(
         }
     } else {
         match enclosing_module {
-            EnclosingModule::Found(id) => {
-                resolve_module_path(ctx.scopes, id, &occurrence.import_path)
-            },
+            EnclosingModule::Found(id) => resolve_module_path(ctx, id, &occurrence.import_path),
             EnclosingModule::Unscoped => ImportResolution::Unresolved {
                 spelling: occurrence.import_path.clone(),
             },
         }
     };
-    let (import_path, mut conditional_attributes) = import_path.into_parts();
+    let Some((import_path, mut conditional_attributes)) = import_path.into_parts() else {
+        return Ok(None);
+    };
     conditional_attributes.extend(occurrence.conditional_attributes.clone());
 
-    Ok(ResolvedOccurrence {
+    Ok(Some(ResolvedOccurrence {
         occurrence,
         location,
         enclosing_module,
         import_path,
         conditional_attributes,
-    })
+    }))
 }
 
-fn resolve_module_path(scopes: &[ScopeInfo], scope_id: usize, path: &str) -> ImportResolution {
-    let import_path = absolutize_import_path(path, &scopes[scope_id].existing_imports);
+fn resolve_module_path(
+    ctx: &OccurrenceResolutionContext<'_>,
+    scope_id: usize,
+    path: &str,
+) -> ImportResolution {
+    let scopes = ctx.scopes;
+    let import_path = absolutize_import_path(path, &scopes[scope_id], ctx.dependency_names);
     // `absolutize_through_ancestors` resolves `io::ErrorKind` through an ancestor's `use std::io;`.
     // This gives `io::ErrorKind` the same target in modules that use `use super::*;`.
     let import_path = match import_path {
         ImportResolution::Unresolved { spelling } => {
-            absolutize_through_ancestors(scopes, scope_id, &spelling)
+            absolutize_through_ancestors(ctx, scope_id, &spelling)
         },
-        resolved @ ImportResolution::Resolved { .. } => resolved,
+        resolved => resolved,
     };
     match import_path {
         ImportResolution::Unresolved { spelling } => {
@@ -340,7 +338,7 @@ fn resolve_module_path(scopes: &[ScopeInfo], scope_id: usize, path: &str) -> Imp
                 None => ImportResolution::Unresolved { spelling },
             }
         },
-        resolved @ ImportResolution::Resolved { .. } => resolved,
+        resolved => resolved,
     }
 }
 
@@ -402,10 +400,11 @@ fn shadows_prelude(name: &str) -> PreludeShadowing {
 /// produced import is absolute, so it does not depend on the ancestor's
 /// import staying in place.
 fn absolutize_through_ancestors(
-    scopes: &[ScopeInfo],
+    ctx: &OccurrenceResolutionContext<'_>,
     scope_id: usize,
     import_path: &str,
 ) -> ImportResolution {
+    let scopes = ctx.scopes;
     let current = &scopes[scope_id];
     let mut ancestors: Vec<&ScopeInfo> = scopes
         .iter()
@@ -416,10 +415,10 @@ fn absolutize_through_ancestors(
         .collect();
     ancestors.sort_by_key(|scope| Reverse(scope.module_path.len()));
     for ancestor in ancestors {
-        let candidate = absolutize_import_path(import_path, &ancestor.existing_imports);
+        let candidate = absolutize_import_path(import_path, ancestor, ctx.dependency_names);
         match candidate {
-            resolved @ ImportResolution::Resolved { .. } => return resolved,
             ImportResolution::Unresolved { .. } => {},
+            resolved => return resolved,
         }
     }
     ImportResolution::Unresolved {
@@ -427,13 +426,12 @@ fn absolutize_through_ancestors(
     }
 }
 
-/// Resolve a partial path like `fmt::Display` against the file's existing
-/// imports. If `use std::fmt;` is already in scope, `fmt::Display` becomes
-/// `std::fmt::Display`. The returned import is self-contained — it doesn't
-/// rely on a sibling module import staying in place.
+/// Resolve a partial path through an existing import.
+/// With `use std::fmt;`, `fmt::Display` becomes `std::fmt::Display`.
 fn absolutize_import_path(
     import_path: &str,
-    existing_imports: &BTreeMap<String, BTreeSet<ConditionalAttributes>>,
+    scope: &ScopeInfo,
+    dependency_names: &BTreeSet<String>,
 ) -> ImportResolution {
     let Some((leading, rest)) = import_path.split_once("::") else {
         return ImportResolution::Unresolved {
@@ -448,15 +446,22 @@ fn absolutize_import_path(
         },
         PathAnchor::SelfType | PathAnchor::Name => {},
     }
-    // `absolutize_import_path` searches `existing_imports` for `use a::b::<leading>;` (i.e. an
-    // import whose final segment matches `leading` and which has at least one parent segment).
-    // Without a parent segment, the existing import is itself a top-level
-    // crate name — already absolute.
-    for existing in existing_imports.keys() {
+    // A use binding can share an extern prelude name without binding it in the type namespace.
+    let name = leading.trim_start_matches("r#");
+    if (matches!(name, "core" | "std") || dependency_names.contains(name))
+        && scope.has_import_binding(leading)
+    {
+        return ImportResolution::Ambiguous;
+    }
+    for existing in scope.existing_imports.keys() {
         let Some((parent, last)) = existing.rsplit_once("::") else {
             continue;
         };
         if last == leading {
+            // A repeated root can name a crate that Cargo metadata does not identify.
+            if parent.split("::").next() == Some(leading) {
+                return ImportResolution::Ambiguous;
+            }
             return ImportResolution::Resolved {
                 path:       format!("{parent}::{leading}::{rest}"),
                 attributes: ConditionalAttributes::default(),
@@ -478,8 +483,7 @@ fn absolutize_import_path(
 /// bindings, and detecting that here keeps the findings out of the report
 /// instead of advertising fixes the combining layer would silently drop.
 fn find_collision_names(
-    occurrences: &[InlinePathOccurrence],
-    resolved_import_paths: &[String],
+    resolved: &[ResolvedOccurrence<'_>],
     bare_type_names: &BTreeSet<String>,
     existing_imports: &BTreeSet<String>,
 ) -> BTreeSet<String> {
@@ -488,11 +492,11 @@ fn find_collision_names(
     // If more than one distinct path maps to the same import name, the
     // imports would collide — skip them all.
     let mut name_to_paths: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for (occ, resolved) in occurrences.iter().zip(resolved_import_paths) {
+    for resolved in resolved {
         name_to_paths
-            .entry(&occ.import_name)
+            .entry(&resolved.occurrence.import_name)
             .or_default()
-            .insert(resolved.as_str());
+            .insert(&resolved.import_path);
     }
 
     let mut collisions = BTreeSet::new();
@@ -516,6 +520,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::path::Path;
 
+    use anyhow::Context;
     use proc_macro2::LineColumn;
 
     use super::ImportAttributePlan;
@@ -525,13 +530,27 @@ mod tests {
     use super::absolutize_import_path;
     use super::process_occurrence;
     use super::resolve_occurrence;
+    use super::scope;
+    use super::scope::ScopeCollectionContext;
+    use super::scope::ScopeSpan;
     use crate::fixes::imports::ConditionalAttributes;
     use crate::fixes::imports::ImportSource;
     use crate::fixes::inline_path_qualified_type::visitor::InlinePathOccurrence;
 
     #[test]
-    fn resolution_preserves_explicit_anchors_and_expands_imported_modules() {
-        let imports = BTreeMap::from([("std::io".to_string(), BTreeSet::new())]);
+    fn resolution_preserves_explicit_anchors_and_expands_imported_modules() -> anyhow::Result<()> {
+        let text = "use std::io;";
+        let mut scopes = Vec::new();
+        scope::collect_scopes(
+            &syn::parse_file(text)?.items,
+            ScopeSpan::new(0, text.len()),
+            &[],
+            &mut ScopeCollectionContext {
+                text,
+                scopes: &mut scopes,
+            },
+            &ImportSource::new(text),
+        )?;
         for (path, expected) in [
             ("io::ErrorKind", "std::io::ErrorKind"),
             ("crate::io::ErrorKind", "crate::io::ErrorKind"),
@@ -539,13 +558,15 @@ mod tests {
             ("self::io::ErrorKind", "self::io::ErrorKind"),
             ("unknown::Widget", "unknown::Widget"),
         ] {
-            let resolution = absolutize_import_path(path, &imports);
+            let resolution = absolutize_import_path(path, &scopes[0], &BTreeSet::new());
             assert_eq!(
                 matches!(&resolution, ImportResolution::Resolved { .. }),
                 path == "io::ErrorKind"
             );
-            assert_eq!(resolution.into_parts().0, expected);
+            let (path, _) = resolution.into_parts().context("missing import path")?;
+            assert_eq!(path, expected);
         }
+        Ok(())
     }
 
     #[test]
@@ -566,15 +587,23 @@ mod tests {
             },
             conditional_attributes: ConditionalAttributes::default(),
         };
-        let ctx = OccurrenceResolutionContext { scopes: &[] };
+        let dependency_names = BTreeSet::new();
+        let ctx = OccurrenceResolutionContext {
+            scopes:           &[],
+            dependency_names: &dependency_names,
+        };
         let mut findings = Vec::new();
         let mut fixes = Vec::new();
         let source = ImportSource::new(text);
-        let resolved = resolve_occurrence(&occurrence, &ctx, &source)?;
-        let blocked = OccurrenceResolutionContext { scopes: &[] }.analyze_collisions(
+        let resolved =
+            resolve_occurrence(&occurrence, &ctx, &source)?.context("missing occurrence")?;
+        let blocked = OccurrenceResolutionContext {
+            scopes:           &[],
+            dependency_names: &dependency_names,
+        }
+        .analyze_collisions(
             Path::new("src/lib.rs"),
             "src/lib.rs",
-            std::slice::from_ref(&occurrence),
             std::slice::from_ref(&resolved),
             &BTreeSet::from(["Widget".to_string()]),
         );
@@ -594,7 +623,6 @@ mod tests {
         let ctx = ctx.analyze_collisions(
             Path::new("src/lib.rs"),
             "src/lib.rs",
-            std::slice::from_ref(&occurrence),
             std::slice::from_ref(&resolved),
             &BTreeSet::new(),
         );
