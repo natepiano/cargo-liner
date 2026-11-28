@@ -42,6 +42,7 @@ use std::io::IsTerminal;
 use std::io::PipeReader;
 use std::io::Read;
 use std::io::Write;
+use std::ops::RangeInclusive;
 use std::os::fd::AsFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
@@ -120,6 +121,11 @@ use crate::shim_registration::native_fixture;
 /// installs and a copy on disk can never drift from it.
 #[cfg(test)]
 const SHIM_SOURCE: &str = include_str!("cargo-capture-shim.sh");
+
+/// The mirror checks this range for free descriptors.
+const MIRROR_DESCRIPTOR_RANGE: RangeInclusive<i32> = 3..=9;
+/// The mirror needs this many free descriptors.
+const MIN_MIRROR_FREE_DESCRIPTORS: usize = 2;
 /// The shim script, compiled in so the binary carries everything it
 /// installs and a copy on disk can never drift from it.
 #[cfg(test)]
@@ -429,20 +435,23 @@ fn capture_terminal() -> io::Result<CaptureTerminal> {
     {
         return Ok(CaptureTerminal::Pty);
     }
-    let descriptor_open = |descriptor| fs::metadata(format!("/dev/fd/{descriptor}")).is_ok();
-    if !descriptor_open(1)
-        || !descriptor_open(2)
-        || (3..=9)
-            .filter(|descriptor| !descriptor_open(*descriptor))
-            .count()
-            < 2
-    {
-        Err(io::Error::other(
-            "caller streams or spare descriptors unavailable",
-        ))
-    } else {
-        Ok(CaptureTerminal::Piped)
+    // Check the caller streams without requesting metadata about their targets.
+    rustix::io::fcntl_getfd(io::stdout())
+        .map_err(|error| io::Error::other(format!("stdout descriptor check failed: {error}")))?;
+    rustix::io::fcntl_getfd(io::stderr())
+        .map_err(|error| io::Error::other(format!("stderr descriptor check failed: {error}")))?;
+
+    let free_descriptors = MIRROR_DESCRIPTOR_RANGE
+        .filter(|descriptor| fs::metadata(format!("/dev/fd/{descriptor}")).is_err())
+        .count();
+    if free_descriptors < MIN_MIRROR_FREE_DESCRIPTORS {
+        return Err(io::Error::other(format!(
+            "{free_descriptors} free descriptors in {}-{} (need {MIN_MIRROR_FREE_DESCRIPTORS})",
+            MIRROR_DESCRIPTOR_RANGE.start(),
+            MIRROR_DESCRIPTOR_RANGE.end()
+        )));
     }
+    Ok(CaptureTerminal::Piped)
 }
 
 /// Only successful exclusive creation grants cleanup ownership of an artifact.
@@ -3265,10 +3274,13 @@ mod tests {
         .unwrap();
         fs::create_dir(&observations).unwrap();
         let arguments = ["check", "--quiet", "--message-format=json", "--", "a b", ""];
+        // Close inherited descriptors. Use descriptor 9 for the cargo output.
         let output = Command::new("sh")
             .args([
                 "-c",
-                "umask 0066; exec \"$@\" 9>&1 >/dev/null",
+                r#"exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&-
+umask 0066
+exec "$@" 9>&1 >/dev/null"#,
                 "publication-test",
             ])
             .arg(env::current_exe().unwrap())

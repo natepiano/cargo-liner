@@ -42,8 +42,10 @@ mod tests {
     const CAPTURE_FALLBACK_PUBLICATION_PREFIX: &str = "publication: ";
     /// `CAPTURE_FALLBACK_STARTUP_PREFIX` identifies a capture startup failure.
     const CAPTURE_FALLBACK_STARTUP_PREFIX: &str = "capture startup: ";
-    /// `CAPTURE_FALLBACK_TERMINAL_PREFIX` identifies unavailable capture streams.
+    /// `CAPTURE_FALLBACK_TERMINAL_PREFIX` identifies a terminal setup failure.
     const CAPTURE_FALLBACK_TERMINAL_PREFIX: &str = "terminal: ";
+    /// This text follows the count in the spare descriptor failure.
+    const CAPTURE_FALLBACK_FREE_DESCRIPTOR_LABEL: &str = " free descriptors";
     /// `CAPTURE_SHIM_ARGUMENT` selects the native entry in the fixture runner.
     const CAPTURE_SHIM_ARGUMENT: &str = "--capture-shim";
 
@@ -146,6 +148,16 @@ exit "$SHIM_TEST_EXIT_STATUS"
     const SHIM_DEADLINE: Duration = Duration::from_secs(20);
     /// What cargo records when the shim ran it without capture.
     const UNCAPTURED_ENVIRONMENT: &[u8] = b"unset\0unset\0unset\0";
+    /// Close inherited descriptors before a test sets up its own descriptors.
+    const CLOSE_CAPTURE_DESCRIPTORS: &str = "exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-";
+    /// Fill the descriptor range that the native shim checks for spare descriptors.
+    const OCCUPY_CAPTURE_DESCRIPTORS: &str =
+        "exec 3</dev/null 4</dev/null 5</dev/null 6</dev/null 7</dev/null 8</dev/null 9</dev/null";
+
+    /// Leave one descriptor to make publication fail on macOS.
+    const MACOS_PUBLICATION_FAILURE_DESCRIPTOR_LIMIT: u32 = 4;
+    /// Leave three descriptors to make pipe setup fail on Linux.
+    const LINUX_PIPE_SETUP_FAILURE_DESCRIPTOR_LIMIT: u32 = 6;
 
     /// Select the stream conditions that make the shim choose its capture path.
     #[derive(Clone, Copy, Debug)]
@@ -281,8 +293,9 @@ exit "$SHIM_TEST_EXIT_STATUS"
                     DESCRIPTOR_PROBE,
                     r#"umask "$SHIM_TEST_CALLER_UMASK"
 printf '%s' "$$" > "$SHIM_TEST_OBSERVATIONS/shim-pid"
-# Close test-runner descriptors before the fixture opens the caller's selected descriptors.
-exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+"#,
+                    CLOSE_CAPTURE_DESCRIPTORS,
+                    r#"
 if [ -n "${SHIM_TEST_CALLER_REDIRECTIONS-}" ]; then
     eval "exec $SHIM_TEST_CALLER_REDIRECTIONS"
 fi
@@ -1320,32 +1333,45 @@ exec sh "$SHIM_TEST_SHIM" "$@"
 
     /// `mirror_startup_command` supplies real stream and filesystem failures to the native entry.
     fn mirror_startup_command(fixture: &InstalledToolchain, startup: MirrorStartup) -> Command {
-        let mut command = match startup {
-            MirrorStartup::DescriptorLimit | MirrorStartup::OccupiedDescriptors => {
-                let setup = if matches!(startup, MirrorStartup::DescriptorLimit) {
-                    "export SHIM_TEST_DESCRIPTOR_LIMIT=$(ulimit -Sn); ulimit -Sn 6; exec \"$@\""
+        let mut command = Command::new("/bin/sh");
+        let setup = match startup {
+            MirrorStartup::DescriptorLimit => {
+                let limit = if cfg!(target_os = "macos") {
+                    MACOS_PUBLICATION_FAILURE_DESCRIPTOR_LIMIT
                 } else {
-                    "exec 3</dev/null 4</dev/null 5</dev/null 6</dev/null 7</dev/null 8</dev/null 9</dev/null; exec \"$@\""
+                    LINUX_PIPE_SETUP_FAILURE_DESCRIPTOR_LIMIT
                 };
-                let mut shell = Command::new("/bin/sh");
-                shell.args(["-c", setup, "capture-failure"]);
-                shell.arg(env!("CARGO_BIN_EXE_cargo-tile"));
-                shell
+                format!("export SHIM_TEST_DESCRIPTOR_LIMIT=$(ulimit -Sn); ulimit -Sn {limit}")
             },
-            MirrorStartup::PublicationFailure => Command::new(env!("CARGO_BIN_EXE_cargo-tile")),
+            MirrorStartup::OccupiedDescriptors => OCCUPY_CAPTURE_DESCRIPTORS.to_owned(),
+            _ => String::new(),
+        };
+        let shim = fixture.bin.join("cargo");
+        match startup {
+            MirrorStartup::DescriptorLimit
+            | MirrorStartup::OccupiedDescriptors
+            | MirrorStartup::PublicationFailure => {
+                command
+                    .args([
+                        "-c",
+                        &format!("{CLOSE_CAPTURE_DESCRIPTORS}\n{setup}\nexec \"$@\""),
+                        "mirror-startup",
+                    ])
+                    .arg(env!("CARGO_BIN_EXE_cargo-tile"))
+                    .arg(CAPTURE_SHIM_ARGUMENT)
+                    .arg(&shim)
+                    .arg(&fixture.parent);
+            },
             MirrorStartup::MissingShell
             | MirrorStartup::MissingTee
             | MirrorStartup::FailedShell
             | MirrorStartup::InheritedFallback => {
-                let mut shell = Command::new("/bin/sh");
-                shell.arg(fixture.bin.join("cargo"));
-                return shell;
+                // The shell applies CLOSE_CAPTURE_DESCRIPTORS before it sources the shim.
+                command
+                    .args(["-c", &format!("{CLOSE_CAPTURE_DESCRIPTORS}\n. \"$0\"")])
+                    .arg(&shim);
             },
-        };
-        command
-            .arg(CAPTURE_SHIM_ARGUMENT)
-            .arg(fixture.bin.join("cargo"))
-            .arg(&fixture.parent);
+        }
         if matches!(
             startup,
             MirrorStartup::OccupiedDescriptors | MirrorStartup::PublicationFailure
@@ -1486,6 +1512,16 @@ exit 43
                 fallback.len() > expected_cause.len(),
                 "the cause includes the error: {fallback}"
             );
+            if matches!(startup, MirrorStartup::OccupiedDescriptors) {
+                let free_descriptors = fallback[expected_cause.len()..]
+                    .split_once(CAPTURE_FALLBACK_FREE_DESCRIPTOR_LABEL)
+                    .and_then(|(count, _)| count.parse::<usize>().ok());
+                assert_eq!(
+                    free_descriptors,
+                    Some(0),
+                    "expected zero free descriptors: {fallback}"
+                );
+            }
         }
     }
 

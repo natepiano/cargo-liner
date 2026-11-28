@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The native capture shim checks output streams directly. The fallback cause names the failed check.
 - Command cells show the number of hidden processes on the last body row when the processes do not fit.
 - Notices and their close buttons keep their place while grid cells change height.
 - A notice that opens while the grid moves takes its final place once, when the grid settles.
