@@ -10,23 +10,19 @@ use super::item_scan::ItemScanner;
 use super::item_scan::StructDef;
 use super::ledger::ListedCoordinate;
 use super::regex_sites;
+use super::regex_sites::PythonSearch;
 use super::rust_sources;
 use super::rust_sources::RustCoordinate;
 use super::rust_sources::RustSources;
-use crate::tip_view::RepositoryTip;
 
-pub(super) fn field_affixes(
-    sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
-) -> Result<Vec<ListedCoordinate>, SitesFailure> {
+pub(super) fn field_affixes(sources: &RustSources) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let scanner = ItemScanner::new()?;
     let candidates = sources.blobs().map(|blob| {
         let lines = blob.masked.lines().collect::<Vec<_>>();
         let sites = scanner.structs(&lines).iter().flat_map(affixes).collect();
         (blob.paths.as_slice(), sites)
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
 fn affixes(structure: &StructDef<'_>) -> Vec<RustCoordinate> {
@@ -87,8 +83,6 @@ fn shared_word<'a>(words: &mut impl Iterator<Item = Option<&'a str>>) -> Option<
 
 pub(super) fn enum_variant_stutter(
     sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let scanner = ItemScanner::new()?;
     let candidates = sources.blobs().map(|blob| {
@@ -113,13 +107,11 @@ pub(super) fn enum_variant_stutter(
         }
         (blob.paths.as_slice(), sites)
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
 pub(super) fn field_type_stutter(
     sources: &RustSources,
-    tip: &RepositoryTip,
-    rule: &Rule,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
     let scanner = ItemScanner::new()?;
     let candidates = sources.blobs().map(|blob| {
@@ -148,7 +140,7 @@ pub(super) fn field_type_stutter(
         }
         (blob.paths.as_slice(), sites)
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
 fn starts_with_word(name: &str, word: &str) -> bool {
@@ -158,7 +150,6 @@ fn starts_with_word(name: &str, word: &str) -> bool {
 
 pub(super) fn struct_fields(
     sources: &RustSources,
-    tip: &RepositoryTip,
     rule: &Rule,
     spec: &StructFieldsSpec,
 ) -> Result<Vec<ListedCoordinate>, SitesFailure> {
@@ -194,7 +185,11 @@ pub(super) fn struct_fields(
         .iter()
         .flat_map(|(_, fields)| fields.iter().map(|site| site.field.type_text))
         .collect::<Vec<_>>();
-    let matches = regex_sites::python_matches(&rule.id, &spec.field_type_pattern, &type_texts)?;
+    let matches = regex_sites::python_matches(&[PythonSearch {
+        rule:    &rule.id,
+        pattern: &spec.field_type_pattern,
+        lines:   type_texts,
+    }])?;
     let mut matches = matches.into_iter();
     let candidates = groups.into_iter().map(|(paths, fields)| {
         let sites = fields
@@ -205,7 +200,7 @@ pub(super) fn struct_fields(
             .collect();
         (paths, sites)
     });
-    Ok(rust_sources::listed(tip, rule, candidates))
+    Ok(rust_sources::listed(candidates))
 }
 
 struct StructField<'a> {

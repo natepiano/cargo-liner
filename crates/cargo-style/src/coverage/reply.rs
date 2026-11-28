@@ -5,9 +5,11 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::catalog::CoverageRule;
-use super::catalog::RuleInputScope;
-use super::catalog::Tier;
+use super::membership::CoverageComponent;
+use super::membership::CoveredPath;
 use crate::ledger_read::LedgerRevision;
+use crate::sites::RuleInputScope;
+use crate::sites::Tier;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,7 +27,7 @@ pub(super) enum HeldCoverage {
     NoCurrentHold,
 }
 
-#[derive(Default, Serialize)]
+#[derive(Clone, Default, Serialize)]
 struct StateCounts {
     current:        usize,
     stale:          usize,
@@ -57,8 +59,8 @@ impl StateCounts {
 }
 
 #[derive(Serialize)]
-pub(super) struct Cell<'a> {
-    pub(super) rule:   &'a str,
+pub(super) struct Cell {
+    pub(super) rule:   String,
     pub(super) path:   String,
     #[serde(rename = "crate")]
     pub(super) member: String,
@@ -67,7 +69,7 @@ pub(super) struct Cell<'a> {
     pub(super) state:  CellState,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct RuleCounts<'a> {
     rule_id:     &'a str,
     tier:        Tier,
@@ -83,16 +85,16 @@ struct FamilyCounts {
     counts: StateCounts,
 }
 
-pub(super) enum CellProjection<'a> {
+pub(super) enum CellProjection {
     CountsOnly,
-    IncludeCells(Vec<Cell<'a>>),
+    IncludeCells(Vec<Cell>),
 }
 
-impl CellProjection<'_> {
+impl CellProjection {
     const fn is_counts_only(&self) -> bool { matches!(self, Self::CountsOnly) }
 }
 
-impl Serialize for CellProjection<'_> {
+impl Serialize for CellProjection {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::IncludeCells(cells) => cells.serialize(serializer),
@@ -104,13 +106,19 @@ impl Serialize for CellProjection<'_> {
 #[derive(Serialize)]
 pub(super) struct CoverageReport<'a> {
     #[serde(skip_serializing_if = "CellProjection::is_counts_only")]
-    cells:    CellProjection<'a>,
+    cells:    CellProjection,
     rules:    Vec<RuleCounts<'a>>,
     families: Vec<FamilyCounts>,
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum CellPresentation {
+    Show,
+    CountOnly,
+}
+
 pub(super) struct CoverageTotals<'a> {
-    cells:    CellProjection<'a>,
+    cells:    CellProjection,
     rules:    Vec<RuleCounts<'a>>,
     families: BTreeMap<Option<&'static str>, StateCounts>,
 }
@@ -132,7 +140,7 @@ impl<'a> RuleTally<'a> {
 }
 
 impl<'a> CoverageTotals<'a> {
-    pub(super) const fn new(cells: CellProjection<'a>) -> Self {
+    pub(super) const fn new(cells: CellProjection) -> Self {
         Self {
             cells,
             rules: Vec::new(),
@@ -143,38 +151,47 @@ impl<'a> CoverageTotals<'a> {
     pub(super) fn record(
         &mut self,
         tally: &mut RuleTally<'a>,
-        path: &str,
-        member: &str,
+        component: &CoverageComponent<'_>,
+        path: CoveredPath<'_>,
         state: CellState,
         held: HeldCoverage,
+        presentation: CellPresentation,
     ) {
         tally.counts.record(state, held);
-        if let CellProjection::IncludeCells(cells) = &mut self.cells {
+        if let (CellPresentation::Show, CellProjection::IncludeCells(cells)) =
+            (presentation, &mut self.cells)
+        {
             cells.push(Cell {
-                rule: tally.identity,
-                path: path.to_owned(),
-                member: member.to_owned(),
-                tier: tally.rule.tier,
+                rule: component.id().to_owned(),
+                path: path.path.to_owned(),
+                member: path.member.to_owned(),
+                tier: component.tier(),
                 family: tally.rule.family_name(),
                 state,
             });
         }
     }
 
-    pub(super) fn finish_rule(&mut self, tally: RuleTally<'a>) {
-        self.families
-            .entry(tally.rule.family_name())
-            .or_default()
-            .add(&tally.counts);
-        self.rules.push(RuleCounts {
+    pub(super) fn finish_rule(&mut self, tally: RuleTally<'a>, discoveries: usize) {
+        let family = self.families.entry(tally.rule.family_name()).or_default();
+        for _ in 0..discoveries {
+            family.add(&tally.counts);
+        }
+        let row = RuleCounts {
             rule_id:     tally.identity,
-            tier:        tally.rule.tier,
-            input_scope: tally.rule.input_scope,
+            tier:        tally.rule.policy.tier,
+            input_scope: tally.rule.policy.input_scope,
             counts:      tally.counts,
-        });
+        };
+        self.rules.extend(std::iter::repeat_n(row, discoveries));
     }
 
-    pub(super) fn finish(self) -> CoverageReport<'a> {
+    pub(super) fn finish(mut self) -> CoverageReport<'a> {
+        if let CellProjection::IncludeCells(cells) = &mut self.cells {
+            cells.sort_unstable_by(|left, right| {
+                (&left.rule, &left.path).cmp(&(&right.rule, &right.path))
+            });
+        }
         CoverageReport {
             cells:    self.cells,
             rules:    self.rules,
@@ -194,19 +211,9 @@ pub(super) struct Observation<'a> {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum Prerequisite {
-    CandidateSites,
-}
-
-#[derive(Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub(super) enum CoverageAnswer<'a> {
     Available(CoverageReport<'a>),
-    Unavailable {
-        prerequisite: Prerequisite,
-        rules:        Vec<&'a str>,
-    },
 }
 
 #[derive(Serialize)]

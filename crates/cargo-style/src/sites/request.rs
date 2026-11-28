@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 use std::io;
+use std::path::Path;
 use std::path::PathBuf;
 
 use serde::Serialize;
@@ -12,6 +13,8 @@ use super::committed_sites::SitesOutcome;
 use super::constants::SITES_REPLY_SCHEMA;
 use super::failure::SitesFailure;
 use super::ledger::SitesLedger;
+use super::source_tree::SourceTree;
+use crate::constants::CHECKOUT_FLAG;
 use crate::finding_source::FindingSource;
 
 pub(crate) struct SitesRequest {
@@ -21,9 +24,18 @@ pub(crate) struct SitesRequest {
     rule:     String,
 }
 
-enum CheckoutSource {
+pub(crate) enum CheckoutSource {
     Repository,
     Explicit(PathBuf),
+}
+
+impl CheckoutSource {
+    pub(crate) fn path<'a>(&'a self, repository: &'a Path) -> &'a Path {
+        match self {
+            Self::Repository => repository,
+            Self::Explicit(path) => path,
+        }
+    }
 }
 
 impl SitesRequest {
@@ -38,7 +50,7 @@ impl SitesRequest {
             let slot = match argument.to_str() {
                 Some("--repo") => &mut repo,
                 Some("--ledger") => &mut ledger,
-                Some("--checkout") => &mut checkout,
+                Some(CHECKOUT_FLAG) => &mut checkout,
                 Some(text) if !text.is_empty() && !text.starts_with('-') && rule.is_none() => {
                     rule = Some(text.to_owned());
                     continue;
@@ -59,24 +71,19 @@ impl SitesRequest {
     }
 
     pub(crate) fn answer(self) -> Result<(), SitesFailure> {
-        let checkout = match &self.checkout {
-            CheckoutSource::Repository => &self.repo,
-            CheckoutSource::Explicit(path) => path,
-        };
-        let catalog = Catalog::read(checkout)?;
+        let catalog = Catalog::read(self.checkout.path(&self.repo))?;
         let rule = catalog.rule(&self.rule)?;
         let mut source = FindingSource::open(&self.repo)?;
         let ledger = SitesLedger::read(&self.ledger, &catalog, rule, &mut source)?;
         let commit = &ledger.synced_tip;
-        let tip = source.tip(commit)?;
+        let tree = SourceTree::read(&mut source, commit)?;
         let outcome = CommittedSites {
-            repo: &self.repo,
-            source: &mut source,
-            tip: &tip,
-            commit,
-            rule,
+            repo:    &self.repo,
+            source:  &mut source,
+            tree:    &tree,
+            catalog: &catalog,
         }
-        .outcome(ledger.history)?;
+        .outcome(rule, ledger.history)?;
         let reply = SitesReply {
             schema: SITES_REPLY_SCHEMA,
             rule: &rule.id,

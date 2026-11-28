@@ -1,6 +1,6 @@
 //! Run the regex generator against committed file contents.
 
-use std::collections::BTreeSet;
+use std::cell::OnceCell;
 use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fs;
@@ -16,34 +16,28 @@ use std::process::Output;
 use std::process::Stdio;
 use std::string::FromUtf8Error;
 
-use toml::Table;
-use toml::Value;
+use serde::Deserialize;
+use serde::Serialize;
 
 use super::catalog::Exclusion;
-use super::catalog::Reach;
 use super::catalog::RegexSpec;
 use super::catalog::Rule;
 use super::constants::CLAUDE_PYTHON;
-use super::constants::MATCH_EXCLUSIONS;
 use super::constants::PACKAGE_PYTHONS;
 use super::constants::PER_USER_PROFILES;
 use super::constants::PROFILE_PYTHON;
 use super::constants::PYTHON_COMMAND;
+use super::constants::PYTHON_REGEX_SEARCH;
 use super::constants::PYTHON_VERSION_CHECK;
 use super::constants::SYSTEM_PYTHON;
 use super::frontmatter;
 use super::ledger::ListedCoordinate;
 use super::mask;
-use super::path_match::PathPattern;
-use super::source_tree::SourceReadFailure;
+use super::path_match;
 use super::source_tree::SourceTree;
-use crate::constants::IGNORE_FILES;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
-use crate::finding_source::SourceText;
 use crate::source_lines;
-use crate::tip_view;
-use crate::tip_view::RepositoryTip;
 
 pub(super) struct RegexTool {
     executable:        PathBuf,
@@ -73,28 +67,26 @@ pub(crate) enum RegexFailure {
     #[error("no python3 3.12 or newer is available for the exclusion pattern; set CLAUDE_PYTHON")]
     PythonUnavailable,
     #[error("{rule}: {diagnostic}")]
-    Exclusion {
+    InvalidPythonPattern {
         rule:       String,
         diagnostic: String,
     },
-    #[error(transparent)]
-    SourceTree(#[from] SourceReadFailure),
-    #[error("invalid committed ignore pattern {pattern:?}")]
-    IgnorePattern {
-        pattern: String,
-        #[source]
-        source:  regex::Error,
-    },
-    #[error("cannot parse committed ignore file {path:?}")]
-    IgnoreConfig {
-        path:   String,
-        #[source]
-        source: Box<toml::de::Error>,
-    },
+    #[error("Python regex search failed: {0}")]
+    PythonSearch(String),
+    #[error("Python regex reply does not match the request")]
+    PythonReply,
 }
 
 impl RegexTool {
-    pub(super) fn read() -> Result<Self, RegexFailure> {
+    pub(super) fn read_once(cache: &OnceCell<Self>) -> Result<&Self, RegexFailure> {
+        if let Some(tool) = cache.get() {
+            return Ok(tool);
+        }
+        let tool = Self::read()?;
+        Ok(cache.get_or_init(|| tool))
+    }
+
+    fn read() -> Result<Self, RegexFailure> {
         let executable = on_path(OsStr::new("rg"))
             .ok_or_else(|| io::Error::new(ErrorKind::NotFound, "rg is not on PATH"))?
             .canonicalize()?;
@@ -202,29 +194,25 @@ enum RgOperation {
 }
 
 pub(super) fn enumerate(
-    repo: &Path,
     source: &mut FindingSource<'_>,
-    tip: &RepositoryTip,
-    commit: &str,
+    tree: &SourceTree,
     rule: &Rule,
     spec: &RegexSpec,
     tool: &RegexTool,
 ) -> Result<Vec<ListedCoordinate>, RegexFailure> {
-    let tree = SourceTree::read(repo, source, commit)?;
-    let ignored = ignored_paths(source, tip)?;
     if spec.pattern.is_empty() {
         return Err(RegexFailure::EmptyPattern(spec.origin.clone()));
     }
     let temporary = tempfile::Builder::new().prefix("style-regex-").tempdir()?;
     let root = temporary.path();
     let blobs = tree.blobs();
-    for (path, entry) in blobs.clone() {
+    for (path, _) in blobs.clone() {
         let target = root.join(relative(path)?);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
         if tool.is_ignore(path) {
-            write_blob(repo, source, &entry.object, &target)?;
+            fs::write(target, tree.read_bytes(source, path)?)?;
         } else {
             let _ = fs::File::create(target)?;
         }
@@ -234,13 +222,13 @@ pub(super) fn enumerate(
         .split_terminator('\0')
         .map(without_dot)
         .collect::<HashSet<_>>();
-    for (path, entry) in blobs {
+    for (path, _) in blobs {
         if selected.contains(path.as_str()) && !tool.is_ignore(path) {
-            write_blob(repo, source, &entry.object, &root.join(path))?;
+            fs::write(root.join(path), tree.read_bytes(source, path)?)?;
         }
     }
     let matches = String::from_utf8(tool.search(root, spec, RgOperation::MatchLines)?.stdout)?;
-    listed_coordinates(&matches, tip, rule, spec, &ignored)
+    listed_coordinates(&matches, rule, spec)
 }
 
 fn without_dot(path: &str) -> &str { path.strip_prefix("./").unwrap_or(path) }
@@ -257,36 +245,10 @@ fn relative(path: &str) -> Result<PathBuf, RegexFailure> {
     Ok(result)
 }
 
-fn write_blob(
-    repo: &Path,
-    source: &mut FindingSource<'_>,
-    blob: &str,
-    path: &Path,
-) -> Result<(), RegexFailure> {
-    match source.source(blob)? {
-        SourceText::Utf8(text) => fs::write(path, text.lines.text())?,
-        SourceText::NotUtf8(_) => {
-            // The shared text reader replaces invalid bytes. Ripgrep needs the exact bytes.
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(repo)
-                .args(["cat-file", "blob", blob])
-                .output()?;
-            if !output.status.success() {
-                return Err(SourceReadFailure::MissingObject(blob.to_owned()).into());
-            }
-            fs::write(path, output.stdout)?;
-        },
-    }
-    Ok(())
-}
-
 fn listed_coordinates(
     matches: &str,
-    tip: &RepositoryTip,
     rule: &Rule,
     spec: &RegexSpec,
-    ignored: &[Ignore],
 ) -> Result<Vec<ListedCoordinate>, RegexFailure> {
     let matches = source_lines::split_lines(matches)
         .map(frontmatter::without_line_ending)
@@ -297,45 +259,26 @@ fn listed_coordinates(
             let text = fields.next()?;
             Some((path, line, text))
         })
-        .filter(|(path, _, _)| !is_exempt(path, &spec.exemptions))
+        .filter(|(path, _, _)| !path_match::is_exempt(path, &spec.exemptions))
         .collect::<Vec<_>>();
     let excluded = match &spec.exclusion {
         Exclusion::None => vec![false; matches.len()],
         Exclusion::Pattern(pattern) => python_excludes(&rule.id, pattern, &matches)?,
     };
 
-    let mut sites = BTreeSet::new();
+    let mut sites = Vec::new();
     for ((raw_path, line, text), excluded) in matches.into_iter().zip(excluded) {
         if excluded {
             continue;
         }
         let path = relative(raw_path)?.to_string_lossy().into_owned();
-        if tip.blob(&path).is_none()
-            || is_ignored(&path, ignored)
-            || matches!(&rule.reach, Reach::Member(directory) if !tip_view::under(&path, directory))
-        {
-            continue;
-        }
-        let _ = sites.insert(ListedCoordinate {
+        sites.push(ListedCoordinate {
             path,
             line,
             text: mask::display_line(text, 1),
         });
     }
-    Ok(sites.into_iter().collect())
-}
-
-fn is_exempt(path: &str, exemptions: &[String]) -> bool {
-    let rooted = format!("/{path}");
-    exemptions
-        .iter()
-        .map(|entry| entry.trim_matches('/'))
-        .any(|entry| {
-            !entry.is_empty()
-                && (path == entry
-                    || rooted.ends_with(&format!("/{entry}"))
-                    || rooted.contains(&format!("/{entry}/")))
-        })
+    Ok(sites)
 }
 
 fn python_excludes(
@@ -343,37 +286,63 @@ fn python_excludes(
     pattern: &str,
     matches: &[(&str, usize, &str)],
 ) -> Result<Vec<bool>, RegexFailure> {
-    let lines = matches.iter().map(|(_, _, text)| *text).collect::<Vec<_>>();
-    python_matches(rule, pattern, &lines)
+    python_matches(&[PythonSearch {
+        rule,
+        pattern,
+        lines: matches.iter().map(|(_, _, text)| *text).collect(),
+    }])
 }
 
-pub(super) fn python_matches(
-    rule: &str,
-    pattern: &str,
-    lines: &[&str],
-) -> Result<Vec<bool>, RegexFailure> {
-    // Use Python re for rule patterns. Search all supplied strings in one process.
+#[derive(Serialize)]
+pub(super) struct PythonSearch<'a> {
+    #[serde(skip)]
+    pub(super) rule:    &'a str,
+    pub(super) pattern: &'a str,
+    pub(super) lines:   Vec<&'a str>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum PythonReply {
+    Matches(Vec<bool>),
+    Invalid {
+        index:      usize,
+        diagnostic: String,
+    },
+}
+
+pub(super) fn python_matches(searches: &[PythonSearch<'_>]) -> Result<Vec<bool>, RegexFailure> {
     let mut input = tempfile::tempfile()?;
-    serde_json::to_writer(&mut input, &(pattern, lines))?;
+    serde_json::to_writer(&mut input, searches)?;
     input.rewind()?;
     let output = Command::new(exclusion_python()?)
-        .args(["-I", "-S", "-c", MATCH_EXCLUSIONS])
+        .args(["-I", "-S", "-c", PYTHON_REGEX_SEARCH])
         .stdin(input)
         .output()?;
     if !output.status.success() {
-        return Err(RegexFailure::Exclusion {
-            rule:       rule.to_owned(),
-            diagnostic: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        });
+        return Err(RegexFailure::PythonSearch(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        ));
     }
-    let result: Vec<bool> = serde_json::from_slice(&output.stdout)?;
-    if result.len() != lines.len() {
-        return Err(RegexFailure::Exclusion {
-            rule:       rule.to_owned(),
-            diagnostic: "exclusion reply has the wrong number of rows".to_owned(),
-        });
+    match serde_json::from_slice(&output.stdout)? {
+        PythonReply::Matches(result)
+            if result.len()
+                == searches
+                    .iter()
+                    .map(|search| search.lines.len())
+                    .sum::<usize>() =>
+        {
+            Ok(result)
+        },
+        PythonReply::Invalid { index, diagnostic } => {
+            let search = searches.get(index).ok_or(RegexFailure::PythonReply)?;
+            Err(RegexFailure::InvalidPythonPattern {
+                rule: search.rule.to_owned(),
+                diagnostic,
+            })
+        },
+        PythonReply::Matches(_) => Err(RegexFailure::PythonReply),
     }
-    Ok(result)
 }
 
 /// Select Python as `scripts/lib/py` does: try `CLAUDE_PYTHON`, then each known `python3`, and
@@ -424,88 +393,4 @@ fn on_path(name: &OsStr) -> Option<PathBuf> {
 fn is_executable(file: &Path) -> bool {
     file.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-}
-
-struct Ignore {
-    prefix: String,
-    glob:   PathPattern,
-    root:   RootIgnore,
-}
-
-enum RootIgnore {
-    UseFullPattern,
-    AlsoMatch(PathPattern),
-}
-
-fn ignored_paths(
-    source: &mut FindingSource<'_>,
-    tip: &RepositoryTip,
-) -> Result<Vec<Ignore>, RegexFailure> {
-    let mut patterns = Vec::new();
-    for path in IGNORE_FILES {
-        let Some(blob) = tip.blob(path) else { continue };
-        let text = match source.source(blob)? {
-            SourceText::Utf8(text) => text.lines.text(),
-            SourceText::NotUtf8(text) => text,
-        };
-        let table: Table = text.parse().map_err(|source| RegexFailure::IgnoreConfig {
-            path:   path.to_owned(),
-            source: Box::new(source),
-        })?;
-        add_ignores(&table, &mut patterns)?;
-    }
-    Ok(patterns)
-}
-
-fn add_ignores(table: &Table, patterns: &mut Vec<Ignore>) -> Result<(), RegexFailure> {
-    for (key, value) in table {
-        if matches!(
-            key.as_str(),
-            "ignore" | "ignored" | "exclude" | "excludes" | "ignored_paths" | "ignore_paths"
-        ) {
-            for pattern in value
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str)
-            {
-                patterns.push(Ignore::new(pattern)?);
-            }
-        }
-        if let Some(table) = value.as_table() {
-            add_ignores(table, patterns)?;
-        }
-    }
-    Ok(())
-}
-
-impl Ignore {
-    fn new(pattern: &str) -> Result<Self, RegexFailure> {
-        let compile = |raw| {
-            PathPattern::new(raw).map_err(|source| RegexFailure::IgnorePattern {
-                pattern: pattern.to_owned(),
-                source,
-            })
-        };
-        let root = if let Some(raw) = pattern.strip_prefix("**/") {
-            RootIgnore::AlsoMatch(compile(raw)?)
-        } else {
-            RootIgnore::UseFullPattern
-        };
-        Ok(Self {
-            prefix: pattern.trim_end_matches('/').to_owned(),
-            glob: compile(pattern)?,
-            root,
-        })
-    }
-}
-
-fn is_ignored(path: &str, patterns: &[Ignore]) -> bool {
-    path.rsplit_once('/')
-        .is_some_and(|(directory, _)| directory.split('/').any(|part| part == "vendor"))
-        || patterns.iter().any(|pattern| {
-            tip_view::under(path, &pattern.prefix)
-                || pattern.glob.matches(path)
-                || matches!(&pattern.root, RootIgnore::AlsoMatch(root) if root.matches(path))
-        })
 }

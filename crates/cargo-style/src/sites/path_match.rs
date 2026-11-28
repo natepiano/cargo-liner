@@ -1,7 +1,9 @@
-//! Match catalog and committed ignore paths with shell patterns.
+//! Match catalog paths, committed ignore paths and generator exemptions.
 
 use regex::Error;
 use regex::Regex;
+
+use crate::tip_view;
 
 pub(super) struct PathPattern {
     regex: Regex,
@@ -10,28 +12,89 @@ pub(super) struct PathPattern {
 impl PathPattern {
     pub(super) fn new(pattern: &str) -> Result<Self, Error> {
         let mut expression = String::from("(?s)\\A");
-        let mut characters = pattern.chars();
-        while let Some(character) = characters.next() {
-            match character {
-                '*' => expression.push_str(".*"),
-                '?' => expression.push('.'),
-                '[' => {
-                    if let Some(length) = class_length(characters.clone()) {
-                        let members = characters.by_ref().take(length).collect::<Vec<_>>();
-                        expression.push_str(&class_expression(&members));
-                        let _ = characters.next();
-                    } else {
-                        expression.push_str("\\[");
-                    }
-                },
-                literal => expression.push_str(&regex::escape(literal.encode_utf8(&mut [0; 4]))),
-            }
-        }
+        push_fnmatch(&mut expression, pattern, ".*", ".");
         expression.push_str("\\z");
         Regex::new(&expression).map(|regex| Self { regex })
     }
 
     pub(super) fn matches(&self, path: &str) -> bool { self.regex.is_match(path) }
+}
+
+pub(super) struct WorkspaceGlob(Regex);
+
+impl WorkspaceGlob {
+    pub(super) fn new(pattern: &str) -> Result<Self, Error> {
+        let mut expression = String::from("(?s)\\A");
+        expression.push_str(posix_anchor(pattern));
+        let mut parts = tip_view::path_parts(pattern).peekable();
+        while let Some(part) = parts.next() {
+            match (part, parts.peek()) {
+                ("*", None) => expression.push_str("[^/]+"),
+                ("*", Some(_)) => expression.push_str("[^/]+/"),
+                ("**", None) => expression.push_str(".*"),
+                ("**", Some(&"**")) => {},
+                ("**", Some(_)) => expression.push_str("(?:.+/)?"),
+                (part, next) => {
+                    push_fnmatch(&mut expression, part, "[^/]*", "[^/]");
+                    if next.is_some() {
+                        expression.push('/');
+                    }
+                },
+            }
+        }
+        expression.push_str("\\z");
+        Regex::new(&expression).map(Self)
+    }
+
+    pub(super) fn matches(&self, path: &str) -> bool {
+        self.0.is_match(if path == "." { "" } else { path })
+    }
+}
+
+pub(super) fn posix_anchor(path: &str) -> &'static str {
+    if path.starts_with("//") && !path.starts_with("///") {
+        "//"
+    } else if path.starts_with('/') {
+        "/"
+    } else {
+        ""
+    }
+}
+
+fn push_fnmatch(expression: &mut String, pattern: &str, star: &str, question: &str) {
+    let mut characters = pattern.chars().peekable();
+    while let Some(character) = characters.next() {
+        match character {
+            '*' => {
+                while characters.next_if_eq(&'*').is_some() {}
+                expression.push_str(star);
+            },
+            '?' => expression.push_str(question),
+            '[' => {
+                if let Some(length) = class_length(characters.clone()) {
+                    let members = characters.by_ref().take(length).collect::<Vec<_>>();
+                    expression.push_str(&class_expression(&members));
+                    let _ = characters.next();
+                } else {
+                    expression.push_str("\\[");
+                }
+            },
+            literal => expression.push_str(&regex::escape(literal.encode_utf8(&mut [0; 4]))),
+        }
+    }
+}
+
+pub(super) fn is_exempt(path: &str, exemptions: &[String]) -> bool {
+    let rooted = format!("/{path}");
+    exemptions
+        .iter()
+        .map(|entry| entry.trim_matches('/'))
+        .any(|entry| {
+            !entry.is_empty()
+                && (path == entry
+                    || rooted.ends_with(&format!("/{entry}"))
+                    || rooted.contains(&format!("/{entry}/")))
+        })
 }
 
 fn class_length(mut rest: impl Iterator<Item = char> + Clone) -> Option<usize> {
@@ -111,14 +174,9 @@ pub(super) struct WorkspacePattern {
     parts: Vec<WorkspacePart>,
 }
 
-enum WorkspacePart {
-    AnyDepth,
-    Component(PathPattern),
-}
-
 impl WorkspacePattern {
     pub(super) fn new(pattern: &str) -> Result<Self, Error> {
-        let parts = path_parts(pattern)
+        let parts = tip_view::path_parts(pattern)
             .map(|part| match part {
                 "**" => Ok(WorkspacePart::AnyDepth),
                 part => PathPattern::new(part).map(WorkspacePart::Component),
@@ -132,6 +190,7 @@ impl WorkspacePattern {
             match (parts, patterns) {
                 (_, []) => parts.is_empty(),
                 (_, [WorkspacePart::AnyDepth, rest @ ..]) => {
+                    // WorkspacePart::AnyDepth can use zero path components.
                     matches(parts, rest)
                         || parts
                             .split_first()
@@ -143,10 +202,14 @@ impl WorkspacePattern {
                 _ => false,
             }
         }
-        matches(&path_parts(directory).collect::<Vec<_>>(), &self.parts)
+        matches(
+            &tip_view::path_parts(directory).collect::<Vec<_>>(),
+            &self.parts,
+        )
     }
 }
 
-pub(super) fn path_parts(path: &str) -> impl Iterator<Item = &str> {
-    path.split('/').filter(|part| !matches!(*part, "" | "."))
+enum WorkspacePart {
+    AnyDepth,
+    Component(PathPattern),
 }

@@ -18,7 +18,7 @@ struct RuleDefinition {
     identities: HashMap<String, JudgmentIdentity>,
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Family {
     Names,
@@ -47,25 +47,27 @@ impl Family {
     pub(crate) const fn is_line_local(self) -> bool { matches!(self, Self::Names | Self::Values) }
 }
 
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
 pub(crate) enum RuleFamily {
     Known(Family),
     Unspecified,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
-enum CandidateSurface {
-    Classified(Surface),
-    Unspecified,
+pub(crate) enum CandidateSurface {
+    Declared(Surface),
+    #[default]
+    NoCandidates,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum Surface {
+pub(crate) enum Surface {
     Partial,
     Whole,
+    Unclassified,
 }
 
 #[derive(Deserialize)]
@@ -132,7 +134,7 @@ impl RuleSnapshot {
                 && (definition.tier != "B"
                     || !matches!(
                         definition.surface,
-                        CandidateSurface::Classified(Surface::Partial)
+                        CandidateSurface::Declared(Surface::Partial)
                     )))
         {
             return Ok(PinComparison::InvalidComponent);
