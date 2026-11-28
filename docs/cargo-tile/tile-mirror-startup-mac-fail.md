@@ -29,67 +29,33 @@
 
 ## Phases
 
-### Phase 1 — The native mirror startup test passes on every Mac run  · status: todo
+### Phase 1 — The native mirror startup test passes on every Mac run  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** Find why `a_native_mirror_keeps_cargo_streams_without_shell_utilities` failed once on the Mac, and fix the cause in the test or the code.
-
-**Spec:**
-
-1. The test runs four `MirrorStartup` cases in parallel (`MissingShell`, `MissingTee`, `FailedShell`, `InheritedFallback`) through `parallel_cases::run` and `assert_mirror_startup`.
-2. The Mac log has no panic text. Get the failing assertion first:
-   - Read the full nextest output for that run on the Mac, if it still exists.
-   - Else run the test on the Mac many times in a loop through verify.sh, and capture the panic text of a failure.
-3. Find the cause from the panic text and the code. Candidates: a race between the four parallel cases, a stream read that ends before the child writes, a timing or wait limit, or a macOS difference in `/bin/sh` or `tee`.
-4. Fix the cause where it lives. If the cause is in the shim, fix the shim. Do not add retries or longer waits that hide a race.
-5. Prove the fix: the test passes on the Mac in a repeated loop with no failure, and still runs in under 1 s alone.
-6. If the cause also applies to `a_native_mirror_setup_failure_runs_original_cargo_without_artifacts`, fix it there too.
+- `hook.rs` `capture_terminal()` checks stdout and stderr with `rustix::io::fcntl_getfd`, not `/dev/fd` metadata. Each failed check returns its own fallback cause: `stdout descriptor check failed: …`, `stderr descriptor check failed: …`, or `<n> free descriptors in 3-9 (need MIN_MIRROR_FREE_DESCRIPTORS)`.
+- The cause of the Mac failure: macOS can copy test-runner descriptors 3-9 into a child (a pipe and `FD_CLOEXEC` race). The shim then found too few free descriptors and fell back.
+- `shim_modes.rs` tests close inherited descriptors with `CLOSE_CAPTURE_DESCRIPTORS` before their own setup; `OCCUPY_CAPTURE_DESCRIPTORS` fills 3-9. `mirror_startup_command` always runs `/bin/sh` with the close step. The `OccupiedDescriptors` row parses the free-descriptor count and expects 0. The `DescriptorLimit` row uses limit 4 on macOS and 6 on Linux.
+- The `hook.rs` test `a_directory_arriving_at_publication_preserves_original_cargo` closes 3-8 in its shell wrapper for the same reason.
 
 **Files:**
-- `crates/cargo-tile/tests/shim_modes.rs` — the test and its helpers.
-- `crates/cargo-tile/src/shim_registration/` — only if the cause is in the shim.
-- `crates/cargo-tile/CHANGELOG.md` — one line, only if the shim changes.
+- `crates/cargo-tile/src/hook.rs` — the stream checks and fallback causes; the publication test wrapper.
+- `crates/cargo-tile/tests/shim_modes.rs` — the mirror startup rows and descriptor constants.
+- `crates/cargo-tile/CHANGELOG.md` — the Fixed line.
 
-**Workers:** 1 writer.
-- `impl` — all files above.
+**Gotchas:** A native-shim test that starts a child through a shell must close descriptors 3-9 first, or it fails on the Mac now and then.
 
-**State:** none
+### Phase 2 — The ownership scenario ends its writer group on every exit path  · status: done
 
-**Constraints from prior phases:**
-- `docs/cargo-tile/as-built/tile-fixes.md` holds the earlier tile work.
+#### As-built
 
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` passes on natedev and on the Mac.
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` is clean.
-- The repeated Mac loop of the test has no failure.
-
-### Phase 2 — The ownership scenario ends its writer group on every exit path  · status: todo
-
-#### Work Order
-
-**Source:** 2026-11-27 11:07 PST (showrunner, defect from builds). Two Mac processes, pid 15169 (ppid 1) and its child 15240, run the `ownership_victim` writer (`os.fork(); signal.pause()`) since Nov 15 04:56:37 PST. Source: `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` (`ownership_victim`, added in c2107fe89). It is the only such leak in 12 days.
-
-**Goal:** The ownership scenario caller and owner end the writer group on every exit path, so a test never leaves a process behind.
-
-**Spec:**
-
-1. Cause found by a read of main 84c3802bd (the Nov 15 tree) and main 9254b3a31: a readiness or deadline failure in the caller before it records the writer group id. The caller's `finally` closes both pipes and can SIGKILL the owner before the owner finishes its cleanup. If the guardian also dies first (the assertion exit kills it on purpose), nothing ends the writer group. Main still has this at `reader_scenario_cases.py:2323-2333`.
-2. Confirm this path from the code. Rule out the weaker candidate: an external SIGKILL of the owner between the guardian kill and the writer-group kill.
-3. Fix where the defect lives: in that `finally`, close the lifetime pipe, then wait for the owner to finish its cleanup and reap it. Keep SIGKILL of the intermediary for the caller-SIGKILL exit.
-4. Do not add retries or longer waits that hide a race. Do not stop the two live Mac processes; that question is with the user.
-5. Add a test row only if test rule 2 allows it. Else the four existing ownership tests prove the fix.
+- In `assert_scenario_releases_resources`, the caller no longer kills the owner before the owner ends its cleanup. Its `finally` closes the lifetime pipe and the release pipe, kills only the intermediary in the caller-SIGKILL case, and waits up to `OWNERSHIP_CLEANUP_SECONDS` (half of `HARD_STOP_GRACE_SECONDS`) for the owner to close its output pipes.
+- On a cleanup timeout, the caller does not kill or reap the owner, so the owner can still end its own groups. The caller kills the recorded groups in every case. It raises `TimeoutError` with the exit path and the owner PID, or adds that cause as a note to an earlier error.
+- The cause of the Nov 15 Mac leak: a readiness or deadline failure before the caller recorded the group IDs let the caller SIGKILL the owner during cleanup.
 
 **Files:**
-- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — the caller's cleanup.
-- `crates/cargo-tile/src/shim_registration/reader_scenarios.rs` — only if the Rust entry must change.
+- `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` — the caller's cleanup and `OWNERSHIP_EXIT_SECONDS` / `OWNERSHIP_CLEANUP_SECONDS`.
 
-**Workers:** 1 writer.
-- `impl` — all files above.
+**Gotchas:** The cleanup wait must stay shorter than `HARD_STOP_GRACE_SECONDS`, or the faulthandler hard stop can end the caller before the group kill.
 
-**State:** none
-
-**Acceptance gate:**
-- `bash ~/.claude/scripts/direct/verify.sh test cargo-tile` passes on natedev and on the Mac.
-- `bash ~/.claude/scripts/direct/verify.sh lint cargo-tile` is clean.
-- After the Mac suite, no new `ownership_victim` writer process is left on the Mac.
+**Ruled out:** A stalled-owner test row (test rule 2 does not require it).
