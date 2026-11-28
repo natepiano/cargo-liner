@@ -1292,33 +1292,23 @@ The copies are deleted. No source changes.
 
 **Gotchas:** The full edit costs about 33 ms more, because it rebuilds the reservation and coordination vectors from the parts. Nextest marked `foreign_active_reservation_cannot_checkpoint_the_invoking_head` leaky in the final suite.
 
-### Phase 57 — mend --fix names each fix it applies  · status: todo
+### Phase 57 — mend --fix names each fix it applies  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** after `mend --fix`, the output names the file and line of each fix it applied, so a reader can check each fix without a second run. Source: the showrunner, 2026-11-23.
-
-**Spec:**
-1. The fault (hana lint copy, 2026-11-23): mend printed only `mend: applied 11 import fix(es)` and `No findings.` No line named a file or a line, so a second run without `--fix` was needed to find the 11 fixes.
-2. After the count notice, print one line per applied fix: the path, the line, the finding kind, and the text before and after where it is short. Use the location the finding had before the fix.
-3. Apply this to every fix kind the count notice names (import fixes, annotation rewrites, `pub use` fixes).
-4. Keep the count notice as it is. A run that applies no fix prints no new line.
+- After the count notice, `mend --fix` prints one detail line per applied fix: the path, the line, the finding kind, and the short text before and after. A snippet is 80 bytes or less (`reporting/constants.rs`); a snippet with control characters or backticks is left out.
+- `reporting/outcome.rs` stores the finding location and the edit text. Each detail pairs a location with the edit made in that same file, so a facade fix shows the caller rewrite, the facade deletion and the visibility change on their own lines.
+- `fixes/imports/chain_edits.rs` (new) maps each edit of a re-export chain to the original source. A chain reports only the final edits written to disk.
+- `fixes/runner/apply.rs` publishes details after validation. `chain.rs` keeps them across chain steps and drops them for restored proposals.
+- Import fixes, annotation rewrites and `pub use` fixes record their finding location. The count notice keeps its format. A run with no applied fix prints no detail line.
+- `tests/diagnostics/import_fixes.rs` checks two fixes in two files, one line each. `pub_use_fixes.rs` checks the facade details and the chain deletion.
 
 **Files:**
-- `crates/cargo-mend/src/reporting/outcome.rs` — the count notice (`"import fix(es)"`)
-- `crates/cargo-mend/src/fixes/runner/apply.rs` and `crates/cargo-mend/src/fixes/runner/chain.rs` — apply and validate the fix passes
-- `crates/cargo-mend/src/fixes/imports/import_scan.rs` — the validated fix set and the edit writer
-- `crates/cargo-mend/tests/diagnostics/import_fixes.rs` — the output test for applied fixes
-
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- A test applies two fixes in two files and checks one output line for each, with its path and line.
-- No changed test takes one second or more.
+- `crates/cargo-mend/src/reporting/` — `outcome.rs`, `constants.rs`, `mod.rs`; `src/main.rs`
+- `crates/cargo-mend/src/fixes/runner/` — `apply.rs`, `chain.rs`, `combine.rs`, `notices.rs`, `session_snapshot.rs`
+- `crates/cargo-mend/src/fixes/imports/` — `chain_edits.rs` (new), `import_scan.rs`, `scan.rs`, `module_imports.rs`, `mod.rs`
+- The fix scanners that record locations: `facade_redirect/`, `imports_at_top/`, `inline_path_qualified_type/process.rs`, `prefer_module_import/`, `pub_use_fixes/`, `subtree_reexport/`, `field_visibility.rs`, `narrow_pub_crate.rs`, `restricted_annotation.rs`, `unused_pub.rs`
+- `crates/cargo-mend/tests/diagnostics/` — `import_fixes.rs`, `pub_use_fixes.rs`, `pub_use_outside_subtree_fixes.rs`
 
 ### Phase 58 — mend keeps its findings in blocks with assert and other macros that bind no name  · status: done
 
