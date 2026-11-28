@@ -1,29 +1,26 @@
 //! Read current rule pins and resolve member reach from the checkout.
 
 use std::collections::BTreeMap;
-use std::collections::HashSet;
 use std::fs;
-use std::io;
+use std::io::Error;
 use std::io::ErrorKind;
 use std::path::Path;
 use std::path::PathBuf;
 
 use serde::Deserialize;
 use serde::Serialize;
-use toml::Table;
-use toml::Value;
 
 use super::frontmatter;
 use super::frontmatter::Field;
 use super::frontmatter::Fields;
-use super::manifest_syntax;
-use super::path_match::WorkspacePattern;
 use crate::rule_snapshot::CandidateSurface;
 use crate::rule_snapshot::Family;
 use crate::rule_snapshot::RuleFamily;
 use crate::rule_snapshot::Surface;
 use crate::site_ledger::InputScope;
 use crate::tip_view;
+use crate::tip_view::WorkspaceMember;
+use crate::tip_view::WorkspaceReadFailure;
 
 pub(crate) struct Catalog {
     pub(super) checkout: String,
@@ -154,29 +151,21 @@ enum Origin {
     Local,
 }
 
-struct WorkspaceMember {
-    directory: String,
-    package:   String,
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum CatalogFailure {
     #[error("cannot read catalog path {path:?}")]
     Read {
         path:   PathBuf,
         #[source]
-        source: io::Error,
+        source: Error,
     },
     #[error("{path}: {reason}")]
     InvalidRule { path: PathBuf, reason: String },
-    #[error("invalid workspace manifest {path:?}")]
-    Manifest {
-        path:   PathBuf,
-        #[source]
-        source: Box<toml::de::Error>,
+    #[error("cannot read the workspace at {root:?}")]
+    Workspace {
+        root:   PathBuf,
+        source: WorkspaceReadFailure,
     },
-    #[error("invalid workspace path pattern")]
-    Pattern(#[from] regex::Error),
     #[error("unknown rule {0}")]
     UnknownRule(String),
 }
@@ -630,122 +619,8 @@ fn checkout_members(root: &Path) -> Result<Vec<WorkspaceMember>, CatalogFailure>
             }
         }
     }
-    let workspace = manifest(root, ".", manifests.get(".").map_or("", String::as_str))?;
-    let workspace = table(&workspace, "workspace");
-    let members = workspace_patterns(workspace, "members")?;
-    let exclude = workspace_patterns(workspace, "exclude")?;
-    let inherited = workspace.and_then(|workspace| table(workspace, "dependencies"));
-    let mut pending = manifests
-        .keys()
-        .filter(|name| **name == "." || matches_any(name, &members))
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut visited = HashSet::new();
-    let mut found = Vec::new();
-    while let Some(directory) = pending.pop() {
-        if !visited.insert(directory.clone())
-            || Path::new(&directory)
-                .ancestors()
-                .any(|part| matches_any(part.to_str().unwrap_or_default(), &exclude))
-        {
-            continue;
-        }
-        let current = manifest(root, &directory, &manifests[&directory])?;
-        let Some(package) = table(&current, "package")
-            .and_then(|package| package.get("name"))
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-        let targets = table(&current, "target")
-            .into_iter()
-            .flat_map(Table::values)
-            .filter_map(Value::as_table);
-        for owner in std::iter::once(&current).chain(targets) {
-            for path in dependencies(owner, inherited, &directory) {
-                if manifests.contains_key(&path) {
-                    pending.push(path);
-                }
-            }
-        }
-        found.push(WorkspaceMember {
-            directory,
-            package: package.to_owned(),
-        });
-    }
-    found.sort_by(|left, right| {
-        tip_view::path_parts(&right.directory)
-            .count()
-            .cmp(&tip_view::path_parts(&left.directory).count())
-            .then_with(|| left.directory.cmp(&right.directory))
-    });
-    Ok(found)
-}
-
-fn table<'a>(owner: &'a Table, key: &str) -> Option<&'a Table> {
-    owner.get(key).and_then(Value::as_table)
-}
-
-fn workspace_patterns(
-    workspace: Option<&Table>,
-    field: &str,
-) -> Result<Vec<WorkspacePattern>, CatalogFailure> {
-    workspace
-        .and_then(|workspace| workspace.get(field))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter(|pattern| !pattern.starts_with('/'))
-        .map(WorkspacePattern::new)
-        .collect::<Result<_, _>>()
-        .map_err(CatalogFailure::from)
-}
-
-fn matches_any(path: &str, patterns: &[WorkspacePattern]) -> bool {
-    patterns.iter().any(|pattern| pattern.matches(path))
-}
-
-fn manifest(root: &Path, directory: &str, text: &str) -> Result<Table, CatalogFailure> {
-    manifest_syntax::read_toml_1_0(text).map_err(|source| CatalogFailure::Manifest {
-        path:   root.join(directory).join("Cargo.toml"),
-        source: Box::new(source),
+    tip_view::workspace_members(&manifests).map_err(|source| CatalogFailure::Workspace {
+        root: root.to_owned(),
+        source,
     })
-}
-
-fn dependencies<'a>(
-    owner: &'a Table,
-    inherited: Option<&'a Table>,
-    directory: &'a str,
-) -> impl Iterator<Item = String> + 'a {
-    ["dependencies", "dev-dependencies", "build-dependencies"]
-        .into_iter()
-        .filter_map(|kind| table(owner, kind))
-        .flat_map(Table::iter)
-        .filter_map(move |(name, value)| {
-            let dependency = value.as_table()?;
-            let (dependency, base) =
-                if dependency.get("workspace").and_then(Value::as_bool) == Some(true) {
-                    (table(inherited?, name)?, ".")
-                } else {
-                    (dependency, directory)
-                };
-            let path = dependency.get("path")?.as_str()?;
-            if path.starts_with('/') {
-                return None;
-            }
-            let mut parts = Vec::new();
-            for part in tip_view::path_parts(base).chain(tip_view::path_parts(path)) {
-                if part == ".." {
-                    let _ = parts.pop()?;
-                } else {
-                    parts.push(part);
-                }
-            }
-            Some(if parts.is_empty() {
-                ".".to_owned()
-            } else {
-                parts.join("/")
-            })
-        })
 }

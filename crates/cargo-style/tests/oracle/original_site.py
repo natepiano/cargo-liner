@@ -439,6 +439,27 @@ def undecodable_synced_tree(
     raise AssertionError(f"Python returned a reply for the undecodable synced tree: {result}")
 
 
+def non_utf8_ignore_case(repo: Path, database: Path, root: Path, finding: str, tip: str) -> dict[str, object]:
+    expected = read_site(repo, database, finding, tip)
+    assert isinstance(expected, UnchangedSite), expected
+    git(repo, "switch", "-q", "--detach", tip)
+    (repo / "rustfmt.toml").write_bytes(b"ignore = []\n# Invalid UTF-8: \xff\n")
+    synced = commit(repo, "Save an invalid UTF-8 ignore comment")
+    git(repo, "switch", "-q", "main")
+    target = root / "non-utf8-ignore.sqlite"
+    shutil.copyfile(database, target)
+    with closing(sqlite3.connect(target)) as db, db:
+        db.execute("UPDATE sync SET tip=? WHERE id=1", (synced,))
+    with Ledger(repo, target, access=LedgerAccess.READ_ONLY) as ledger:
+        held = ledger._held(finding)
+        proof = ledger._site_proof(held, synced)
+        assert proof == expected, proof
+        anchor = ledger.finding_anchor(held)
+    return {"ledger": target.name, "synced_tip": synced,
+            "site": {"name": "finding preserves the site with a non-UTF-8 ignore comment",
+                     "answer": {"id": finding, **anchor_fields(anchor), "original_site": site_fields(expected)}}}
+
+
 def main(root: Path) -> None:
     repo = root / "repo"
     base, removal, tip = source_commits(repo)
@@ -451,7 +472,9 @@ def main(root: Path) -> None:
     failures = (invalid_cell_history(repo, database, root, cases, tip),
                 invalid_synced_tip(repo, database, root, good_finding),
                 undecodable_synced_tree(repo, database, root, good_finding, tip))
+    non_utf8_ignore = non_utf8_ignore_case(repo, database, root, good_finding, tip)
     print(json.dumps({"synced_tip": tip, "missing_pin": missing, "missing_rule": rule_id("names"),
+                      "non_utf8_ignore": non_utf8_ignore,
                       "missing_pin_finding": good_finding, "cases": answers,
                       "failures": [asdict(failure) for failure in failures]}, sort_keys=True))
 

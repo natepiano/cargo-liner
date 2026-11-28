@@ -241,7 +241,7 @@ impl From<io::Error> for LedgerReadFailure {
 
 impl LedgerSnapshot<HeldRename> {
     pub(crate) fn read_renames(path: &Path, ids: &[String]) -> Result<Self, LedgerReadFailure> {
-        Self::read(path, |connection, tip| {
+        Self::read_findings_snapshot(path, |connection, tip| {
             let mut tickets = AppliedTickets::new(connection, tip);
             let findings = read_findings(connection, ids, |row, id| {
                 read_rename(connection, row, id, &mut tickets)
@@ -253,7 +253,7 @@ impl LedgerSnapshot<HeldRename> {
 
 impl LedgerSnapshot<HeldSite, Vec<BuiltRow>> {
     pub(crate) fn read_sites(path: &Path, ids: &[String]) -> Result<Self, LedgerReadFailure> {
-        Self::read(path, |connection, tip| {
+        Self::read_findings_snapshot(path, |connection, tip| {
             let mut tickets = AppliedTickets::new(connection, tip);
             let mut sites = SiteRows::prepare(connection)?;
             let findings = read_findings(connection, ids, |row, id| {
@@ -273,10 +273,37 @@ impl LedgerSnapshot<HeldSite, Vec<BuiltRow>> {
 }
 
 impl<T, B> LedgerSnapshot<T, B> {
-    fn read(
+    fn read_findings_snapshot(
         path: &Path,
         findings: impl Fn(&Connection, &str) -> Result<FindingRead<T, B>, LedgerReadFailure>,
     ) -> Result<Self, LedgerReadFailure> {
+        LedgerSnapshot::read(path, |connection, synced_tip| {
+            let ledger_revision = if has_table(connection, "ledger_revision")? {
+                let revision = one_integer(connection, "ledger_revision", "revision")?;
+                LedgerRevision::Revision(
+                    revision
+                        .try_into()
+                        .map_err(|error| invalid_row("ledger_revision", "1", "revision", &error))?,
+                )
+            } else {
+                LedgerRevision::Absent
+            };
+            let (findings, beside) = findings(connection, synced_tip)?;
+            Ok(Self {
+                synced_tip: synced_tip.to_owned(),
+                ledger_revision,
+                findings,
+                beside,
+            })
+        })
+    }
+}
+
+impl LedgerSnapshot<()> {
+    pub(crate) fn read<R, E: From<LedgerReadFailure>>(
+        path: &Path,
+        mut read: impl FnMut(&Connection, &str) -> Result<R, E>,
+    ) -> Result<R, E> {
         let absolute = fs::canonicalize(path).map_err(|error| {
             if error.kind() == ErrorKind::NotFound {
                 LedgerReadFailure::Missing(path.to_owned())
@@ -285,60 +312,43 @@ impl<T, B> LedgerSnapshot<T, B> {
             }
         })?;
         for _ in 0..LEDGER_READ_ATTEMPTS {
-            let files = DatabaseFiles::read(&absolute)?;
+            let files = DatabaseFiles::read(&absolute).map_err(LedgerReadFailure::from)?;
             if files.is_quiet() {
-                let read = Self::read_database(&absolute, DatabaseReadMode::Immutable, &findings);
-                if files == DatabaseFiles::read(&absolute)? {
-                    return read;
+                let result = Self::read_database(&absolute, DatabaseReadMode::Immutable, &mut read);
+                if files == DatabaseFiles::read(&absolute).map_err(LedgerReadFailure::from)? {
+                    return result;
                 }
             } else if files.uses_wal() {
-                let directory = tempfile::tempdir()?;
+                let directory = tempfile::tempdir().map_err(LedgerReadFailure::from)?;
                 let copy = directory.path().join("ledger.sqlite");
                 let copied = files.copy_wal_database(&absolute, &copy);
-                if files == DatabaseFiles::read(&absolute)? {
-                    copied?;
-                    return Self::read_database(&copy, DatabaseReadMode::Locked, &findings);
+                if files == DatabaseFiles::read(&absolute).map_err(LedgerReadFailure::from)? {
+                    copied.map_err(LedgerReadFailure::from)?;
+                    return Self::read_database(&copy, DatabaseReadMode::Locked, &mut read);
                 }
             } else {
-                return Self::read_database(&absolute, DatabaseReadMode::Locked, &findings);
+                return Self::read_database(&absolute, DatabaseReadMode::Locked, &mut read);
             }
         }
-        Err(io::Error::other("the ledger files changed during the read").into())
+        Err(
+            LedgerReadFailure::from(io::Error::other("the ledger files changed during the read"))
+                .into(),
+        )
     }
 
-    fn read_database(
+    fn read_database<R, E: From<LedgerReadFailure>>(
         path: &Path,
         mode: DatabaseReadMode,
-        findings: &impl Fn(&Connection, &str) -> Result<FindingRead<T, B>, LedgerReadFailure>,
-    ) -> Result<Self, LedgerReadFailure> {
-        Self::read_transaction(&mut sqlite_read::open_read_only(path, mode)?, findings)
-    }
-
-    fn read_transaction(
-        connection: &mut Connection,
-        findings: &impl Fn(&Connection, &str) -> Result<FindingRead<T, B>, LedgerReadFailure>,
-    ) -> Result<Self, LedgerReadFailure> {
-        let snapshot = connection.transaction()?;
+        read: &mut impl FnMut(&Connection, &str) -> Result<R, E>,
+    ) -> Result<R, E> {
+        let mut connection =
+            sqlite_read::open_read_only(path, mode).map_err(LedgerReadFailure::from)?;
+        let snapshot = connection.transaction().map_err(LedgerReadFailure::from)?;
         check_schema(&snapshot)?;
         let synced_tip = read_synced_tip(&snapshot)?;
-        let ledger_revision = if has_table(&snapshot, "ledger_revision")? {
-            let revision = one_integer(&snapshot, "ledger_revision", "revision")?;
-            LedgerRevision::Revision(
-                revision
-                    .try_into()
-                    .map_err(|error| invalid_row("ledger_revision", "1", "revision", &error))?,
-            )
-        } else {
-            LedgerRevision::Absent
-        };
-        let (findings, beside) = findings(&snapshot, &synced_tip)?;
-        snapshot.commit()?;
-        Ok(Self {
-            synced_tip,
-            ledger_revision,
-            findings,
-            beside,
-        })
+        let result = read(&snapshot, &synced_tip)?;
+        snapshot.commit().map_err(LedgerReadFailure::from)?;
+        Ok(result)
     }
 }
 

@@ -23,6 +23,7 @@ mod finding;
 mod finding_anchor;
 mod finding_source;
 mod footprint;
+mod git_objects;
 mod ledger_read;
 mod module_scan;
 mod module_sites;

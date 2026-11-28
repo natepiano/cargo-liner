@@ -50,21 +50,29 @@ enum ExpectedCoverage {
 }
 
 #[test]
-fn coverage_matches_python_cells_and_rule_counts() -> TestResult<()> {
+fn coverage_matches_python_cells_and_rule_counts() -> TestResult<()> { compare_group("judgments") }
+
+#[test]
+fn coverage_membership_matches_python() -> TestResult<()> { compare_group("membership") }
+
+#[test]
+fn coverage_refresh_matches_python() -> TestResult<()> { compare_group("refresh") }
+
+fn compare_group(group: &str) -> TestResult<()> {
     let ParityCheckout::Enabled(checkout) = parity_checkout() else {
         return Ok(());
     };
     let fixture = fixture_tempdir("cargo-style-coverage-");
     let home = fixture.path().join("home");
     fs::create_dir(&home)?;
-    let cases = oracle_cases(&checkout, fixture.path())?;
+    let cases = oracle_cases(&checkout, fixture.path(), group)?;
     for case in cases {
         compare_case(fixture.path(), &case)?;
     }
     Ok(())
 }
 
-fn oracle_cases(checkout: &Path, root: &Path) -> TestResult<Vec<CoverageCase>> {
+fn oracle_cases(checkout: &Path, root: &Path, group: &str) -> TestResult<Vec<CoverageCase>> {
     let output = output_with_input(
         FixtureCommand::new(checkout.join("scripts/lib/py"))
             .current_dir(checkout)
@@ -78,12 +86,13 @@ fn oracle_cases(checkout: &Path, root: &Path) -> TestResult<Vec<CoverageCase>> {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .arg("-")
-            .arg(root),
+            .arg(root)
+            .arg(group),
         ORACLE,
     )?;
     assert!(
         output.status.success(),
-        "Python coverage oracle: {}",
+        "Python coverage oracle ({group}): {}",
         String::from_utf8_lossy(&output.stderr)
     );
     Ok(serde_json::from_slice(&output.stdout)?)

@@ -34,6 +34,13 @@ struct FailedSiteRequest {
 }
 
 #[derive(Deserialize)]
+struct FindingAtAlternateTip {
+    ledger:     String,
+    synced_tip: String,
+    site:       SiteCase,
+}
+
+#[derive(Deserialize)]
 struct OracleAnswers {
     synced_tip:          String,
     missing_pin:         String,
@@ -41,6 +48,7 @@ struct OracleAnswers {
     missing_pin_finding: String,
     cases:               Vec<SiteCase>,
     failures:            Vec<FailedSiteRequest>,
+    non_utf8_ignore:     FindingAtAlternateTip,
 }
 
 #[test]
@@ -67,6 +75,7 @@ fn original_site_matches_python_in_request_order() -> TestResult<()> {
 
     assert_site_reply(root, &oracle)?;
     assert_site_reply_with_policy(root, &oracle)?;
+    assert_finding_at_alternate_tip(root, &oracle.non_utf8_ignore)?;
     assert_missing_pin_error(root, &oracle)?;
     for failure in &oracle.failures {
         assert_request_error(root, failure)?;
@@ -186,7 +195,27 @@ fn assert_site_reply_with_policy(root: &Path, oracle: &OracleAnswers) -> TestRes
     assert_site_fields(actual, expected)
 }
 
+fn assert_finding_at_alternate_tip(
+    root: &Path,
+    expected: &FindingAtAlternateTip,
+) -> TestResult<()> {
+    let id = expected.site.answer["id"]
+        .as_str()
+        .ok_or("missing oracle finding id")?;
+    let ledger = root.join(&expected.ledger);
+    let before = std::fs::read(&ledger)?;
+    let output = finding_in_ledger(root, &expected.ledger, "rules.json", &[id])?;
+    let mut reply = site_reply_at(&output, &expected.synced_tip)?;
+    assert_site_fields(&mut reply["findings"][0], &expected.site)?;
+    assert_eq!(std::fs::read(ledger)?, before, "the ledger bytes changed");
+    Ok(())
+}
+
 fn site_reply(output: &Output, oracle: &OracleAnswers) -> TestResult<Value> {
+    site_reply_at(output, &oracle.synced_tip)
+}
+
+fn site_reply_at(output: &Output, synced_tip: &str) -> TestResult<Value> {
     assert!(
         output.status.success(),
         "The finding request did not return original_site: {}",
@@ -197,7 +226,7 @@ fn site_reply(output: &Output, oracle: &OracleAnswers) -> TestResult<Value> {
     assert_eq!(reply["schema"], 7);
     assert_eq!(
         reply["observed"],
-        json!({"synced_tip":oracle.synced_tip, "ledger_revision":"absent"})
+        json!({"synced_tip":synced_tip, "ledger_revision":"absent"})
     );
     Ok(reply)
 }

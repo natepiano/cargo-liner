@@ -11,7 +11,8 @@ use super::file_rename::FileMoveApproval;
 use super::file_rename::FileRenamePlan;
 use super::qualified_rename::QualifiedRename;
 use super::qualified_rename::QualifiedRenameApproval;
-use crate::binding;
+use crate::binding::NameChangePolicy;
+use crate::binding::SingleNameChange;
 use crate::ledger_read::FindingEdit;
 use crate::ledger_read::FindingKind;
 use crate::tokenizer;
@@ -48,7 +49,10 @@ impl<'a> RenameIntent<'a> {
             || edit
                 .before
                 .contains(['(', ')', ':', '=', '{', '}', '[', ']', '.']))
-            && replaces_one_name(&edit.before, &edit.after)
+            && matches!(
+                SingleNameChange::read(&edit.before, &edit.after, NameChangePolicy::Refactor),
+                SingleNameChange::Changed { .. }
+            )
         {
             Self::Binding
         } else {
@@ -127,24 +131,6 @@ fn item_target(edit: &str) -> bool {
     let mut components = target.strip_prefix("::").unwrap_or(target).rsplit("::");
     components.next().is_some_and(word_syntax::identifier)
         && components.all(|owner| !owner.starts_with("r#") && word_syntax::identifier(owner))
-}
-
-/// A refactor can repeat one identifier replacement and can use qualified paths or raw names.
-fn replaces_one_name(before: &str, after: &str) -> bool {
-    let before = tokenizer::read_with_comments(&before.chars().collect::<Vec<_>>()).tokens;
-    let after = tokenizer::read_with_comments(&after.chars().collect::<Vec<_>>()).tokens;
-    if before.len() != after.len() {
-        return false;
-    }
-    let mut changes = before.iter().zip(&after).filter_map(|(old, new)| {
-        (old.value != new.value || old.kind != new.kind)
-            .then_some((old.value.as_str(), new.value.as_str()))
-    });
-    changes.next().is_some_and(|(old, new)| {
-        binding::local_name(old)
-            && binding::local_name(new)
-            && changes.all(|pair| pair == (old, new))
-    })
 }
 
 /// The module name of a Rust file whose path can end with mod.rs.

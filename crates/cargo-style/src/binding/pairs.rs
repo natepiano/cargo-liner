@@ -9,6 +9,54 @@ pub(crate) enum Pair<'a> {
     NonLocal,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum NameChangePolicy {
+    Binding,
+    Refactor,
+}
+
+pub(crate) enum SingleNameChange<'a> {
+    Changed { old: &'a str, new: &'a str },
+    Unproved,
+}
+
+impl<'a> SingleNameChange<'a> {
+    pub(crate) fn read(before: &'a str, after: &'a str, policy: NameChangePolicy) -> Self {
+        let old_chars = before.chars().collect::<Vec<_>>();
+        let new_chars = after.chars().collect::<Vec<_>>();
+        let old_tokens = tokenizer::read_with_comments(&old_chars).tokens;
+        let new_tokens = tokenizer::read_with_comments(&new_chars).tokens;
+        if old_tokens.len() != new_tokens.len()
+            || (matches!(policy, NameChangePolicy::Binding)
+                && old_tokens
+                    .iter()
+                    .chain(&new_tokens)
+                    .any(|token| token.value == "::"))
+        {
+            return Self::Unproved;
+        }
+        let mut changes = old_tokens
+            .iter()
+            .zip(&new_tokens)
+            .filter(|(old, new)| old.value != new.value || old.kind != new.kind);
+        let Some((old, new)) = changes.next() else {
+            return Self::Unproved;
+        };
+        let names = [old.value.as_str(), new.value.as_str()];
+        if names.into_iter().any(|name| {
+            !scan::local_name(name)
+                || (matches!(policy, NameChangePolicy::Binding) && name.starts_with("r#"))
+        }) || changes.any(|(old, new)| [old.value.as_str(), new.value.as_str()] != names)
+        {
+            return Self::Unproved;
+        }
+        Self::Changed {
+            old: source_word(before, old.start, names[0].len()),
+            new: source_word(after, new.start, names[1].len()),
+        }
+    }
+}
+
 pub(crate) fn read_pair<'a>(
     kind: &str,
     before: &'a str,
@@ -19,34 +67,11 @@ pub(crate) fn read_pair<'a>(
     if kind != "rename" {
         return Pair::NonLocal;
     }
-    let old_chars = before.chars().collect::<Vec<_>>();
-    let new_chars = after.chars().collect::<Vec<_>>();
-    let old_tokens = tokenizer::read_with_comments(&old_chars).tokens;
-    let new_tokens = tokenizer::read_with_comments(&new_chars).tokens;
-    if old_tokens.len() != new_tokens.len()
-        || old_tokens
-            .iter()
-            .chain(&new_tokens)
-            .any(|token| token.value == "::")
-    {
-        return Pair::NonLocal;
-    }
-    let mut changes = old_tokens.iter().zip(&new_tokens).filter_map(|(old, new)| {
-        (old.value != new.value || old.kind != new.kind).then_some((old, new))
-    });
-    let Some((old, new)) = changes.next() else {
+    let SingleNameChange::Changed { old, new } =
+        SingleNameChange::read(before, after, NameChangePolicy::Binding)
+    else {
         return Pair::NonLocal;
     };
-    let names = (old.value.as_str(), new.value.as_str());
-    if <[&str; 2]>::from(names)
-        .into_iter()
-        .any(|name| !scan::local_name(name) || name.starts_with("r#"))
-        || changes.any(|(old, new)| (old.value.as_str(), new.value.as_str()) != names)
-    {
-        return Pair::NonLocal;
-    }
-    let old = source_word(before, old.start, names.0.len());
-    let new = source_word(after, new.start, names.1.len());
     Pair::Local(BindingRename {
         line,
         text,

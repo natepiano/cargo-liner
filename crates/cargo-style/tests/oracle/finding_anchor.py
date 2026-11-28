@@ -20,6 +20,8 @@ MISSING_COMMIT = "f" * 40
 UNKNOWN_FINDING = "f" * 16
 TARGET = "// stored coordinate"
 REVISION = 19
+REPLACED_AFFIX_PATH = "src/replaced-affix.rs"
+SHARED_AFFIX_SOURCE = "struct Affix {\n    shared_left: u8,\n    shared_right: u8,\n}\n"
 
 
 @dataclass(frozen=True)
@@ -54,6 +56,7 @@ def source_commits(repo: Path) -> tuple[str, str]:
     for name in ("same", "base", "stable", "moved", "invalid"):
         (repo / "src" / f"{name}.rs").write_text(original, encoding="utf-8")
     (repo / "src/checkpoint.rs").write_text("// lead\n// absent\n", encoding="utf-8")
+    (repo / REPLACED_AFFIX_PATH).write_text(SHARED_AFFIX_SOURCE, encoding="utf-8")
     patch_lines = f"// first\n// second\n{TARGET}\n// fourth\n// fifth\n// sixth\n// before\n"
     (repo / "src/patch.rs").write_text(patch_lines, encoding="utf-8")
     retained = "\n".join("// same" if line in (2, 7, 10) else f"// retained {line}"
@@ -68,6 +71,7 @@ def source_commits(repo: Path) -> tuple[str, str]:
     base = git(repo, "rev-parse", "HEAD")
 
     (repo / "src/checkpoint.rs").write_text(original, encoding="utf-8")
+    (repo / REPLACED_AFFIX_PATH).write_text("// Field removed at the checkpoint.\n", encoding="utf-8")
     (repo / "src/base.rs").write_text("// lead\n// removed\n", encoding="utf-8")
     (repo / "src/stable.rs").write_text(original.replace("// tail", "// revised tail"), encoding="utf-8")
     (repo / "src/moved.rs").write_text(f"{TARGET}\n{TARGET}\n{original}", encoding="utf-8")
@@ -179,6 +183,15 @@ def preserve_wal(root: Path, ledger: Path) -> None:
             shutil.copyfile(f"{writer}{suffix}", folder / f"wal.sqlite{suffix}")
 
 
+def replace_anchor_blob(repo: Path, base: str) -> None:
+    original = git(repo, "rev-parse", f"{base}:{REPLACED_AFFIX_PATH}")
+    replacement = subprocess.run(
+        ("git", "-C", str(repo), "hash-object", "-w", "--stdin"),
+        input=SHARED_AFFIX_SOURCE.replace("shared_", ""), check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    git(repo, "replace", original, replacement)
+
+
 def main(root: Path) -> None:
     """Print the ordered oracle answers and fixture metadata."""
     repo = root / "repo"
@@ -200,6 +213,7 @@ def main(root: Path) -> None:
         FindingCase("deleted comment with a second hunk", "src/comment-removal.rs", text="// same", line=10),
         FindingCase("vertical tab in patch header", "src/patch.rs", line=3),
         FindingCase("skip undecodable tree", "src/stable.rs", ticket="undecodable"),
+        FindingCase("finding anchor follows a replacement blob", REPLACED_AFFIX_PATH, text="    left: u8,"),
         FindingCase("judging ticket without revisions", "src/stable.rs", ticket="empty"),
     ]
     cases = {f"{index:016x}": case for index, case in enumerate(rows, 1)}
@@ -210,7 +224,20 @@ def main(root: Path) -> None:
     identities = list(reversed(cases))
     requested = [identities[0], UNKNOWN_FINDING, *identities[1:], identities[0]]
     invalid_id = identities[0]
+    replaced_id, = (identity for identity, case in cases.items() if case.path == REPLACED_AFFIX_PATH)
+    before_replace = anchor_answers(repo, ledger, cases, [replaced_id])
+    assert before_replace[0]["answer"] == {
+        "id": replaced_id, "status": "needs_judgment",
+        "reason": "no source anchor matches the stored coordinate",
+        "footprint": {"files": [REPLACED_AFFIX_PATH], "uncertain": []},
+    }, before_replace
+    replace_anchor_blob(repo, base)
     answers = anchor_answers(repo, ledger, cases, requested)
+    replaced = next(row for row in answers if row["case"] == cases[replaced_id].name)
+    assert replaced["answer"] == {
+        "id": replaced_id, "status": "anchored", "commit": base, "path": REPLACED_AFFIX_PATH,
+        "line": 2, "footprint": {"files": [REPLACED_AFFIX_PATH], "uncertain": []},
+    }, replaced
     ledger_variants(root, ledger, invalid_id)
     preserve_wal(root, root / "wal/wal.sqlite")
     print(json.dumps({"synced_tip": checkpoint, "revision": REVISION, "invalid_id": invalid_id, "cases": answers},

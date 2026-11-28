@@ -14,8 +14,6 @@ use std::rc::Rc;
 use std::str::Utf8Error;
 use std::string::FromUtf8Error;
 
-use toml::de::Error as TomlError;
-
 use crate::blob_reader::BlobReader;
 use crate::declarations;
 use crate::error::ReaderError;
@@ -30,15 +28,21 @@ use crate::source_lines::SiteLine;
 use crate::source_lines::SourceLines;
 use crate::tip_view::RepositoryTip;
 use crate::tip_view::TipReading;
+use crate::tip_view::WorkspaceReadFailure;
 use crate::tokenizer;
+
+struct ReadTree {
+    id:    String,
+    blobs: TreeBlobs,
+}
 
 /// Git reads shared by the finding proofs in one request.
 pub(crate) struct FindingSource<'a> {
     repo:        &'a Path,
-    blob_reader: BlobReader,
+    blob_reader: BlobReader<'a>,
     fact_cache:  FactCache,
     commits:     HashMap<String, CommitResolution>,
-    trees:       HashMap<String, TreeBlobs>,
+    trees:       HashMap<String, ReadTree>,
     sources:     HashMap<String, SourceText>,
     tips:        HashMap<String, Rc<RepositoryTip>>,
     raw_blobs:   HashMap<String, Vec<u8>>,
@@ -62,12 +66,22 @@ struct NamingMatches {
 pub(crate) enum FindingSourceFailure {
     #[error(transparent)]
     Read(#[from] ReaderError),
-    #[error("cannot parse committed TOML at {path}")]
-    InvalidTipToml {
+    #[error(transparent)]
+    Workspace(#[from] WorkspaceReadFailure),
+    #[error("cannot parse committed ignore file {path:?}")]
+    IgnoreConfig {
         path:   String,
         #[source]
-        source: Box<TomlError>,
+        source: Box<toml::de::Error>,
     },
+    #[error("invalid committed ignore pattern {pattern:?}")]
+    IgnorePattern {
+        pattern: String,
+        #[source]
+        source:  regex::Error,
+    },
+    #[error("committed ignore file is not UTF-8: {0:?}")]
+    IgnoreEncoding(String),
     #[error("the synced tree at {0} contains a path that is not UTF-8")]
     UndecodableSyncedTree(String),
     #[error("cannot find source blob {0}")]
@@ -301,18 +315,25 @@ impl<'a> FindingSource<'a> {
     }
 
     pub(crate) fn tree(&mut self, commit: &str) -> Result<&TreeBlobs, FindingSourceFailure> {
+        Ok(&self.read_tree(commit)?.blobs)
+    }
+
+    pub(crate) fn tree_id(&mut self, commit: &str) -> Result<&str, FindingSourceFailure> {
+        Ok(&self.read_tree(commit)?.id)
+    }
+
+    fn read_tree(&mut self, commit: &str) -> Result<&ReadTree, FindingSourceFailure> {
         Ok(match self.trees.entry(commit.to_owned()) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => {
-                let trees = self.blob_reader.inventories(&[commit.to_owned()])?;
-                let undecodable = trees
+                let (id, entries) = self.blob_reader.inventory(commit)?.into_entries();
+                let undecodable = entries
                     .iter()
-                    .flat_map(|tree| &tree.entries)
                     .any(|(path, ..)| std::str::from_utf8(path).is_err());
-                let entries = trees.into_iter().flat_map(|tree| tree.entries);
-                let tree = if undecodable {
+                let blobs = if undecodable {
                     TreeBlobs::Undecodable(
                         entries
+                            .into_iter()
                             .filter_map(|(path, _, kind, object)| {
                                 (kind == "blob").then_some((path, object))
                             })
@@ -320,6 +341,7 @@ impl<'a> FindingSource<'a> {
                     )
                 } else {
                     let entries = entries
+                        .into_iter()
                         .map(|(path, mode, kind, object)| {
                             let kind = match kind.as_str() {
                                 "tree" => EntryKind::Directory,
@@ -331,7 +353,7 @@ impl<'a> FindingSource<'a> {
                         .collect::<Result<TreeEntries, FromUtf8Error>>()?;
                     TreeBlobs::Listed(Rc::new(entries))
                 };
-                entry.insert(tree)
+                entry.insert(ReadTree { id, blobs })
             },
         })
     }

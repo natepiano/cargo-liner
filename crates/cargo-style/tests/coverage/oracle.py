@@ -20,6 +20,7 @@ from scripts.style.style_ledger import (
     CoverageScope,
     CrateCoverage,
     Ledger,
+    ListedSite,
     MIGRATIONS,
     ReadFiles,
     WholeRepository,
@@ -714,33 +715,43 @@ def python_refuses_coverage(fixture: Fixture, database: Path, rule: str | None,
         raise AssertionError(f"Python accepted coverage for {rule} with {fixture.checkout}")
 
 
-def direct_sites_cases(fixture: Fixture, alternate: Fixture, unsupported: str) -> list[CoverageCase]:
+def python_sites(fixture: Fixture, database: Path, rule: str) -> tuple[ListedSite, ...]:
     reference = fixture.root / "direct-sites-oracle.sqlite"
-    copy_ledger(fixture.database, reference, "SELECT 1")
+    copy_ledger(database, reference, "SELECT 1")
+    with Ledger(fixture.repo, reference) as ledger, ledger.rules_from_checkout(fixture.checkout):
+        return ledger.listed_sites(rule)
+
+
+def listed_sites_value(repo: Path, rule: str, pin: str, tip: str, rows: tuple[ListedSite, ...]) -> dict[str, object]:
+    sites: list[dict[str, object]] = []
+    for row in rows:
+        blob = git(repo, "rev-parse", f"{tip}:{row.path}")
+        identity = json.dumps([rule, pin, row.path, blob, row.line, row.text], ensure_ascii=False, separators=(",", ":"))
+        sites.append({"file": row.path, "line": row.line, "site_id": sha256(identity.encode()).hexdigest()})
+    return {"status": "listed", "sites": sites}
+
+
+def direct_sites_reply(name: str, database: Path, checkout: Path, rule: str, pin: str, tip: str,
+                       outcome: dict[str, object]) -> CoverageCase:
+    body = {"schema": 1, "rule": rule, "observed": {"synced_tip": tip, "rule_pin": pin,
+                                                   "ledger_revision": "absent"}, **outcome}
+    return CoverageCase(name=name, ledger=database.name, rules=RULES_CATALOG, command="sites",
+                        flags=["--checkout", str(checkout), rule], result=SitesResult(kind="reply", body=body))
+
+
+def direct_sites_cases(fixture: Fixture, alternate: Fixture, unsupported: str) -> list[CoverageCase]:
     selected = rule_id("partial")
     synced = fixture.revisions.synced
     pin = fixture.definitions[selected]["blob"]
-    with Ledger(fixture.repo, reference) as ledger:
-        rows = ledger.listed_sites(selected)
-    sites: list[dict[str, object]] = []
-    for row in rows:
-        blob = git(fixture.repo, "rev-parse", f"{synced}:{row.path}")
-        identity = json.dumps([selected, pin, row.path, blob, row.line, row.text], ensure_ascii=False, separators=(",", ":"))
-        sites.append({"file": row.path, "line": row.line, "site_id": sha256(identity.encode()).hexdigest()})
+    rows = python_sites(fixture, fixture.database, selected)
     results: list[tuple[str, str, str, dict[str, object]]] = [
         ("direct sites lists the requested generator despite an unsupported sibling", selected, pin,
-         {"status": "listed", "sites": sites}),
+         listed_sites_value(fixture.repo, selected, pin, synced, rows)),
         ("direct sites keeps a typed unsupported generator", unsupported, alternate.definitions[unsupported]["blob"],
          {"status": "unavailable", "reason": "unsupported_generator"}),
     ]
-    cases: list[CoverageCase] = []
-    for name, rule, rule_pin, outcome in results:
-        body = {"schema": 1, "rule": rule, "observed": {"synced_tip": synced, "rule_pin": rule_pin,
-                                                       "ledger_revision": "absent"}, **outcome}
-        cases.append(CoverageCase(name=name, ledger=fixture.database.name, rules=RULES_CATALOG,
-                                  command="sites", flags=["--checkout", str(alternate.checkout), rule],
-                                  result=SitesResult(kind="reply", body=body)))
-    return cases
+    return [direct_sites_reply(name, fixture.database, alternate.checkout, rule, rule_pin, synced, outcome)
+            for name, rule, rule_pin, outcome in results]
 
 
 def refresh_refusals(fixture: Fixture) -> list[CoverageCase]:
@@ -819,35 +830,100 @@ def toml_refusals(fixture: Fixture) -> list[CoverageCase]:
     return cases
 
 
-def non_utf8_ignore_case(fixture: Fixture) -> CoverageCase:
+def non_utf8_ignore_cases(fixture: Fixture) -> list[CoverageCase]:
     repo = fixture.repo
     _ = git(repo, "switch", "-q", "--detach", fixture.revisions.synced)
-    ignore = repo / "rustfmt.toml"
-    _ = ignore.write_bytes(ignore.read_bytes() + b"# Invalid UTF-8: \xff\n")
+    _ = (repo / "rustfmt.toml").write_bytes(b"ignore = []\n# Invalid UTF-8: \xff\n")
     tip = commit(repo, "Save a comment with invalid UTF-8 in the ignore file")
     _ = git(repo, "switch", "-q", "main")
     database = fixture.root / "non-UTF-8 ignore file.sqlite"
     copy_ledger(fixture.database, database, "UPDATE sync SET tip=?", (tip,))
     rule = rule_id("sites-b")
     python_refuses_coverage(fixture, database, rule, UnicodeDecodeError, "can't decode byte 0xff")
-    return refused("fresh enumeration refuses a non-UTF-8 comment in rustfmt.toml", database,
-                   [CELLS, RULE, rule], "rustfmt.toml")
+    try:
+        _ = python_sites(fixture, database, rule)
+    except UnicodeDecodeError as error:
+        assert error.object[error.start] == 0xff, str(error)
+    else:
+        raise AssertionError("Python listed sites with an invalid UTF-8 ignore comment")
+    sites = refused("sites refuses a non-UTF-8 comment in rustfmt.toml", database, [rule], "rustfmt.toml")
+    sites["command"] = "sites"
+    return [refused("coverage refuses a non-UTF-8 comment in rustfmt.toml", database,
+                    [CELLS, RULE, rule], "rustfmt.toml"), sites]
 
 
-def main(root: Path) -> None:
-    repo, revisions = repository(root)
-    write(root / "global-rules", "rust/guide.md", "# Unclassified fixture rule\n")
-    write(root / "global-rules", "rust/affixes.md", "---\ncandidates:\n  kind: field_affixes\n---\n\n# Field affixes\n")
-    latest = max(MIGRATIONS)
-    for version in (latest, COMPATIBLE_SCHEMA):
-        build_ledger(repo, root / f"schema-{version}.sqlite", revisions, version)
-    database = root / f"schema-{latest}.sqlite"
-    compatible = root / f"schema-{COMPATIBLE_SCHEMA}.sqlite"
-    fixture = Fixture(root, repo, database, catalog(repo, revisions), revisions, repo)
-    write_catalog(root, RULES_CATALOG, fixture.definitions)
+def reversed_range_case(fixture: Fixture) -> CoverageCase:
+    repo = fixture.repo
+    _ = git(repo, "switch", "-q", "--detach", fixture.revisions.synced)
+    excluded = ALPHA + "-glob.rs"
+    kept = ALPHA + "b-glob.rs"
+    for path in (excluded, kept):
+        write(repo, path, CODE)
+    write(repo, "rustfmt.toml", f'ignore = ["{ALPHA}[z-a-c]glob.rs"]\n')
+    tip = commit(repo, "Save the ignore class with a reversed first range")
+    _ = git(repo, "switch", "-q", "main")
+    database = fixture.root / "reversed range.sqlite"
+    copy_ledger(fixture.database, database, "UPDATE sync SET tip=?", (tip,))
+    rule = rule_id("names")
+    answer = coverage(fixture, database, rule=rule)
+    paths = {row["path"] for row in answer["cells"]}
+    assert kept in paths and excluded not in paths, paths
+    return reply("coverage ignore class matches a literal hyphen after a removed range", database,
+                 RULES_CATALOG, [CELLS, RULE, rule], tip, answer)
+
+
+def replacement_blob_cases(fixture: Fixture) -> list[CoverageCase]:
+    repo = fixture.repo
+    _ = git(repo, "switch", "-q", "--detach", fixture.revisions.synced)
+    replaced = ALPHA + "replaced-affix.rs"
+    kept = ALPHA + "kept-affix.rs"
+    original = "struct ReplacedAffix {\n    shared_left: u8,\n    shared_right: u8,\n}\n"
+    write(repo, replaced, original)
+    write(repo, kept, original.replace("ReplacedAffix", "KeptAffix"))
+    tip = commit(repo, "Save two sites with shared field prefixes")
+    blob = git(repo, "rev-parse", f"{tip}:{replaced}")
+    write(repo, replaced, original.replace("shared_", ""))
+    replacement = git(repo, "hash-object", "-w", replaced)
+    _ = git(repo, "switch", "-q", "--discard-changes", "main")
+
+    rule = rule_id("replace-affixes")
+    alternate = checkout_with_rule(fixture, "replacement rules", rule,
+                                   "tier: B\nfamily: types\ninput_scope: file\ncandidates:\n"
+                                   + "  kind: field_affixes\n  surface: whole")
+    database = fixture.root / "replace blob.sqlite"
+    copy_ledger(fixture.database, database, "UPDATE sync SET tip=?", (tip,))
+    rows = python_sites(alternate, database, rule)
+    assert [(row.path, row.line) for row in rows] == [(kept, 1), (replaced, 1)], rows
+    _ = git(repo, "replace", blob, replacement)
+    rows = python_sites(alternate, database, rule)
+    assert [(row.path, row.line) for row in rows] == [(kept, 1)], rows
+    answer = coverage(alternate, database, rule=rule)
+    assert [row["path"] for row in answer["cells"]] == [kept], answer
+    return [
+        direct_sites_reply("sites follows a replace ref and removes the changed affix site", database,
+                           alternate.checkout, rule, alternate.definitions[rule]["blob"], tip,
+                           listed_sites_value(repo, rule, alternate.definitions[rule]["blob"], tip, rows)),
+        reply("coverage follows a replace ref and removes the changed affix cell", database,
+              "replacement rules.json", [CELLS, RULE, rule, "--checkout", str(alternate.checkout)], tip, answer),
+    ]
+
+
+def missing_sync_case(fixture: Fixture) -> CoverageCase:
+    database = fixture.root / "missing sync.sqlite"
+    copy_ledger(fixture.database, database, "DELETE FROM sync")
+    rule = rule_id("names")
+    python_refuses_coverage(fixture, database, rule, LedgerError, "no synced tip")
+    return refused("coverage reports no synced tip when the sync row is missing", database,
+                   [CELLS, RULE, rule], "no synced tip")
+
+
+def judgment_cases(fixture: Fixture) -> list[CoverageCase]:
+    database = fixture.database
+    compatible = fixture.root / f"schema-{COMPATIBLE_SCHEMA}.sqlite"
+    build_ledger(fixture.repo, compatible, fixture.revisions, COMPATIBLE_SCHEMA)
     whole = coverage(fixture, database)
     counts_only = AvailableCoverage(status="available", rules=whole["rules"], families=whole["families"])
-    synced = revisions.synced
+    synced = fixture.revisions.synced
     cases = [
         reply("repository coverage", database, RULES_CATALOG, [CELLS], synced, whole),
         reply("schema 47 coverage", compatible, RULES_CATALOG, [CELLS], synced, whole),
@@ -859,18 +935,45 @@ def main(root: Path) -> None:
         tier = fixture.definitions[rule_id(name)]["tier"]
         cases.append(reply(f"tier {tier} rule request", database, RULES_CATALOG, [CELLS, RULE, rule_id(name)], synced,
                            coverage(fixture, database, rule=rule_id(name))))
-    cases.extend(sites_cases(fixture, database))
     cases.extend(legacy_cases(fixture))
     cases.extend(refused_cases(fixture))
-    cases.append(alternate_checkout_case(fixture))
-    cases.extend(symlinked_rule_cases(fixture))
-    cases.append(cached_catalog_without_generators_case(fixture))
-    cases.extend(refresh_refusals(fixture))
-    cases.extend(toml_refusals(fixture))
-    cases.append(non_utf8_ignore_case(fixture))
-    cases.extend(input_refusals(fixture))
+    return cases
+
+
+def membership_cases(fixture: Fixture) -> list[CoverageCase]:
+    return [
+        *sites_cases(fixture, fixture.database),
+        alternate_checkout_case(fixture),
+        *symlinked_rule_cases(fixture),
+        cached_catalog_without_generators_case(fixture),
+    ]
+
+
+def refresh_cases(fixture: Fixture) -> list[CoverageCase]:
+    return [
+        *refresh_refusals(fixture),
+        *toml_refusals(fixture),
+        *non_utf8_ignore_cases(fixture),
+        reversed_range_case(fixture),
+        *replacement_blob_cases(fixture),
+        missing_sync_case(fixture),
+        *input_refusals(fixture),
+    ]
+
+
+def main(root: Path, group: str) -> None:
+    read_cases = {"judgments": judgment_cases, "membership": membership_cases, "refresh": refresh_cases}[group]
+    repo, revisions = repository(root)
+    write(root / "global-rules", "rust/guide.md", "# Unclassified fixture rule\n")
+    write(root / "global-rules", "rust/affixes.md", "---\ncandidates:\n  kind: field_affixes\n---\n\n# Field affixes\n")
+    latest = max(MIGRATIONS)
+    database = root / f"schema-{latest}.sqlite"
+    build_ledger(repo, database, revisions, latest)
+    fixture = Fixture(root, repo, database, catalog(repo, revisions), revisions, repo)
+    write_catalog(root, RULES_CATALOG, fixture.definitions)
+    cases = read_cases(fixture)
     print(json.dumps(cases, ensure_ascii=False, sort_keys=True))
 
 
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    main(Path(sys.argv[1]), sys.argv[2])

@@ -1,8 +1,5 @@
 //! Read only the ledger rows that can supply coverage.
 
-use std::fs;
-use std::io;
-use std::io::ErrorKind;
 use std::path::Path;
 
 use rusqlite::Connection;
@@ -10,15 +7,11 @@ use rusqlite::Row;
 use rusqlite::Statement;
 
 use super::CoverageError;
-use super::constants::LEDGER_READ_ATTEMPTS;
-use crate::constants::LEDGER_SCHEMA_VERSIONS;
 use crate::ledger_read;
 use crate::ledger_read::LedgerReadFailure;
+use crate::ledger_read::LedgerSnapshot;
 use crate::site_ledger::InputScope;
 use crate::site_ledger::ReadScope;
-use crate::sqlite_read;
-use crate::sqlite_read::DatabaseFiles;
-use crate::sqlite_read::DatabaseReadMode;
 
 const ACTIVE_JUDGMENTS: &str = "active_judgments";
 
@@ -126,35 +119,18 @@ pub(super) struct CoverageLedger<'a> {
 }
 
 impl<'a> CoverageLedger<'a> {
-    fn read(connection: &'a Connection) -> Result<Self, LedgerReadFailure> {
-        let mut statement = connection.prepare("SELECT version FROM schema_version")?;
-        let versions = statement
-            .query_map([], |row| row.get::<_, i64>(0))?
-            .collect::<Result<Vec<_>, _>>()?;
-        if !matches!(versions.as_slice(), [version] if LEDGER_SCHEMA_VERSIONS.contains(version)) {
-            return Err(LedgerReadFailure::UnsupportedSchema(format!(
-                "{versions:?}"
-            )));
-        }
-        let (commit, branch) =
-            connection.query_row("SELECT tip,style_branch FROM sync WHERE id=1", [], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    fn read(connection: &'a Connection, commit: &str) -> Result<Self, LedgerReadFailure> {
+        let branch: String =
+            connection.query_row("SELECT style_branch FROM sync WHERE id=1", [], |row| {
+                row.get(0)
             })?;
-        if gix::ObjectId::from_hex(commit.as_bytes()).is_err() {
-            return Err(ledger_read::invalid_row(
-                "sync",
-                "1",
-                "tip",
-                &"expected a full Git object ID",
-            ));
-        }
         let style_branch = if branch.is_empty() {
             StyleBranch::Unspecified
         } else {
             StyleBranch::Saved(branch)
         };
         Ok(Self {
-            sync: SyncPoint { commit, style_branch },
+            sync: SyncPoint { commit: commit.to_owned(), style_branch },
             judgments: connection.prepare(
                 "SELECT id,rule_blob,input_fingerprint,\"commit\",verdict,input_scope,declared_scope,read_files \
                  FROM active_judgments WHERE rule=?1 AND path=?2 ORDER BY recorded_at DESC,id DESC",
@@ -203,48 +179,7 @@ pub(super) fn read_snapshot<T>(
     path: &Path,
     read: impl Fn(CoverageLedger<'_>) -> Result<T, CoverageError>,
 ) -> Result<T, CoverageError> {
-    let absolute = fs::canonicalize(path).map_err(|error| {
-        if error.kind() == ErrorKind::NotFound {
-            LedgerReadFailure::Missing(path.to_owned())
-        } else {
-            error.into()
-        }
-    })?;
-    for _ in 0..LEDGER_READ_ATTEMPTS {
-        let files = DatabaseFiles::read(&absolute).map_err(LedgerReadFailure::from)?;
-        let result = if files.is_quiet() {
-            read_transaction(&absolute, DatabaseReadMode::Immutable, &read)
-        } else if files.uses_wal() {
-            let directory = tempfile::tempdir().map_err(LedgerReadFailure::from)?;
-            let copy = directory.path().join("ledger.sqlite");
-            let copied = files.copy_wal_database(&absolute, &copy);
-            if files != DatabaseFiles::read(&absolute).map_err(LedgerReadFailure::from)? {
-                continue;
-            }
-            copied.map_err(LedgerReadFailure::from)?;
-            return read_transaction(&copy, DatabaseReadMode::Locked, &read);
-        } else {
-            return read_transaction(&absolute, DatabaseReadMode::Locked, &read);
-        };
-        if files == DatabaseFiles::read(&absolute).map_err(LedgerReadFailure::from)? {
-            return result;
-        }
-    }
-    Err(
-        LedgerReadFailure::from(io::Error::other("the ledger files changed during the read"))
-            .into(),
-    )
-}
-
-fn read_transaction<T>(
-    path: &Path,
-    mode: DatabaseReadMode,
-    read: &impl Fn(CoverageLedger<'_>) -> Result<T, CoverageError>,
-) -> Result<T, CoverageError> {
-    let mut connection =
-        sqlite_read::open_read_only(path, mode).map_err(LedgerReadFailure::from)?;
-    let transaction = connection.transaction().map_err(LedgerReadFailure::from)?;
-    let answer = read(CoverageLedger::read(&transaction)?)?;
-    transaction.commit().map_err(LedgerReadFailure::from)?;
-    Ok(answer)
+    LedgerSnapshot::read(path, |connection, commit| {
+        read(CoverageLedger::read(connection, commit)?)
+    })
 }

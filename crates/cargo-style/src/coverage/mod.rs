@@ -51,7 +51,6 @@ use rusqlite::Connection;
 use crate::constants::CHECKOUT_FLAG;
 use crate::constants::FINDING_RULES_FLAG;
 use crate::constants::UNCOVERED;
-use crate::error::ReaderError;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
 use crate::finding_source::TreeBlobs;
@@ -136,8 +135,6 @@ enum CoverageError {
     Ledger(#[from] LedgerReadFailure),
     #[error(transparent)]
     Source(#[from] FindingSourceFailure),
-    #[error(transparent)]
-    Repository(#[from] ReaderError),
     #[error(transparent)]
     Pins(#[from] RuleSnapshotFailure),
     #[error("cannot resolve the stored style branch {0}")]
@@ -340,7 +337,7 @@ impl CoverageRequest {
         });
         let mut lints = BTreeMap::new();
         let tree = if rules.iter().any(|(_, rule)| rule.policy.tier == Tier::A) {
-            lint::tree_at(&self.repo, synced_tip)?
+            source.tree_id(synced_tip)?.to_owned()
         } else {
             String::new()
         };

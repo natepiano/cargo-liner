@@ -28,24 +28,31 @@ use crate::fact_store::NewFactRow;
 use crate::facts::BlobSource;
 use crate::facts::BlobSyntax;
 use crate::facts::FactReading;
+use crate::git_objects;
+use crate::git_objects::ReplacementRefs;
 use crate::module_sites::ModuleSitesQuery;
 use crate::request::FactKind;
 use crate::request::NameWordClass;
 use crate::tree_inventory::TreeInventory;
 
 /// One repository, shared by the reader threads.
-pub(crate) struct BlobReader {
-    repository: ThreadSafeRepository,
+pub(crate) struct BlobReader<'a> {
+    path:         &'a Path,
+    repository:   ThreadSafeRepository,
+    replacements: ReplacementRefs,
 }
 
-impl BlobReader {
-    pub(crate) fn open(path: &Path) -> Result<Self, ReaderError> {
+impl<'a> BlobReader<'a> {
+    pub(crate) fn open(path: &'a Path) -> Result<Self, ReaderError> {
         let repository = gix::open(path).map_err(|source| ReaderError::Open {
             path: path.to_owned(),
             source,
         })?;
+        let replacements = ReplacementRefs::read(&repository);
         Ok(Self {
+            path,
             repository: repository.into_sync(),
+            replacements,
         })
     }
 
@@ -54,11 +61,18 @@ impl BlobReader {
         &self,
         commits: &[String],
     ) -> Result<Vec<TreeInventory>, ReaderError> {
-        let repository = self.repository.to_thread_local();
         commits
             .iter()
-            .map(|commit| TreeInventory::read(&repository, commit))
+            .map(|commit| self.inventory(commit))
             .collect()
+    }
+
+    pub(crate) fn inventory(&self, commit: &str) -> Result<TreeInventory, ReaderError> {
+        if self.replacements.can_change_tree() {
+            TreeInventory::read_git(self.path, commit)
+        } else {
+            TreeInventory::read(&self.repository.to_thread_local(), commit)
+        }
     }
 
     pub(crate) fn existing_fact_cache(&self) -> FactCache {
@@ -71,27 +85,26 @@ impl BlobReader {
         cache: &mut FactCache,
     ) -> Result<BlobSource, ReaderError> {
         let (repository, id) = self.blob_lookup(blob)?;
+        if self.replacements.can_change_blob(id) {
+            return Ok(git_blob(self.path, id)?
+                .as_deref()
+                .map_or(BlobSource::Missing, unparsed_source));
+        }
         if let CachedFact::Found(encoded) = cache.lookup(id) {
             match validated_cached_blob(&repository, id, &encoded)? {
                 Ok(reading) => return Ok(reading.into_source()),
                 Err(error) => cache.disable(CacheFailure::from(error)),
             }
         }
-        Ok(
-            read_blob_object(&repository, id)?.map_or(BlobSource::Missing, |blob| {
-                match String::from_utf8_lossy(&blob.data) {
-                    Cow::Borrowed(text) => BlobSource::Utf8 {
-                        text:   text.to_owned(),
-                        syntax: BlobSyntax::Unparsed,
-                    },
-                    Cow::Owned(text) => BlobSource::NotUtf8(text),
-                }
-            }),
-        )
+        Ok(read_blob_object(&repository, id)?
+            .map_or(BlobSource::Missing, |blob| unparsed_source(&blob.data)))
     }
 
     pub(crate) fn raw_bytes(&self, blob: &str) -> Result<Option<Vec<u8>>, ReaderError> {
         let (repository, id) = self.blob_lookup(blob)?;
+        if self.replacements.can_change_blob(id) {
+            return git_blob(self.path, id);
+        }
         Ok(read_blob_object(&repository, id)?.map(|blob| blob.detach().data))
     }
 
@@ -198,6 +211,23 @@ enum BlobReadOutcome {
     ParsedWithRow(NewFactRow),
     NotParsedWithCacheFailure(CacheFailure),
     ParsedWithCacheFailure(CacheFailure),
+}
+
+fn unparsed_source(bytes: &[u8]) -> BlobSource {
+    match String::from_utf8_lossy(bytes) {
+        Cow::Borrowed(text) => BlobSource::Utf8 {
+            text:   text.to_owned(),
+            syntax: BlobSyntax::Unparsed,
+        },
+        Cow::Owned(text) => BlobSource::NotUtf8(text),
+    }
+}
+
+fn git_blob(repo: &Path, blob: ObjectId) -> Result<Option<Vec<u8>>, ReaderError> {
+    git_objects::blob(repo, blob).map_err(|source| ReaderError::Blob {
+        blob,
+        source: Box::new(source),
+    })
 }
 
 fn read_and_render(

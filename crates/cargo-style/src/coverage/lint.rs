@@ -5,9 +5,7 @@ use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::io;
-use std::path::Path;
 
-use gix::ObjectId;
 use rusqlite::Connection;
 use rusqlite::OptionalExtension as _;
 use serde::Deserialize;
@@ -21,7 +19,6 @@ use toml::Table;
 use super::CoverageError;
 use super::constants::MEND_GLOBAL_CONFIG;
 use super::constants::MEND_REPO_CONFIG;
-use crate::error::ReaderError;
 use crate::facts;
 use crate::finding_source::EntryKind;
 use crate::finding_source::FindingSource;
@@ -106,30 +103,6 @@ impl LintCoverage {
     }
 }
 
-pub(super) fn tree_at(repo: &Path, commit: &str) -> Result<String, ReaderError> {
-    let repository = gix::open(repo).map_err(|source| ReaderError::Open {
-        path: repo.to_owned(),
-        source,
-    })?;
-    let object_id =
-        ObjectId::from_hex(commit.as_bytes()).map_err(|source| ReaderError::CommitId {
-            commit: commit.to_owned(),
-            source,
-        })?;
-    let tree = repository
-        .find_object(object_id)
-        .map_err(|source| ReaderError::Tree {
-            commit: commit.to_owned(),
-            source: Box::new(source),
-        })?
-        .peel_to_tree()
-        .map_err(|source| ReaderError::Tree {
-            commit: commit.to_owned(),
-            source: Box::new(source),
-        })?;
-    Ok(tree.id.to_string())
-}
-
 pub(super) fn config_digest(
     source: &mut FindingSource<'_>,
     tree: &TreeEntries,
@@ -168,7 +141,7 @@ pub(super) fn config_digest(
             let mut json = Vec::new();
             configuration.serialize(&mut Serializer::with_formatter(&mut json, PythonJson))?;
             let json = String::from_utf8(json).map_err(CoverageError::LintEncoding)?;
-            inputs.push((path.as_str(), json));
+            inputs.push((path.as_str(), facts::python_ascii_json(&json)?));
         }
     }
     if tool == LintTool::Mend
@@ -190,7 +163,7 @@ pub(super) fn config_digest(
     Ok(facts::python_json_digest(&inputs)?)
 }
 
-/// Match the spaces and ASCII escapes in the Python JSON inside each manifest row.
+/// Match the spaces in the Python JSON inside each manifest row.
 struct PythonJson;
 
 impl Formatter for PythonJson {
@@ -216,22 +189,5 @@ impl Formatter for PythonJson {
 
     fn begin_object_value<W: io::Write + ?Sized>(&mut self, writer: &mut W) -> io::Result<()> {
         writer.write_all(b": ")
-    }
-
-    fn write_string_fragment<W: io::Write + ?Sized>(
-        &mut self,
-        writer: &mut W,
-        text: &str,
-    ) -> io::Result<()> {
-        for character in text.chars() {
-            if character <= '~' {
-                write!(writer, "{character}")?;
-            } else {
-                for unit in character.encode_utf16(&mut [0; 2]) {
-                    write!(writer, "\\u{unit:04x}")?;
-                }
-            }
-        }
-        Ok(())
     }
 }

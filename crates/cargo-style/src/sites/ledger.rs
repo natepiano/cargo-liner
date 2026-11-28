@@ -1,44 +1,33 @@
 //! Read the synced tip and the legacy listed-site projection.
 
 use std::collections::BTreeSet;
-use std::fs;
-use std::io;
 use std::path::Path;
 
 use rusqlite::Connection;
+use rusqlite::Error;
 
 use super::catalog::Catalog;
 use super::catalog::Rule;
-use crate::constants::LEDGER_SCHEMA_VERSIONS;
 use crate::finding_source::CommitResolution;
 use crate::finding_source::FindingSource;
 use crate::finding_source::FindingSourceFailure;
-use crate::sqlite_read;
-use crate::sqlite_read::DatabaseFiles;
-use crate::sqlite_read::DatabaseReadMode;
-
-const READ_ATTEMPTS: usize = 3;
+use crate::ledger_read::LedgerReadFailure;
+use crate::ledger_read::LedgerSnapshot;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SitesLedgerFailure {
-    #[error("cannot read the sites ledger")]
-    File(#[from] io::Error),
+    #[error(transparent)]
+    Snapshot(#[from] LedgerReadFailure),
     #[error("cannot query the sites ledger")]
-    Query(#[from] rusqlite::Error),
+    Query(#[from] Error),
     #[error(
         "UNIQUE constraint failed: listed_rules.rule, listed_rules.rule_blob, listed_rules.tip"
     )]
     DuplicateListedRule,
-    #[error("unsupported ledger schema {0}")]
-    Schema(i64),
-    #[error("no synced tip; run set-tip first")]
-    NoTip,
     #[error("synced commit {0} is unavailable")]
     UnresolvedTip(String),
     #[error(transparent)]
     Source(#[from] FindingSourceFailure),
-    #[error("the ledger must have one schema version")]
-    VersionRows,
 }
 
 /// One listed-site coordinate and its display text.
@@ -66,102 +55,41 @@ impl SitesLedger {
         rule: &Rule,
         source: &mut FindingSource<'_>,
     ) -> Result<Self, SitesLedgerFailure> {
-        let path = fs::canonicalize(path)?;
-        for _ in 0..READ_ATTEMPTS {
-            let files = DatabaseFiles::read(&path)?;
-            if files.is_quiet() {
-                let read =
-                    Self::read_snapshot(&path, DatabaseReadMode::Immutable, catalog, rule, source);
-                if files == DatabaseFiles::read(&path)? {
-                    return read;
-                }
-            } else if files.uses_wal() {
-                let temporary = tempfile::tempdir()?;
-                let copy = temporary.path().join("ledger.sqlite");
-                let copied = files.copy_wal_database(&path, &copy);
-                if files == DatabaseFiles::read(&path)? {
-                    copied?;
-                    return Self::read_snapshot(
-                        &copy,
-                        DatabaseReadMode::Locked,
-                        catalog,
-                        rule,
-                        source,
-                    );
-                }
+        LedgerSnapshot::read(path, |connection, revision| {
+            let CommitResolution::Resolved(synced_tip) = source.resolve_commit(revision)? else {
+                return Err(SitesLedgerFailure::UnresolvedTip(revision.to_owned()));
+            };
+            let history = if rule.listing.enumerates_sites()
+                && matches!(
+                    listing_source(connection, catalog, synced_tip)?,
+                    ListedMembership::KeepRows
+                ) {
+                let mut statement = connection.prepare(
+                    "SELECT path,line,text FROM listed_sites WHERE rule=?1 AND tip=?2
+                     ORDER BY path,line,text",
+                )?;
+                ListedHistory::UseLegacy(
+                    statement
+                        .query_map([rule.id.as_str(), synced_tip.as_str()], |row| {
+                            let line: i64 = row.get(1)?;
+                            Ok(ListedCoordinate {
+                                path: row.get(0)?,
+                                line: usize::try_from(line)
+                                    .map_err(|_| Error::IntegralValueOutOfRange(1, line))?,
+                                text: row.get(2)?,
+                            })
+                        })?
+                        .collect::<Result<_, _>>()?,
+                )
             } else {
-                return Self::read_snapshot(&path, DatabaseReadMode::Locked, catalog, rule, source);
-            }
-        }
-        Err(io::Error::other("the ledger files changed during the read").into())
-    }
-
-    fn read_snapshot(
-        path: &Path,
-        mode: DatabaseReadMode,
-        catalog: &Catalog,
-        rule: &Rule,
-        source: &mut FindingSource<'_>,
-    ) -> Result<Self, SitesLedgerFailure> {
-        let mut connection = sqlite_read::open_read_only(path, mode)?;
-        let snapshot = connection.transaction()?;
-        let version = read_version(&snapshot)?;
-        if !LEDGER_SCHEMA_VERSIONS.contains(&version) {
-            return Err(SitesLedgerFailure::Schema(version));
-        }
-        let revision: String = snapshot
-            .query_row("SELECT tip FROM sync WHERE id = 1", [], |row| row.get(0))
-            .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => SitesLedgerFailure::NoTip,
-                error => error.into(),
-            })?;
-        let CommitResolution::Resolved(synced_tip) = source.resolve_commit(&revision)? else {
-            return Err(SitesLedgerFailure::UnresolvedTip(revision));
-        };
-        let history = if rule.listing.enumerates_sites()
-            && matches!(
-                listing_source(&snapshot, catalog, synced_tip)?,
-                ListedMembership::KeepRows
-            ) {
-            let mut statement = snapshot.prepare(
-                "SELECT path,line,text FROM listed_sites WHERE rule=?1 AND tip=?2
-                 ORDER BY path,line,text",
-            )?;
-            ListedHistory::UseLegacy(
-                statement
-                    .query_map([rule.id.as_str(), synced_tip.as_str()], |row| {
-                        let line: i64 = row.get(1)?;
-                        Ok(ListedCoordinate {
-                            path: row.get(0)?,
-                            line: usize::try_from(line)
-                                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(1, line))?,
-                            text: row.get(2)?,
-                        })
-                    })?
-                    .collect::<Result<_, _>>()?,
-            )
-        } else {
-            ListedHistory::Enumerate
-        };
-        snapshot.commit()?;
-        Ok(Self {
-            synced_tip: synced_tip.clone(),
-            history,
+                ListedHistory::Enumerate
+            };
+            Ok(Self {
+                synced_tip: synced_tip.clone(),
+                history,
+            })
         })
     }
-}
-
-fn read_version(connection: &Connection) -> Result<i64, SitesLedgerFailure> {
-    let mut statement = connection.prepare("SELECT version FROM schema_version")?;
-    let mut rows = statement.query([])?;
-    let version = rows
-        .next()?
-        .ok_or(SitesLedgerFailure::VersionRows)?
-        .get(0)?;
-    if rows.next()?.is_some() {
-        return Err(SitesLedgerFailure::VersionRows);
-    }
-    Ok(version)
 }
 
 pub(super) enum ListedMembership {
@@ -173,7 +101,7 @@ pub(super) fn listing_source(
     connection: &Connection,
     catalog: &Catalog,
     tip: &str,
-) -> Result<ListedMembership, rusqlite::Error> {
+) -> Result<ListedMembership, Error> {
     let mut statement =
         connection.prepare("SELECT rule,rule_blob FROM listed_rules WHERE tip=?1")?;
     let markers = statement

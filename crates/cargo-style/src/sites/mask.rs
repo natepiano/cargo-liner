@@ -6,7 +6,7 @@ use super::constants::DISPLAY_LIMIT;
 use super::constants::ESCAPED_CHAR_LIMIT;
 use super::frontmatter;
 use crate::source_lines;
-use crate::tokenizer;
+use crate::source_sites;
 
 pub(super) struct MaskedSource {
     bytes:    String,
@@ -178,7 +178,7 @@ pub(super) fn display_line(text: &str, line: usize) -> String {
     line.checked_sub(1)
         .and_then(|index| lines(text).nth(index))
         .map_or_else(String::new, |line| {
-            line.trim_matches(tokenizer::python_space)
+            source_sites::trim(line)
                 .chars()
                 .take(DISPLAY_LIMIT)
                 .collect()

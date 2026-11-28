@@ -53,38 +53,29 @@ impl RepositoryTip {
         };
         let entries = Rc::clone(entries);
         let mut manifests = BTreeMap::new();
-        let mut ignored = Vec::new();
-        for (path, entry) in entries
-            .iter()
-            .filter(|(_, entry)| entry.kind == EntryKind::Blob)
-        {
-            let manifest = path.rsplit('/').next() == Some("Cargo.toml");
-            if !manifest && !IGNORE_FILES.contains(&path.as_str()) {
-                continue;
-            }
-            let content = match source.source(&entry.object)? {
-                SourceText::Utf8(source) => source.lines.text(),
-                SourceText::NotUtf8(text) => text,
+        for (path, entry) in entries.iter().filter(|(path, entry)| {
+            entry.kind == EntryKind::Blob && path.rsplit('/').next() == Some("Cargo.toml")
+        }) {
+            let text = match source.source(&entry.object)? {
+                SourceText::Utf8(source) => source.lines.text().to_owned(),
+                SourceText::NotUtf8(text) => text.clone(),
             };
-            if manifest {
-                manifests.insert(parent(path), content.to_owned());
-            } else {
-                ignore_patterns(&read_toml(path, content)?, &mut ignored);
-            }
+            let _ = manifests.insert(parent(path).to_owned(), text);
         }
-        let crates = workspace_members(&manifests)?;
-        let ignored: Vec<_> = ignored
-            .iter()
-            .map(|pattern| IgnorePattern {
-                path:    pattern.trim_end_matches('/'),
-                matcher: FilePattern::new(pattern),
-                at_root: pattern.strip_prefix("**/").map(FilePattern::new),
-            })
+        let crates = workspace_members(&manifests)?
+            .into_iter()
+            .map(|member| member.directory)
             .collect();
+        let ignored = IgnorePaths::read(source, IgnoreEncoding::ReplaceInvalid, |path| {
+            entries
+                .get(path)
+                .filter(|entry| entry.kind == EntryKind::Blob)
+                .map(|entry| entry.object.as_str())
+        })?;
         let rust_files = entries
             .iter()
             .filter(|(path, entry)| {
-                entry.kind == EntryKind::Blob && is_rust_path(path) && !is_ignored(path, &ignored)
+                entry.kind == EntryKind::Blob && is_rust_path(path) && !ignored.matches(path)
             })
             .map(|(path, entry)| (path.clone(), entry.object.clone()))
             .collect();
@@ -247,116 +238,210 @@ fn strings(value: &Value) -> impl Iterator<Item = &str> {
         .filter_map(Value::as_str)
 }
 
-fn ignore_patterns(table: &Table, patterns: &mut Vec<String>) {
+fn ignore_patterns(
+    table: &Table,
+    patterns: &mut Vec<IgnorePattern>,
+) -> Result<(), FindingSourceFailure> {
     for (key, value) in table {
         if matches!(
             key.as_str(),
             "ignore" | "ignored" | "exclude" | "excludes" | "ignored_paths" | "ignore_paths"
         ) {
-            patterns.extend(strings(value).map(str::to_owned));
+            for pattern in strings(value) {
+                patterns.push(IgnorePattern::new(pattern)?);
+            }
         }
         if let Some(nested) = value.as_table() {
-            ignore_patterns(nested, patterns);
+            ignore_patterns(nested, patterns)?;
         }
+    }
+    Ok(())
+}
+
+pub(crate) struct IgnorePaths(Vec<IgnorePattern>);
+
+#[derive(Clone, Copy)]
+pub(crate) enum IgnoreEncoding {
+    ReplaceInvalid,
+    Strict,
+}
+
+impl IgnorePaths {
+    pub(crate) fn read<'a>(
+        source: &mut FindingSource<'_>,
+        encoding: IgnoreEncoding,
+        blob: impl Fn(&str) -> Option<&'a str>,
+    ) -> Result<Self, FindingSourceFailure> {
+        let mut patterns = Vec::new();
+        for path in IGNORE_FILES {
+            let Some(blob) = blob(path) else { continue };
+            let text = match source.source(blob)? {
+                SourceText::Utf8(source) => source.lines.text(),
+                SourceText::NotUtf8(text) if matches!(encoding, IgnoreEncoding::ReplaceInvalid) => {
+                    text
+                },
+                SourceText::NotUtf8(_) => {
+                    return Err(FindingSourceFailure::IgnoreEncoding(path.to_owned()));
+                },
+            };
+            let table = sites::read_toml_1_0(text).map_err(|source| {
+                FindingSourceFailure::IgnoreConfig {
+                    path:   path.to_owned(),
+                    source: Box::new(source),
+                }
+            })?;
+            ignore_patterns(&table, &mut patterns)?;
+        }
+        Ok(Self(patterns))
+    }
+
+    pub(crate) fn matches(&self, path: &str) -> bool {
+        parent(path).split('/').any(|part| part == "vendor")
+            || self.0.iter().any(|pattern| pattern.matches(path))
     }
 }
 
-struct IgnorePattern<'a> {
-    path:    &'a str,
-    matcher: FilePattern<'a>,
-    at_root: Option<FilePattern<'a>>,
+struct IgnorePattern {
+    prefix:  String,
+    matcher: FilePattern,
+    root:    RootIgnore,
 }
 
-fn is_ignored(path: &str, patterns: &[IgnorePattern<'_>]) -> bool {
-    parent(path).split('/').any(|part| part == "vendor")
-        || patterns.iter().any(|pattern| {
-            under(path, pattern.path)
-                || pattern.matcher.matches(path)
-                || pattern
-                    .at_root
-                    .as_ref()
-                    .is_some_and(|pattern| pattern.matches(path))
+enum RootIgnore {
+    UseFullPattern,
+    AlsoMatch(FilePattern),
+}
+
+impl IgnorePattern {
+    fn new(pattern: &str) -> Result<Self, FindingSourceFailure> {
+        let compile = |raw| {
+            FilePattern::new(raw).map_err(|source| FindingSourceFailure::IgnorePattern {
+                pattern: pattern.to_owned(),
+                source,
+            })
+        };
+        let root = match pattern.strip_prefix("**/") {
+            Some(raw) => RootIgnore::AlsoMatch(compile(raw)?),
+            None => RootIgnore::UseFullPattern,
+        };
+        Ok(Self {
+            prefix: pattern.trim_end_matches('/').to_owned(),
+            matcher: compile(pattern)?,
+            root,
         })
+    }
+
+    fn matches(&self, path: &str) -> bool {
+        under(path, &self.prefix)
+            || self.matcher.matches(path)
+            || matches!(&self.root, RootIgnore::AlsoMatch(pattern) if pattern.matches(path))
+    }
 }
 
-fn read_toml(path: &str, text: &str) -> Result<Table, FindingSourceFailure> {
-    sites::read_toml_1_0(text).map_err(|error| FindingSourceFailure::InvalidTipToml {
-        path:   path.to_owned(),
-        source: Box::new(error),
-    })
+pub(crate) struct WorkspaceMember {
+    pub(crate) directory: String,
+    pub(crate) package:   String,
 }
 
-fn workspace_members(
-    manifests: &BTreeMap<&str, String>,
-) -> Result<Vec<String>, FindingSourceFailure> {
-    let root = read_toml("Cargo.toml", manifests.get(".").map_or("", String::as_str))?;
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum WorkspaceReadFailure {
+    #[error("cannot parse workspace manifest {path:?}")]
+    Manifest {
+        path:   String,
+        source: Box<toml::de::Error>,
+    },
+    #[error("invalid workspace path pattern {pattern:?}")]
+    Pattern {
+        pattern: String,
+        source:  regex::Error,
+    },
+}
+
+pub(crate) fn workspace_members(
+    manifests: &BTreeMap<String, String>,
+) -> Result<Vec<WorkspaceMember>, WorkspaceReadFailure> {
+    let root = read_workspace_manifest(".", manifests.get(".").map_or("", String::as_str))?;
     let workspace = table("workspace", &root);
     let patterns = workspace
         .and_then(|workspace| workspace.get("members"))
         .into_iter()
         .flat_map(strings)
-        .collect::<Vec<_>>();
+        .filter(|pattern| !pattern.starts_with('/'))
+        .map(WorkspacePattern::new)
+        .collect::<Result<Vec<_>, _>>()?;
     let exclusions = workspace
         .and_then(|workspace| workspace.get("exclude"))
         .into_iter()
         .flat_map(strings)
-        .collect::<Vec<_>>();
+        .filter(|pattern| !pattern.starts_with('/'))
+        .map(WorkspacePattern::new)
+        .collect::<Result<Vec<_>, _>>()?;
     let inherited = workspace.and_then(|workspace| table("dependencies", workspace));
     let mut pending: Vec<String> = manifests
         .keys()
-        .filter(|&&directory| {
-            directory == "."
-                || patterns
-                    .iter()
-                    .any(|pattern| workspace_matches(directory, pattern))
+        .filter(|directory| {
+            *directory == "." || patterns.iter().any(|pattern| pattern.matches(directory))
         })
-        .map(|&directory| directory.to_owned())
+        .cloned()
         .collect();
     let mut visited = HashSet::new();
     let mut members = Vec::new();
     while let Some(directory) = pending.pop() {
         if !visited.insert(directory.clone())
-            || ancestors(&directory).any(|path| {
-                exclusions
-                    .iter()
-                    .any(|pattern| workspace_matches(path, pattern))
-            })
+            || ancestors(&directory)
+                .any(|path| exclusions.iter().any(|pattern| pattern.matches(path)))
         {
             continue;
         }
+        let parsed;
         let manifest = if directory == "." {
-            root.clone()
+            &root
         } else {
-            read_toml(
-                &format!("{directory}/Cargo.toml"),
-                &manifests[directory.as_str()],
-            )?
+            parsed = read_workspace_manifest(&directory, &manifests[&directory])?;
+            &parsed
         };
-        if table("package", &manifest)
+        let Some(package) = table("package", manifest)
             .and_then(|package| package.get("name"))
             .and_then(Value::as_str)
-            .is_none()
-        {
+        else {
             continue;
-        }
-        let targets = table("target", &manifest)
+        };
+        let targets = table("target", manifest)
             .into_iter()
             .flat_map(Table::values)
             .filter_map(Value::as_table);
-        for owner in std::iter::once(&manifest).chain(targets) {
+        for owner in std::iter::once(manifest).chain(targets) {
             add_dependencies(owner, &directory, inherited, manifests, &mut pending);
         }
-        members.push(directory);
+        members.push(WorkspaceMember {
+            directory,
+            package: package.to_owned(),
+        });
     }
-    members.sort_by_key(|member| (Reverse(path_parts(member).count()), member.clone()));
+    members.sort_by(|left, right| {
+        Reverse(path_parts(&left.directory).count())
+            .cmp(&Reverse(path_parts(&right.directory).count()))
+            .then_with(|| left.directory.cmp(&right.directory))
+    });
     Ok(members)
+}
+
+fn read_workspace_manifest(directory: &str, text: &str) -> Result<Table, WorkspaceReadFailure> {
+    sites::read_toml_1_0(text).map_err(|source| WorkspaceReadFailure::Manifest {
+        path:   if directory == "." {
+            "Cargo.toml".to_owned()
+        } else {
+            format!("{directory}/Cargo.toml")
+        },
+        source: Box::new(source),
+    })
 }
 
 fn add_dependencies(
     owner: &Table,
     directory: &str,
     inherited: Option<&Table>,
-    manifests: &BTreeMap<&str, String>,
+    manifests: &BTreeMap<String, String>,
     pending: &mut Vec<String>,
 ) {
     for kind in ["dependencies", "dev-dependencies", "build-dependencies"] {
@@ -410,73 +495,98 @@ pub(crate) fn path_parts(path: &str) -> impl Iterator<Item = &str> {
     path.split('/').filter(|part| !matches!(*part, "" | "."))
 }
 
-fn workspace_matches(directory: &str, pattern: &str) -> bool {
-    fn matches(parts: &[&str], patterns: &[&str]) -> bool {
-        match (parts, patterns) {
-            (_, []) => parts.is_empty(),
-            (_, ["**", rest @ ..]) => {
-                matches(parts, rest)
-                    || parts
-                        .split_first()
-                        .is_some_and(|(_, tail)| matches(tail, patterns))
-            },
-            ([part, tail @ ..], [pattern, rest @ ..]) => {
-                FilePattern::new(pattern).matches(part) && matches(tail, rest)
-            },
-            _ => false,
-        }
-    }
-    if pattern.starts_with('/') {
-        return false;
-    }
-    matches(
-        &path_parts(directory).collect::<Vec<_>>(),
-        &path_parts(pattern).collect::<Vec<_>>(),
-    )
+struct WorkspacePattern(Vec<WorkspacePart>);
+
+enum WorkspacePart {
+    AnyDepth,
+    Component(FilePattern),
 }
 
-enum FilePattern<'a> {
-    Literal(&'a str),
+impl WorkspacePattern {
+    fn new(pattern: &str) -> Result<Self, WorkspaceReadFailure> {
+        path_parts(pattern)
+            .map(|part| match part {
+                "**" => Ok(WorkspacePart::AnyDepth),
+                part => FilePattern::new(part).map(WorkspacePart::Component),
+            })
+            .collect::<Result<_, _>>()
+            .map(Self)
+            .map_err(|source| WorkspaceReadFailure::Pattern {
+                pattern: pattern.to_owned(),
+                source,
+            })
+    }
+
+    fn matches(&self, directory: &str) -> bool {
+        fn matches(parts: &[&str], patterns: &[WorkspacePart]) -> bool {
+            match (parts, patterns) {
+                (_, []) => parts.is_empty(),
+                (_, [WorkspacePart::AnyDepth, rest @ ..]) => {
+                    matches(parts, rest)
+                        || parts
+                            .split_first()
+                            .is_some_and(|(_, tail)| matches(tail, patterns))
+                },
+                ([part, tail @ ..], [WorkspacePart::Component(pattern), rest @ ..]) => {
+                    pattern.matches(part) && matches(tail, rest)
+                },
+                _ => false,
+            }
+        }
+        matches(&path_parts(directory).collect::<Vec<_>>(), &self.0)
+    }
+}
+
+enum FilePattern {
+    Literal(String),
     Glob(Regex),
-    Invalid,
 }
 
-impl<'a> FilePattern<'a> {
-    fn new(pattern: &'a str) -> Self {
+impl FilePattern {
+    fn new(pattern: &str) -> Result<Self, regex::Error> {
         if !pattern.contains(['*', '?', '[']) {
-            return Self::Literal(pattern);
+            return Ok(Self::Literal(pattern.to_owned()));
         }
-        Regex::new(&glob_regex(pattern)).map_or(Self::Invalid, Self::Glob)
+        let mut regex = String::from("(?s)\\A");
+        push_fnmatch(&mut regex, pattern, GlobWildcards::AnyCharacter);
+        regex.push_str("\\z");
+        Regex::new(&regex).map(Self::Glob)
     }
 
     fn matches(&self, name: &str) -> bool {
         match self {
-            Self::Literal(literal) => name == *literal,
+            Self::Literal(literal) => name == literal,
             Self::Glob(glob) => glob.is_match(name),
-            Self::Invalid => false,
         }
     }
 }
 
-fn glob_regex(pattern: &str) -> String {
+#[derive(Clone, Copy)]
+pub(crate) enum GlobWildcards {
+    AnyCharacter,
+    PathComponent,
+}
+
+pub(crate) fn push_fnmatch(regex: &mut String, pattern: &str, wildcards: GlobWildcards) {
+    let (star, question) = match wildcards {
+        GlobWildcards::AnyCharacter => (".*", "."),
+        GlobWildcards::PathComponent => ("[^/]*", "[^/]"),
+    };
     let words: Vec<_> = pattern.chars().collect();
-    let mut regex = String::from("(?s)\\A");
     let mut cursor = 0;
     while let Some(&word) = words.get(cursor) {
         cursor += 1;
         match word {
             '*' if cursor > 1 && words[cursor - 2] == '*' => {},
-            '*' => regex.push_str(".*"),
-            '?' => regex.push('.'),
+            '*' => regex.push_str(star),
+            '?' => regex.push_str(question),
             '[' if let Some(end) = class_end(&words, cursor) => {
-                write_class(&words[cursor..end], &mut regex);
+                write_class(&words[cursor..end], regex);
                 cursor = end + 1;
             },
-            _ => regex.push_str(&regex::escape(&word.to_string())),
+            _ => regex.push_str(&regex::escape(word.encode_utf8(&mut [0; 4]))),
         }
     }
-    regex.push_str("\\z");
-    regex
 }
 
 fn class_end(chars: &[char], mut cursor: usize) -> Option<usize> {
@@ -491,28 +601,27 @@ fn class_end(chars: &[char], mut cursor: usize) -> Option<usize> {
 
 fn write_class(chars: &[char], regex: &mut String) {
     let chunks = class_chunks(chars);
-    let mut parts = chunks.iter();
-    let first = parts.next().map_or(&[][..], Vec::as_slice);
-    if first.is_empty() {
-        regex.push_str(r"[^\s\S]");
-        return;
+    let mut class = String::new();
+    for (index, members) in chunks.iter().enumerate() {
+        if index != 0 {
+            class.push('-');
+        }
+        write_class_members(members, &mut class);
     }
-    if first == ['!'] && parts.as_slice().is_empty() {
-        regex.push('.');
-        return;
+    match class.as_str() {
+        "" => regex.push_str(r"[^\s\S]"),
+        "!" => regex.push('.'),
+        _ => {
+            regex.push('[');
+            if let Some(members) = class.strip_prefix('!') {
+                regex.push('^');
+                regex.push_str(members);
+            } else {
+                regex.push_str(&class);
+            }
+            regex.push(']');
+        },
     }
-    regex.push('[');
-    if let Some(members) = first.strip_prefix(&['!']) {
-        regex.push('^');
-        write_class_members(members, regex);
-    } else {
-        write_class_members(first, regex);
-    }
-    for members in parts {
-        regex.push('-');
-        write_class_members(members, regex);
-    }
-    regex.push(']');
 }
 
 fn class_chunks(chars: &[char]) -> Vec<Vec<char>> {

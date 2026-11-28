@@ -47,20 +47,6 @@ pub(crate) enum SitesFailure {
     RootManifest,
     #[error("{path:?} is not in the subpath of {root:?}")]
     WorkspaceMemberOutsideRoot { path: PathBuf, root: PathBuf },
-    #[error("invalid committed ignore pattern {pattern:?}")]
-    IgnorePattern {
-        pattern: String,
-        #[source]
-        source:  regex::Error,
-    },
-    #[error("committed ignore file is not UTF-8: {0:?}")]
-    IgnoreEncoding(String),
-    #[error("cannot parse committed ignore file {path:?}")]
-    IgnoreConfig {
-        path:   String,
-        #[source]
-        source: Box<toml::de::Error>,
-    },
     #[error("{rule}: candidates kind=struct_fields in {origin} needs field_type_pattern")]
     FieldTypePattern { rule: String, origin: PathBuf },
     #[error(
