@@ -6271,7 +6271,7 @@
               "type": "object"
             },
             {
-              "description": "Active sibling reservations already hold every requested path, so the harness session\nstays unmapped and a later bare check under it opens new work.",
+              "description": "The command leaves the reservation unmapped for this harness session.\nThis includes sibling coverage and plan shrink holds.",
               "properties": {
                 "status": {
                   "const": "left_unmapped",
@@ -14598,7 +14598,7 @@
               "type": "object"
             },
             {
-              "description": "Active sibling reservations already hold every requested path, so the harness session\nstays unmapped and a later bare check under it opens new work.",
+              "description": "The command leaves the reservation unmapped for this harness session.\nThis includes sibling coverage and plan shrink holds.",
               "properties": {
                 "status": {
                   "const": "left_unmapped",
@@ -20259,7 +20259,7 @@
               "type": "object"
             },
             {
-              "description": "Active sibling reservations already hold every requested path, so the harness session\nstays unmapped and a later bare check under it opens new work.",
+              "description": "The command leaves the reservation unmapped for this harness session.\nThis includes sibling coverage and plan shrink holds.",
               "properties": {
                 "status": {
                   "const": "left_unmapped",

@@ -3,10 +3,7 @@
 use std::env;
 use std::ffi::OsStr;
 use std::fs;
-use std::fs::OpenOptions;
-use std::io::Error;
 use std::io::ErrorKind;
-use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -21,6 +18,7 @@ use super::coordination_run_marker::CoordinationRunMarkerRemoval;
 use super::coordination_run_marker::DetachedCoordinationRunMarker;
 use super::error::LedgerError;
 use super::journal::WorktreeAdministrativeLocator;
+use super::publication;
 use crate::config::ConfigurationLookup;
 use crate::ids::CoordinationRunId;
 use crate::ids::WorktreeKind;
@@ -346,21 +344,13 @@ impl WorktreeContext {
         let temporary_path = self.administrative_directory.0.join(format!(
             "{COORDINATION_RUN_MARKER_FILE_NAME}.{coordination_run_id}.{publication_attempt_id}.tmp"
         ));
-        let publication = (|| -> Result<(), Error> {
-            let mut temporary_file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary_path)?;
-            temporary_file.write_all(format!("{coordination_run_id}\n").as_bytes())?;
-            temporary_file.sync_all()?;
-            fs::rename(&temporary_path, marker_path)?;
-            fs::File::open(&self.administrative_directory.0)?.sync_all()?;
-            Ok(())
-        })();
-        if publication.is_err() {
-            std::mem::drop(fs::remove_file(temporary_path));
-        }
-        publication.map_err(LedgerError::Io)
+        publication::replace(
+            &self.administrative_directory.0,
+            &marker_path,
+            &temporary_path,
+            format!("{coordination_run_id}\n").as_bytes(),
+        )
+        .map_err(LedgerError::Io)
     }
 
     /// Read the marker that a newly created cover should join.
