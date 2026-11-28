@@ -849,7 +849,7 @@ when the count is still at the limit.
 `session_mapping_publication.status` has these values:
 
 - `published`: the mapping reflects the reservation, including when no harness session required an entry.
-- `left_unmapped`: active siblings already hold every requested path, so the fresh harness session stays unmapped.
+- `left_unmapped`: the command leaves the reservation unmapped for this harness session. This includes sibling coverage and plan shrink holds.
 - `explicit_selection_applies_only_to_current_invocation`: an explicit selection cannot persist because no usable harness session id was supplied; `reason` is `harness_session_unavailable`.
 - `unavailable`: the durable reservation's mapping update failed; `diagnostic` explains why.
 

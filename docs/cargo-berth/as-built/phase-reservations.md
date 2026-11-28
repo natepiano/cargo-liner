@@ -51,7 +51,7 @@ A mapping that names another run falls through to the unmapped rule, so it never
 - The residual paths become the new reservation (`FirstTouchReservationReuse::AppendRequired`, appended by `append_first_touch_claim`).
 - When siblings hold every path, the check reports `already_held` under the sibling holding the first requested path, appends nothing, and returns `AlreadyHeldSessionMapping::PreserveUnmappedSession`. The publication is `SessionIdentityMappingPublication::LeftUnmapped` (`{"status": "left_unmapped"}`), so a later bare check under that session still opens new work.
 - A mapped or explicit selection whose paths are all held uses `PublishSelectedReservation`: it maps the session to the selected reservation and reports `published`.
-- When that selection needs no mapping write (an existing mapping, an explicit id equal to it, or an eligible explicit id with no harness session) and the snapshot shows no conflict, `check` answers the same `already_held` envelope before the lock, with no write. See [check-under-load.md](check-under-load.md).
+- If the snapshot shows no conflict and selection requires no remap, `check` reports `already_held` without the ledger mutation lock. It durably republishes the marker and any required mapping. See [check-under-load.md](check-under-load.md).
 
 When opening a phase meets `maximum_reservations`, `ClaimCapacityRecovery` first runs one capacity reconciliation that releases stale reservations with no change left (`unchanged_scopes`, [rebase-settlement.md](rebase-settlement.md)), and the first touch retries once. If the ledger is still full, the check returns `CheckPayload::ReservationLimitReached { maximum }` through `OutputEnvelope::check_reservation_limit_reached`: status `reservation_limit_reached`, exit 1, no claim, no mapping.
 
@@ -200,7 +200,7 @@ With several active reservations and no selecting mapping, `from_unmapped_active
 - The director's real session gets mapped whenever a `Widen` or `Claim` is applied under it, including the post-tool-use hook's sole-candidate widen. That mapping does not steer the post-tool-use hook, but a hand-run bare `drift` under `CLAUDE_CODE_SESSION_ID` and the edit hook still follow it. A director names the reservation with `--reservation` instead of relying on its own session.
 - With two phases active and the director's session unmapped, an Edit or Write under that session gets `ambiguous_active_run_reservations` from the edit hook; the refusal labels each candidate with its sessions and names `cargo-berth check --reservation <reservation-id> <path>...`.
 - A selector value with a leading hyphen must use the `--flag=value` form; clap rejects it space-separated. The claim to copy prints such values that way.
-- `left_unmapped` reports `already_held` under the sibling holding the first requested path only. Other siblings show up in `already_held` entries, not in `reservation_id`.
+- When siblings hold every requested path, `left_unmapped` accompanies `already_held` under the sibling that holds the first path. The `already_held` entries name the other siblings. A plan shrink claim can append a hold and report `left_unmapped`.
 - Timing under load misleads. Hook-band tests swing from about 0.3 s to 2–3 s, and the overlap message tests from under 0.1 s alone to 1.5–3.3 s in a loaded full run, unchanged tests included. Time a test alone before calling it slow. Named-claim fixtures run in at most 0.566 s.
 
 ## Why

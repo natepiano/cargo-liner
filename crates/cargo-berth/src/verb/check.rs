@@ -183,11 +183,8 @@ fn execute_with_capacity_recovery(
         },
         Err(error) => return error.into_output(),
     };
-    if let CheckAcquisitionDecision::HeldBySelectedReservation {
-        scopes,
-        acquisition,
-    } = first_decision.acquisition
-    {
+    if let CheckAcquisitionDecision::HeldBySelectedReservation(held) = first_decision.acquisition {
+        let (acquisition, scopes) = held.publish(repository.context());
         return OutputEnvelope::clear_check(scopes, acquisition, None);
     }
     if matches!(
@@ -580,15 +577,181 @@ mod cost_tests {
     use crate::ledger::LedgerTransactionOutcome;
     use crate::ledger::ScopeKind;
     use crate::ledger::TransactionValidation;
+    use crate::ledger::publication::sync_tests;
+    use crate::ledger::publication::sync_tests::SyncStep;
     use crate::output::OutputEnvelope;
     use crate::reconcile::RecoveredBypassReporting;
     use crate::reservation::MergeExtent;
     use crate::reservation::ReservationRunStatus;
     use crate::scope::DeclaredReservationScopeSet;
+    use crate::session;
+    use crate::test_work::WorkCounter;
 
     const TEST_COMPACTION_THRESHOLD_BYTES: u64 = 1;
     const HELD_PATH: &str = "held.rs";
     const UNRESERVED_PATH: &str = "new.rs";
+
+    #[test]
+    fn held_check_reports_marker_publication_after_both_syncs() -> Result<(), Box<dyn Error>> {
+        assert_held_check_publication("marker_publication", |repository| {
+            repository
+                .context()
+                .administrative_directory()
+                .to_path_buf()
+        })
+    }
+
+    #[test]
+    fn held_check_reports_mapping_publication_after_both_syncs() -> Result<(), Box<dyn Error>> {
+        assert_held_check_publication("session_mapping_publication", |repository| {
+            repository.context().ledger_directory()
+        })
+    }
+
+    fn assert_held_check_publication(
+        field: &str,
+        publication_directory: impl FnOnce(&RepositorySnapshot) -> PathBuf,
+    ) -> Result<(), Box<dyn Error>> {
+        let directory = initialized_check_repository()?;
+        let root = directory.path();
+        let repository = RepositorySnapshot::discover(root)?;
+        let publication_directory = publication_directory(&repository);
+        session::with_test_harness_session(Some("publication-test".parse()?), || {
+            let check = || {
+                check_with_selection(
+                    root,
+                    HELD_PATH,
+                    CheckReservationSelection::SessionMappingOrNew,
+                )
+            };
+            let first = check()?;
+            assert_eq!(first.exit_code(), BerthExit::Clear, "{first:?}");
+            let counter = WorkCounter::start();
+            for (fail_at, status, expected_steps) in [
+                (Some(SyncStep::File), "unavailable", &[SyncStep::File][..]),
+                (
+                    Some(SyncStep::Directory),
+                    "unavailable",
+                    &[SyncStep::File, SyncStep::Directory],
+                ),
+                (None, "published", &[SyncStep::File, SyncStep::Directory]),
+            ] {
+                let (result, steps) = sync_tests::record(&publication_directory, fail_at, check);
+                let result = result?;
+                assert_eq!(result.exit_code(), BerthExit::Clear, "{result:?}");
+                let envelope = serde_json::to_value(result)?;
+                let acquisition = &envelope["payload"]["data"]["acquisition"];
+                assert_eq!(acquisition["kind"], "already_held", "{envelope}");
+                let publication = &acquisition[field];
+                assert_eq!(publication["status"], status, "{envelope}");
+                if let Some(step) = fail_at {
+                    let diagnostic = format!("injected {step:?} sync failure");
+                    assert!(
+                        publication["diagnostic"]
+                            .as_str()
+                            .is_some_and(|value| value.contains(&diagnostic)),
+                        "{publication}"
+                    );
+                }
+                assert_eq!(steps, expected_steps);
+            }
+            assert_eq!(counter.finish().mutation_lock_attempts, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn checkpoint_gap_hold_reports_whether_a_mapping_is_required() -> Result<(), Box<dyn Error>> {
+        let directory = initialized_check_repository()?;
+        let root = directory.path();
+        let trunk_snapshot = RepositorySnapshot::discover(root)?
+            .head_object_id()?
+            .clone();
+        run_git(root, &["switch", "--quiet", "-c", "phase"])?;
+        let harness_session_id: session::HarnessSessionId = "plan-owner".parse()?;
+        let claimed = session::with_test_harness_session(Some(harness_session_id.clone()), || {
+            edit_check(root, HELD_PATH)
+        })?;
+        assert_eq!(claimed.exit_code(), BerthExit::Clear, "{claimed:?}");
+        let ledger = Ledger::open(root)?;
+        let events = ledger.journal_events_for_test()?;
+        let (actor, reservation_id) = events
+            .iter()
+            .find_map(|event| match &event.operation {
+                JournalOperation::Claim {
+                    reservation_id,
+                    source: ledger::ClaimSource::FirstTouch,
+                    ..
+                } => Some((&event.actor, *reservation_id)),
+                _ => None,
+            })
+            .ok_or("expected the first-touch reservation")?;
+        fs::write(root.join(HELD_PATH), "checkpointed work\n")?;
+        run_git(
+            root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--quiet",
+                "-am",
+                "checkpoint work",
+            ],
+        )?;
+        let protected_tip = RepositorySnapshot::discover(root)?
+            .head_object_id()?
+            .clone();
+        let checkpoint = ledger.transact(actor.worktree, actor.run, |_| {
+            TransactionValidation::<()>::Append(Box::new(JournalOperation::Checkpoint {
+                reservation_id,
+                protected_tip: protected_tip.clone().into(),
+                trunk_snapshot: trunk_snapshot.clone(),
+            }))
+        })?;
+        assert!(matches!(
+            checkpoint,
+            LedgerTransactionOutcome::Appended { .. }
+        ));
+
+        let repository = RepositorySnapshot::discover(root)?;
+        let removed = repository
+            .context()
+            .remove_coordination_run_marker(actor.run)?;
+        assert_eq!(removed, ledger::CoordinationRunMarkerRemoval::Removed);
+        for (path, harness_session_id, expected) in [
+            (UNRESERVED_PATH, Some(harness_session_id), "left_unmapped"),
+            ("another.rs", None, "published"),
+        ] {
+            session::with_test_harness_session(harness_session_id, || {
+                let result = edit_check(root, path)?;
+                assert_eq!(result.exit_code(), BerthExit::Clear, "{result:?}");
+                let envelope = serde_json::to_value(result)?;
+                let acquisition = &envelope["payload"]["data"]["acquisition"];
+                assert_eq!(acquisition["kind"], "appended", "{envelope}");
+                assert!(matches!(
+                    session::resolve(&repository.context().ledger_directory()),
+                    session::SessionIdentityLookup::Unavailable
+                ));
+                let events = ledger.journal_events_for_test()?;
+                assert!(
+                    events.last().is_some_and(|event| {
+                        matches!(&event.operation, JournalOperation::Claim {
+                        source: ledger::ClaimSource::PlanShrink, scopes, ..
+                    } if scopes.covers_path(path.as_bytes()))
+                    }),
+                    "{envelope}"
+                );
+                assert_eq!(
+                    acquisition["session_mapping_publication"]["status"], expected,
+                    "{envelope}"
+                );
+                Ok::<_, Box<dyn Error>>(())
+            })?;
+        }
+        Ok(())
+    }
 
     #[test]
     fn edit_hook_first_touch_decodes_checkpoint_once() -> Result<(), Box<dyn Error>> {
@@ -1114,28 +1277,8 @@ mod cost_tests {
 
     impl EditCheckFixture {
         fn new() -> Result<Self, Box<dyn Error>> {
-            let directory =
-                cargo_berth_test_support::copy_git_repository_seed("edit-check-base", |root| {
-                    run_git(root, &["init", "--quiet", "-b", "main"])?;
-                    run_git(root, &["config", "core.ignorecase", "false"])?;
-                    fs::write(root.join(HELD_PATH), "base\n")?;
-                    run_git(root, &["add", HELD_PATH])?;
-                    run_git(
-                        root,
-                        &[
-                            "-c",
-                            "user.name=Test",
-                            "-c",
-                            "user.email=test@example.com",
-                            "commit",
-                            "--quiet",
-                            "-m",
-                            "base",
-                        ],
-                    )
-                });
+            let directory = initialized_check_repository()?;
             let root = directory.path();
-            Ledger::initialize(root)?;
 
             let foreign_directory = tempfile::tempdir()?;
             let foreign = foreign_directory.path().join("holder");
@@ -1240,6 +1383,31 @@ mod cost_tests {
             );
             Ok(())
         }
+    }
+
+    fn initialized_check_repository() -> Result<TempDir, Box<dyn Error>> {
+        let directory =
+            cargo_berth_test_support::copy_git_repository_seed("edit-check-base", |root| {
+                run_git(root, &["init", "--quiet", "-b", "main"])?;
+                run_git(root, &["config", "core.ignorecase", "false"])?;
+                fs::write(root.join(HELD_PATH), "base\n")?;
+                run_git(root, &["add", HELD_PATH])?;
+                run_git(
+                    root,
+                    &[
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.com",
+                        "commit",
+                        "--quiet",
+                        "-m",
+                        "base",
+                    ],
+                )
+            });
+        Ledger::initialize(directory.path())?;
+        Ok(directory)
     }
 
     fn edit_check(root: &Path, file: &str) -> Result<OutputEnvelope, Box<dyn Error>> {

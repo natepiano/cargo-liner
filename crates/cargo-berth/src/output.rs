@@ -4703,7 +4703,7 @@ fn message_with_session_mapping_publication(
     match publication {
         SessionIdentityMappingPublication::Published => message,
         SessionIdentityMappingPublication::LeftUnmapped => format!(
-            "{message} Active sibling reservations already hold every requested path, so the harness session stays unmapped; a later bare check under it opens new work."
+            "{message} The command leaves the reservation unmapped for this harness session. A later bare check under this session can open new work."
         ),
         SessionIdentityMappingPublication::ExplicitSelectionAppliesOnlyToCurrentInvocation {
             ..
