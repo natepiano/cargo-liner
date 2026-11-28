@@ -1093,35 +1093,23 @@ The copies are deleted. No source changes.
 
 **Ruled out:** declined as unlikely for one user: a fetch that rewrites the upstream while compaction runs.
 
-### Phase 52 — a Mac handler sees each config change at once, also under load  · status: todo
+### Phase 52 — a Mac handler sees each config change at once, also under load  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** on the Mac, cargo-handler applies a change to a watched config file within 500 ms at any load, and never misses one. Source: the showrunner, 2026-11-21: "A config change that arrives 2 s late or never is a wrong result."
-
-**Spec:**
-1. The fault, from phase ci1 (commit 47f4b125b): a raw FSEvents probe at Mac load 34.49 on 12 CPUs did 16 atomic renames. 6 reached the callback within 500 ms, 2 after about 2 s, and 8 not within 2.5 s. A notify trace in `config_watch.rs` showed the same gap before the reader channel. The fault is in OS delivery through FSEvents, not in the handler.
-2. First write a Mac reproduction that fails on main: a repeated atomic replacement of a watched config file under load, with the 500 ms limit. The ci1 opt-in native Mac watcher test is the start point.
-3. Fix it at the cause. A lead: notify's `macos_kqueue` feature, which watches the file descriptor and does not use FSEvents. The workspace `notify` entry is shared, so a feature change also reaches cargo-port: measure the cargo-port watchers too, or limit the change to cargo-handler. Name the choice and the reason.
-4. CPU cost ranks first. Measure the CPU of an idle Mac handler (and an idle Mac cargo-port, if it changes) before and after the change: 3 or more pairs, median change and spread.
-5. After the fix, make the native Mac watcher test a default test again, and keep it under 1 s.
+- On macOS, `config_watch/macos.rs` watches the config file through kqueue directly (`kqueue` 1.2.1, a macOS-only handler dependency). It registers the new inode before it reads a replacement. The workspace `notify` features do not change, so cargo-port keeps its notify backend.
+- A symlink entry keeps its directory watches when the target is missing. The file watch re-arms when the target returns.
+- `config_watch/word_highlight_updates.rs` keeps the parser and the delivery channel. On drop it closes a stop socket that wakes kqueue, then joins the reader.
+- The native watcher tests in `render/word_click_tests.rs` run by default on macOS: 16 atomic replacements, symlink target replacements, a target moved aside and restored, and a moved config directory. The slowest takes 0.058 s.
+- Main failed only for a symlink target outside the watched directory. The plain path passed 192 stressed replacements.
+- Cost: idle Mac handler CPU rose by a median of 0.00476 percentage points over three pairs (range +0.00237 to +0.00793).
 
 **Files:**
-- `Cargo.toml` and `crates/cargo-handler/Cargo.toml` — the notify features
-- `crates/cargo-handler/src/config_watch.rs` — the config watcher
-- `crates/cargo-handler/src/render/word_click_tests.rs` — the native watcher test
-- `crates/cargo-port/src/watcher/` and `crates/cargo-port/Cargo.toml` — only if the feature reaches cargo-port
+- `Cargo.toml`, `Cargo.lock`, `crates/cargo-handler/Cargo.toml` — the kqueue dependency
+- `crates/cargo-handler/src/config_watch/mod.rs`, `macos.rs` (new), `word_highlight_updates.rs` (was `config_watch.rs`)
+- `crates/cargo-handler/src/render/word_click_tests.rs`
 
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
-
-**Verification:**
-- `verify.sh check`, `verify.sh test` and `verify.sh lint` for cargo-handler, and for cargo-port when it changes, on the Mac and on natedev.
-- The reproduction fails on main and passes after the fix.
-- The idle CPU pairs show no increase, or the reply names the cost.
-- No changed test takes one second or more.
+**Ruled out:** two replacements that revert the file before the reader runs publish no change. The final contents are correct.
 
 ### Phase 53 — cargo-berth hooks stop rewriting the whole replay checkpoint  · status: done
 
@@ -1332,37 +1320,21 @@ The copies are deleted. No source changes.
 - A test applies two fixes in two files and checks one output line for each, with its path and line.
 - No changed test takes one second or more.
 
-### Phase 58 — mend keeps its findings in blocks with assert and other macros that bind no name  · status: todo
+### Phase 58 — mend keeps its findings in blocks with assert and other macros that bind no name  · status: done
 
-#### Work Order
+#### As-built
 
-**Goal:** mend reports a qualified path in a block that holds a standard macro which binds no name, such as `assert!`. It skips the block only for a macro that can bind a name. Source: the hana mend check, 2026-11-23 (research at `${SESSION_DIR}/tmp/mend-hana-research.md`).
-
-**Spec:**
-1. The fault, part 1 (Phase 47, 105aec11c): `BlockBindings::collect` returns `Unknown` for any block with a statement macro (`Stmt::Macro` or `Expr::Macro`). `lookup` then returns `MayBind` for every name in that block, and `check_path` drops the path. So nearly every qualified path in a test fn body gets no finding. On hana init/catalyst 6147f7fcd9 this also changed which sites mend saw, so the count of fixes changed from 0 to 11.
-2. The fault, part 2 (Phase 54, f19a0c2a9): `record_macro_footprint` adds a PascalCase path start in a macro body to `bare_type_names`. `find_collision_names` then blocks the import, also when the name in the macro resolves to the same item through an existing import. Example: `TooltipPhase` in an `assert_eq!` body in `crates/hana_diegetic/src/widgets/tooltip/placement/screen.rs` (lines 1270-1271) blocks a correct fix at line 124.
-3. Fix part 1: name the standard macros that bind no name in the block (`assert`, `assert_eq`, `assert_ne`, `debug_assert*`, `panic`, `unreachable`, `todo`, `print*`, `eprint*`, `format`, `write*`, `vec`, `matches`, and the `log` and `tracing` macros). A block with only these macros keeps its bindings `Known`. Any other macro keeps `Unknown`.
-4. Fix part 2: a macro-body name does not block the import when the new import names the same item that the name resolves to in that scope.
-5. Keep the Phase 47 positive control (`unbound_first_segment` in `BLOCK_BINDINGS_SOURCE`, `tests/diagnostics/import_fixes.rs`) and the Phase 54 glob tests passing.
-
-**Constraints from prior phases:**
-- In a scope with a glob, a new module binding collides only if the file uses the name outside the rewritten paths. Include macro bodies in this check. Blocking all glob scopes dropped the finding in 1,032 of 2,344 Hana files.
+- `inline_path_qualified_type/macro_bindings.rs` lists each standard macro that binds no name once, with its allowed crate roots (`assert*`, `debug_assert*`, `panic`, `unreachable`, `todo`, `print*`, `eprint*`, `format`, `write*`, `vec`, `matches`, and the `log` and `tracing` macros). A block with only these macros keeps its bindings `Known` (`block_bindings.rs`). Any other macro keeps `Unknown`.
+- `macro_targets.rs` resolves a name in a macro body through explicit imports, globs, extern crates, and the crate root of the target that owns the file. The name blocks the new import only when it resolves to another item.
+- A declaration whose attributes are all built-in inert attributes (`doc`, `derive`, `allow`, `must_use`, `repr` and similar) keeps its known name. An attribute macro or `cfg` makes it unknown.
+- `process.rs` checks item names in the module that gets the import, so an inline test module with its own `Widget` gets no second `Widget` import.
+- Fixtures in `scan.rs` cover each case. The Phase 47 positive control and the Phase 54 glob tests stay.
 
 **Files:**
-- `crates/cargo-mend/src/` — `BlockBindings` (Phase 47) and the macro footprint and collision check (Phase 54); the writer names the exact files
+- `crates/cargo-mend/src/fixes/inline_path_qualified_type/macro_bindings.rs`, `macro_targets.rs` (new), `block_bindings.rs`, `process.rs`, `scan.rs`, `scope.rs`, `visitor.rs`, `mod.rs`
+- `crates/cargo-mend/src/rust_syntax/module_map.rs`
 
-**Workers:** 1 writer.
-- `impl`: all files.
-
-**State:** none.
-
-**Verification:**
-- `verify.sh check cargo-mend`, `verify.sh test cargo-mend`, `verify.sh lint cargo-mend`.
-- A fixture test: a qualified path in a test fn with `assert!` gets its finding and fix.
-- A fixture test: a block with an unknown macro (a `macro_rules!` that binds a name) still skips the path.
-- A fixture test: a name in an `assert_eq!` body that resolves to the same item does not block the import.
-- No changed test takes one second or more.
-- Phase 54 must be on main first, because part 2 changes Phase 54 code.
+**Ruled out:** a PascalCase name captured by a format string, and a user `assert!` macro defined in another file. Both are unlikely for a single user, so they stay.
 
 ### Phase 59 — mend finds rustc after its toolchain folder moves  · status: done
 
@@ -1428,3 +1400,29 @@ The copies are deleted. No source changes.
 - `crates/cargo-mend/tests/diagnostics/inline_path_fixes.rs` — the regression fixture.
 
 **Ruled out:** the package's own lib name is not in the crate names, and Cargo metadata can omit a dependency's custom lib name. A path through such a name can still get a bad import, and mend then rolls back its fixes. It is unlikely for a single user, so it stays.
+
+### Phase 63 — a cargo-berth reservation move is a journalled rebind with a receipt  · status: todo
+
+#### Work Order
+
+**Goal:** `phase_reservation.py repair --to <reservation> --repo <checkout>` can move a phase to a target reservation in another worktree of the same unit, also when another session of the run claimed the target and when the session index is malformed. Source: sdlc for admin-console (reservetree phase, run a8af8ef2), relayed by cargo-liner at 07:50 EST on 2026-11-28. Live case: praxis P11.
+
+**Spec:** Part A of `/tmp/claude/unit/a8af8ef2-fb7f-4615-a8f8-b561ab0a5000/phases/reservetree/followup_work_order.md`. The approach review is `astra_approach_r7.md` in the same folder.
+1. Session selections and removals are durable journal facts (also `prepare_selection` and the clear at `ledger/handle.rs:675`). The session index is derived data.
+2. Index recovery keeps every valid entry. One bad entry never drops the others.
+3. A dedicated rebind operation, separate from `check`. Under the mutation lock it validates authority, lifecycle, checkout and scopes, then appends one rebind event with an operation ID and its result.
+4. Authority covers direct phase acquisition and verified director delegation. A run ID or a name suffix alone is not authority.
+5. A query by operation ID returns the receipt. Different arguments for one ID fail.
+6. Lock order: phase, ledger, session publication.
+
+**Constraints:**
+- Do not ship the round 1–7 diff or the old reservetree berth patch. They are reference only.
+- Single user: skip unlikely edge cases. No test may take one second or more.
+
+**Files:** `crates/cargo-berth/` (ledger, session, CLI) and `docs/cargo-berth/`.
+
+**Workers:** 1 writer.
+
+**Verification:**
+- The six test groups in `astra_approach_r7.md` item 5: authority, index recovery, durability at every write boundary, concurrency, recovery, preserved behavior. Check the complete state after each case.
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
