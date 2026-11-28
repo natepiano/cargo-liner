@@ -6,6 +6,8 @@ The tile unit ran the `remove-running-section-tile-fixes` plan from 2026-10-08 t
 
 This page lists what each finished phase built, the phases that were not built, and the open follow-ups. The full per-phase as-built notes (files, gates, review rounds) are in the last plan doc: `git show 55f173926:docs/cargo-port/remove-running-section-tile-fixes.md`.
 
+This page also describes native capture startup and cleanup in the reader ownership tests.
+
 ## Built
 
 Each line is the behavior that one phase made true. The phase id finds its notes in the plan doc above.
@@ -55,7 +57,7 @@ Each line is the behavior that one phase made true. The phase id finds its notes
 - The Mac source-switch reader test runs under 1 s (Phase 43j).
 - A released phase's commits raise no incursion against the next reservation (Phase 64).
 - The cargo-berth template setup survives a slow git protocol reply on the CI runner (Phase 65).
-- The shim_modes native mirror test always runs native capture on the CI runner (Phase 66).
+- The `shim_modes` native mirror test requires native capture and reports the fallback cause on failure (Phase 66).
 - Old test fixtures no longer fill the Mac cache (Phase 67).
 - cargo-berth tests run under 1 s on the Mac (Phase 68).
 - A plan shrink edit joins the worktree's active reservation (Phase 70).
@@ -115,6 +117,22 @@ Each line is the behavior that one phase made true. The phase id finds its notes
 - A CI nextest run shows its progress meter (Phase 50).
 - A reader scenario ends its fake cargo processes (Phase 51).
 - A lifecycle test leaves no process running (Phase 53).
+
+## Native capture startup
+
+`capture_terminal` in `crates/cargo-tile/src/hook.rs` selects PTY capture when `script` is executable on `PATH` and all three standard streams are terminals. For piped capture, it checks stdout and stderr with `rustix::io::fcntl_getfd`. It uses `/dev/fd` metadata to count free descriptors in `MIRROR_DESCRIPTOR_RANGE` (3 through 9). Piped capture requires `MIN_MIRROR_FREE_DESCRIPTORS` (2).
+
+If a check fails, the shim runs the original cargo command before it publishes capture files. It sets `CARGOTILE_CAPTURE_FALLBACK` without changing terminal output. The `terminal:` error identifies the failed stream check or gives the free descriptor count, range, and minimum.
+
+Inherited descriptors can take the mirror's spare descriptors on macOS. In `crates/cargo-tile/tests/shim_modes.rs`, `mirror_startup_command` uses `/bin/sh` to close descriptors 3 through 9 before it applies the test setup. The shell then sources the shim or starts the native entry. `OccupiedDescriptors` fills the range and checks that the fallback reports zero free descriptors. `DescriptorLimit` uses a limit of 4 on macOS to fail publication and 6 on Linux to fail pipe setup. The publication race test in `hook.rs` closes descriptors 3 through 8 and uses descriptor 9 for cargo stdout.
+
+## Reader ownership test cleanup
+
+`assert_scenario_releases_resources` in `crates/cargo-tile/src/shim_registration/reader_scenario_cases.py` checks that the writer and server groups end and the scenario folder is removed. It covers success, assertion failure, deadline expiry, and `SIGKILL` of the scenario or its caller. The test allows `OWNERSHIP_EXIT_SECONDS` (5 seconds) for the selected exit.
+
+Cleanup closes the lifetime and release pipes so the owner can finish even if the test has no group IDs. Only the caller `SIGKILL` case sends `SIGKILL` to the intermediate caller. The test waits for the owner to close its output pipes. `OWNERSHIP_CLEANUP_SECONDS` is half of `HARD_STOP_GRACE_SECONDS` (2.5 of 5 seconds). This leaves time to signal the recorded writer and server groups before the hard stop. The final cleanup always sends `SIGKILL` to those recorded groups and ignores groups that have already ended.
+
+On a cleanup timeout, the test closes its copies of the output pipes and leaves the owner running. The owner can still end its groups. The timeout names the exit path and includes the owner PID when the test starts the owner directly. The test raises `TimeoutError` or adds the message as a note to the earlier error.
 
 ## Not built
 
