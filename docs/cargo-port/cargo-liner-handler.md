@@ -1412,3 +1412,29 @@ The copies are deleted. No source changes.
 - `crates/cargo-mend/tests/diagnostics/inline_path_fixes.rs` — the regression fixture.
 
 **Ruled out:** the package's own lib name is not in the crate names, and Cargo metadata can omit a dependency's custom lib name. A path through such a name can still get a bad import, and mend then rolls back its fixes. It is unlikely for a single user, so it stays.
+
+### Phase 63 — a cargo-berth reservation move is a journalled rebind with a receipt  · status: todo
+
+#### Work Order
+
+**Goal:** `phase_reservation.py repair --to <reservation> --repo <checkout>` can move a phase to a target reservation in another worktree of the same unit, also when another session of the run claimed the target and when the session index is malformed. Source: sdlc for admin-console (reservetree phase, run a8af8ef2), relayed by cargo-liner at 07:50 EST on 2026-11-28. Live case: praxis P11.
+
+**Spec:** Part A of `/tmp/claude/unit/a8af8ef2-fb7f-4615-a8f8-b561ab0a5000/phases/reservetree/followup_work_order.md`. The approach review is `astra_approach_r7.md` in the same folder.
+1. Session selections and removals are durable journal facts (also `prepare_selection` and the clear at `ledger/handle.rs:675`). The session index is derived data.
+2. Index recovery keeps every valid entry. One bad entry never drops the others.
+3. A dedicated rebind operation, separate from `check`. Under the mutation lock it validates authority, lifecycle, checkout and scopes, then appends one rebind event with an operation ID and its result.
+4. Authority covers direct phase acquisition and verified director delegation. A run ID or a name suffix alone is not authority.
+5. A query by operation ID returns the receipt. Different arguments for one ID fail.
+6. Lock order: phase, ledger, session publication.
+
+**Constraints:**
+- Do not ship the round 1–7 diff or the old reservetree berth patch. They are reference only.
+- Single user: skip unlikely edge cases. No test may take one second or more.
+
+**Files:** `crates/cargo-berth/` (ledger, session, CLI) and `docs/cargo-berth/`.
+
+**Workers:** 1 writer.
+
+**Verification:**
+- The six test groups in `astra_approach_r7.md` item 5: authority, index recovery, durability at every write boundary, concurrency, recovery, preserved behavior. Check the complete state after each case.
+- `verify.sh check cargo-berth`, `verify.sh test cargo-berth`, `verify.sh lint cargo-berth`.
