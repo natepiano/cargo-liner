@@ -5,7 +5,7 @@
 cargo-tile is a terminal grid of every live cargo invocation on the machine. A process's output belongs to the terminal that started it, so the grid cannot read progress from the process table alone. The capture shim closes that gap: it stands in front of each toolchain's `cargo`, mirrors the run's output into a log, and registers the run for as long as it lives. Capture extends to every account on the machine, in particular the self-hosted GitHub Actions runner accounts (`hana-linux-1` and `hana-linux-2` on Linux, `hana-ci` on macOS), so a build started by a runner shows in the grid under that account's name with nothing to configure. Every account writes under its own uid directory below one shared parent, the grid reads all of them, and `sudo cargo tile install --all-accounts` installs the shim for every account's toolchains in one command.
 
 The pieces:
-- A POSIX `sh` shim that publishes a `cargo-tile-v3` NUL-framed registration before its log.
+- A POSIX `sh` shim that starts a native runner. The runner publishes a `cargo-tile-v3` NUL-framed registration before it creates the log.
 - A shared `/tmp/cargo-tile/<uid>` directory, read for every account and swept only for the reader's own, with each file proved on its own before unlink.
 - Registration parsing bound to kernel birth stamps, with a diagnostic for a newer framing version.
 - `install`, `uninstall` and `status` for every account, reporting each toolchain by name. A Darwin account keeps its full group membership past the 16-group `setgroups` limit.
@@ -18,18 +18,21 @@ The pieces:
 
 ### The shim
 
-`crates/cargo-tile/src/cargo-capture-shim.sh` is POSIX `sh`, embedded into the binary as `SHIM_SOURCE` in `crates/cargo-tile/src/hook.rs`. `cargo-tile install` moves a toolchain's real cargo to `cargo-tile-real` and writes the shim as `cargo`. An installed shim is recognised by `SHIM_MARKER` within its first `SHIM_MARKER_SEARCH_BYTES` bytes, and its line 3 is `# cargo-tile-shim-version: 3`.
+`capture_shell_source` in `crates/cargo-tile/src/hook.rs` uses the embedded POSIX template `crates/cargo-tile/src/cargo-capture-shim.sh`. It inserts the path to `cargo-tile-capture`. `cargo-tile install` moves a toolchain's real cargo to `cargo-tile-real` and writes the shim as `cargo`. `inspect_shim` finds `SHIM_MARKER` within the first `SHIM_MARKER_SEARCH_BYTES` bytes. Line 3 of the current template is `# cargo-tile-shim-version: 4`.
 
-Per invocation the shim:
+The shell shim execs `cargo-tile-capture` with `--capture-shim`. If `/dev/fd/1` or `/dev/fd/2` is absent before Rust starts, the shell selects `--capture-shim-passthrough`. In that mode, `capture_shim_entry` execs the real cargo without capture.
 
-- Resolves itself through symlinks and exports `CARGO` naming the shim, so `cargo-clippy` and `cargo-nextest` come back through it. Query subcommands (`metadata`, `--version`, `tile`, `port`, `berth`, and the rest) go straight to the real cargo. Nesting is ancestry: `CARGOTILE_NESTED` carries the enclosing shim's pid and `encloses_this_run` walks one `ps -Ao pid=,ppid=` listing in awk, up to 32 hops.
-- Computes its names: `root=/tmp/cargo-tile/$(id -u)`, `pids=$root/state/pids`, a generation `<date>-<uuid>` from `/proc/sys/kernel/random/uuid` or `uuidgen`, the log `run-<generation>-<pid>.log`, and the registration `<pid>.<generation>`.
-- Runs every setup step inside the `setup_capture` subshell under `umask 0022`. It creates the parent when missing and sets it `1777` when it owns it. It creates `$root`, `$root/state` and `$pids`, sets each `0755`, and refuses a symlink or a directory it does not own (`owns_directory`, via `find -user`). It then reaps its own account's dead captures: for every entry in `$pids` whose pid fails `kill -0`, it removes the exact publication, its `.tmp` and its log.
-- Records identity. Linux: `boot` is `/proc/sys/kernel/random/boot_id`; `birth` is field 22 of `/proc/$$/stat`, parsed past the last `)`. macOS: `boot` is `sysctl -n kern.bootsessionuuid`; `birth` is `ps -o lstart= -p $$` under `LC_ALL=C TZ=UTC0`, trimmed of BSD column padding, converted by `date -j` to epoch seconds. A field is empty when unobtainable.
-- Writes the record with `printf '%s\000'` into an exclusively created `.tmp` file: `cargo-tile-v3`, generation, boot, birth, log basename, `pwd -P` directory, `$HOME` when absolute, argument count, then each argument verbatim. It publishes with `ln` onto `<pid>.<generation>`, and only then creates the log. Any failure removes only the artifacts this invocation owns and `exec`s the real cargo with the original arguments.
-- Runs cargo under `script` (util-linux or BSD form) when all three streams are a tty. Otherwise it pipes cargo's stderr to `tee -a`, asks for a progress bar with `CARGO_TERM_PROGRESS_WHEN=always`, and for a `--message-format=json` caller drops standalone `--quiet` and `-q` before `--`. The pipe is anonymous, not a named FIFO: on macOS a FIFO's reader sometimes never saw end-of-file after cargo exited, and tee hung. Cargo's stdout goes around the pipe on one borrowed descriptor and its status comes back on another: the highest two from 3 to 9 that are closed, so a descriptor the caller hands cargo stays open for it. Neither cargo nor tee keeps either one, so a process cargo leaves running cannot hold the shim. A caller holding all but one of descriptors 3 to 9, or with stdout closed, gets cargo uncaptured, decided before setup; stderr is probed too, though bash opens the shim script itself on a closed descriptor 2. A signal to the shim or its whole group still waits for cargo, and tee ignores `INT` and `QUIT` so cargo's shutdown output reaches the log. The EXIT trap removes the registration and log, so only a run killed outright leaves artifacts behind.
+Per invocation the native runner:
 
-A `cargo install` goes down the capture path the same way `cargo build` does: the shim's `case $first` classifier, the `Building [...] n/m` counter, and `heading_gauge`. No install-specific code exists.
+- Resolves the shim path through symlinks. It sets `CARGO` to that path so `cargo-clippy` and `cargo-nextest` can call it again. `capture_requested` excludes query calls such as `cargo metadata` and `cargo --version`. It also excludes `tile`, `port`, `handler`, and `berth`. The runner execs the real cargo for these calls. `CARGOTILE_NESTED` records the enclosing runner's PID. `capture_is_nested` uses `sysinfo` to follow up to 32 parent links. The runner skips capture if it finds that PID.
+- Selects the transport in `capture_terminal`. It selects a PTY when `PATH` contains an executable `script` and all three standard streams are terminals. For piped capture, it checks stdout and stderr with `rustix::io::fcntl_getfd`. It counts free descriptors with `/dev/fd` metadata in `MIRROR_DESCRIPTOR_RANGE` (3 through 9). It requires at least `MIN_MIRROR_FREE_DESCRIPTORS` (2). A failed check occurs before publication. The `terminal:` fallback names the failed stream check or reports the free descriptor count, range, and minimum.
+- Uses `CaptureDirectories::prepare` to create missing directories and check their type and ownership. The account directories must belong to the invoking UID. The setup receipt `.setup-v4-<uid>` records the boot and directory identities. If the receipt does not match, the runner sets the account directories to `0755`. It also sets the shared parent to `1777` if it owns that directory. `remove_dead_publications` removes the named registration, staging file, and log for its own PID or a PID that the kernel reports absent.
+- Reads the runner's identity through `birth_stamp::observe`. Linux reads the boot ID and field 22 of `/proc/<pid>/stat`. macOS reads the boot session UUID and process birth through kernel calls. The registration uses whole epoch seconds for macOS birth. If birth is unavailable, the runner leaves it empty and keeps any available boot ID.
+- Forms the generation from a UTC timestamp and a version 7 UUID in `capture_generation_at`. `capture_registration` writes the NUL-separated fields in order. The fields are `cargo-tile-v3`, generation, boot, birth, log basename, current directory, absolute `HOME` or empty, argument count, and argument bytes. `CapturePublication::publish` writes the bytes to a new `.tmp` file and hard-links it to `<pid>.<generation>`. It removes the staging name, then creates `run-<generation>-<pid>.log`. The registration and log use mode `0644`.
+- Runs PTY capture with the util-linux or BSD form of `script`. The helper starts the native entry, which uses a socket acknowledgement to confirm it execs cargo. For piped capture, `capture_piped` gives cargo an anonymous stderr pipe and leaves stdout with the caller. `NativeStderrPump` copies stderr to the log and to the caller's stderr. `capture_piped` defaults `CARGO_TERM_PROGRESS_WHEN` to `always` and `CARGO_TERM_PROGRESS_WIDTH` to `100`. For JSON output it removes standalone `--quiet` and `-q` before `--`.
+- Execs the original command on a capture startup failure when cargo has yet to start. `exec_uncaptured_cargo` puts `<stage>: <error>` in `CARGOTILE_CAPTURE_FALLBACK` without printing it. After cargo starts, the runner waits for cargo and its output and applies any deferred signal to the exit status. `CapturePublication` and `OwnedCaptureFile` remove the registration and log that the invocation owns.
+
+The same capture path handles `cargo install` and `cargo build`. The `Building [...] n/m` counter feeds `heading_gauge`.
 
 ### The shared directory
 
@@ -310,11 +313,11 @@ Ownership resolves through `Capture::select(pid)`: the lowest root index first, 
 - Mac: `org.nixos.hana-macos-runner` runs as `hana-ci` (uid 502). The plist is `/Library/LaunchDaemons/org.nixos.hana-macos-runner.plist`, with working directory `/Users/hana-ci/actions-runner`; its Nix launcher rewrites `.env` and `.path` at startup. The plist sets neither `CARGO_TILE_ROOT` (read by nothing) nor a job-start hook.
 - The three runners are registered to the `hana` repository. cargo-liner CI uses GitHub-hosted runners, so runner rows are observed from hana CI runs.
 
-**Upgrade order.** Readers are deployed before v3 writers, and shims only after every reader on the machine is upgraded:
+**Upgrade order.** Upgrade every reader on the machine before you install shims that write `cargo-tile-v3` registrations.
 1. Before any upgraded reader starts, set `capture.auto_install = false` for every account (keeping each original config's bytes and mode, or its absence) and withhold runner job-start hooks. On Linux the runner accounts need a NixOS configuration change and a rebuild first, because the unconfigure pre-start wipes runtime HOME: a last-position `ExecStartPre`, run as the runner account, copies the suppressed config into runtime HOME.
 2. Deploy the readers (`cargo-tile`, `cargo-berth`, `cargo-port`) and restart them.
 3. Run `sudo cargo tile install --all-accounts`.
-4. Verify each shim's version line.
+4. Verify each shim's version line. The native shim declares version 4.
 5. Run `status --all-accounts` and check that every expected toolchain reports `Installed`.
 6. Restore each account's original config bytes, mode, or absence.
 
@@ -343,7 +346,7 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 
 ## Invariants
 
-- The shim never alters what cargo does, prints, or exits with. Every setup failure degrades to `exec "$real" "$@"`.
+- On a capture setup failure, fallback execs real cargo with its original arguments and streams. After cargo starts, the runner does not start it again.
 - The shim is POSIX `sh`: no bashisms, no `readlink -f`, no `local`.
 - Publication order and sampling order are one invariant read from two ends. The shim publishes the registration before it creates the log. The reader samples registrations when it opens the root and collects the sample before consulting liveness.
 - A sweep removes `<pid>.<generation>` and the log the record names as a pair, decided by fresh kernel evidence for that pid immediately before the unlink, never by age or by name alone. `Unknown` authorizes neither a row nor a deletion.
@@ -370,7 +373,7 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 - cargo-berth evidence records are built after extent derivation and match the live `Reservation::edit_blocking_status`. Historical journal records are never rewritten.
 - Every cargo-berth reader that can reconcile or release includes the extent and evidence handling before a newer binary touches a shared ledger.
 - `unsafe_code` is denied workspace-wide. In cargo-tile the exceptions are `birth_stamp/macos.rs` (sysctl), the account-database and credential calls in `hook.rs`, and the test FIFO fixture in `root_scan/inspected_directory.rs`, each under a per-item `allow(reason)` with a `// SAFETY:` comment.
-- Every constant lives in `crates/cargo-tile/src/constants.rs` with a rationale.
+- Shared capture constants live in `crates/cargo-tile/src/constants.rs`. The mirror descriptor limits live beside the native capture code in `hook.rs`.
 - The crate is binary-only. Tests of crate items are inline `#[cfg(test)]` modules, including the shim, summary-total and ACL suites. `tests/unit_tests.rs` compiles every source module through `#[path]` into one test binary, so cargo builds `cargo-tile` before those tests and names it in `CARGO_BIN_EXE_cargo-tile`; its module list mirrors `src/main.rs` plus the test-only `shim_registration`. The binary target sets `test = false`, and `src/main.rs` carries `#![cfg(not(test))]`, so an explicit `--bins` or `--all-targets` builds an empty harness. No test builds the binary itself: on macOS cargo replaces even an up-to-date `target/debug/cargo-tile` by removing and copying it, so a nested build in one test process left another test executing a missing file. The other integration targets (`tests/cli_lifecycle.rs`, `tests/shim_modes.rs`) spawn the built binary and include no sources.
 - Two uids are never required by a test.
 
@@ -378,22 +381,22 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 
 **Capture, registration and sweeps.**
 - `CAPTURE_SWEEP_LIMIT` is 512 removal attempts per scan across all roots; a pair costs two, reserved before the first unlink. `CAPTURE_INVENTORY_LIMIT` is 4096 entries, `CAPTURE_ENTRY_NAME_BYTES` 255, `CAPTURE_REGISTRATION_BYTES` and `RUN_LOG_TAIL_BYTES` 64 KiB, `BIRTH_SYSCTL_MAX_BYTES` 4096. `REGISTRATION_VERSION_HEADER_BYTES` is `len("cargo-tile-v") + 20`. The worker sleeps `PROCESS_POLL_MILLIS` (250) after each scan, so the scan rate is at most four per second.
-- When a live run's log is swept, cargo reopens it through `script` or `tee -a` outside the setup subshell under the caller's umask (`0066` on the runner units), so it lands `0600` and stays unreadable for the rest of that run. That is the reason for the ordering invariant.
+- `CapturePublication::publish` creates the registration first so a reader sweep cannot remove an orphan log. `NativeStderrPump::start` opens the existing log in append mode.
 - `read_dir` is lazy; collecting is the sample. Keeping the calls in order but dropping the collection reintroduces the defect.
 - An unreadable registration retains its path-qualified Settings diagnostic and is preserved, while independently proved ended sibling pairs remain eligible for sweeping.
 - The final identity check and `unlinkat` are separate syscalls. A basename replaced between them can be unlinked. Retained handles prevent traversal redirection, not that final replacement; no POSIX conditional unlink exists, so the recheck detects replacement and does not guarantee a replaced file survives.
 - A mode or group change on a capture directory between scans does not count as a changed directory. `same_directory` compares dev, ino and owner only.
 - `effective_user()` and each platform's boot read cache their first result, failure included, for the process lifetime. `IdentityUnknown` (retried next scan) and `IdentityBlockedByBoot` (restart required) stay separate for that reason.
-- macOS: `kern.boottime` is recomputed on clock corrections, so the boot field is the session UUID. `BirthStamp::compare` returns `Unknown`, never `Ended`, for a legacy `{ sec = ` boot string against a present process. The macOS birth truncates to whole seconds; the generation, not the birth, separates two invocations born in one second. `ps -o lstart=` is padded to column width and rendered through `localtime`, so the shim trims it and reads under `LC_ALL=C TZ=UTC0`. `/tmp` is `/private/tmp`; `DirectoryComparison::between` compares aliased directories by device and inode, and relative paths never establish identity.
-- A runner service whose PATH lists Nix or Homebrew coreutils ahead of `/bin` resolves `date` to the GNU binary, which rejects `-j`. The shim tries the BSD form and falls back to `date -u -d`, so the birth field is filled under either binary. An empty birth field means the tile can neither draw nor delete that registration.
+- macOS uses the session UUID because clock corrections change `kern.boottime`. For a legacy `{ sec = ` boot string against a present process, `BirthStamp::compare` returns `Unknown`. The macOS registration stores birth in whole seconds. The generation separates invocations that start in the same second. `/tmp` is an alias for `/private/tmp`. `DirectoryComparison::between` compares these directories by device and inode. Relative paths do not establish identity.
+- The native runner reads birth from the kernel. An empty birth field cannot confirm a live registration for display or establish a birth mismatch for cleanup.
 - The state column draws `blocked` only for `waiting for file lock on build directory`; a package-cache lock wait is ignored by design.
 
 **Hooks and installation.**
 - `ACCOUNT_GROUPS_INITIAL_CAPACITY` is 32, `ACCOUNT_GROUPS_GROWTH_FACTOR` is 2, and `ACCOUNT_GROUPS_MAX_CAPACITY` is 65,536 entries (256 KiB).
 - glibc writes the required count back through the count pointer. Darwin can leave the count unchanged, which is why the loop resets the count and grows.
 - Darwin `_SC_NGROUPS_MAX` is 16. macOS adds implicit groups (12, 61, 701, 100), so an account with 17 explicit groups resolves to about 21.
-- `SHIM_MARKER_SEARCH_BYTES` is 1024 and the version declaration sits near byte 44. A comment `#` landing at the window boundary would make install refuse a correct shim.
-- `status --all-accounts` checks installation state, not framing or shim bytes. Only each shim's version line proves v3. A zero status exit can accompany `Absent` or `Repairable` rows, so every expected toolchain must actually report `Installed`. Top-level setup or discovery can still fail before per-account report handling.
+- `SHIM_MARKER_SEARCH_BYTES` is 1024. `shim_version` requires the version declaration and its newline within that window. A `#` cut off at the boundary can be an incomplete version prefix.
+- `status --all-accounts` checks installation state. Read the shim's version line to check the installed shim version. Version 4 still writes `cargo-tile-v3` registrations. A zero exit status can accompany `Absent` or `Repairable` rows. Check that each expected toolchain reports `Installed`. Setup or discovery can fail before the command reports any accounts.
 - Neither reader version strings nor shim version lines identify which reader build is installed; compare executable hashes.
 - Restarting a reader installs shims unless `capture.auto_install` is false. A TOML type error anywhere falls back to defaults, which set `auto_install = true`.
 - The local install path ends `.inspect(print_local_report).count()`. It only iterates because a `filter_map` chain is not `ExactSizeIterator`.
@@ -452,9 +455,8 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 - Recursive mode correction beneath the root was ruled out; one level, only directories the shim owns. Changing the runner unit's `UMask=0066` was ruled out; it reaches every file the runner writes, credentials included.
 
 **Registration and identity.**
-- Hard-link publication, not `mv -f`: a rename silently replaces a name a live run still owns, while `ln` fails and a failure is a setup failure like any other.
+- `CapturePublication::publish` uses `fs::hard_link` to publish under a new name. If the name exists, setup fails and the existing registration remains.
 - NUL framing, not a `<cwd>\tcargo <args>` line: space-joined argv loses argument boundaries, and a tab or newline inside an argument breaks the framing.
-- `/proc/$$/stat`, not `/proc/self/stat`: inside the setup subshell `self` is the short-lived child, not the pid the registration is filed under.
 - Verification by kernel evidence before deletion: exclusive creation prevents a name being taken while a record holds it, and does not prevent the same name being published again once removed, so deleting by exact name is not safe on its own. Age cannot establish that a paused writer ended, so a staging file is eligible only when the kernel confirms its writer gone.
 - The version is classified before size so a newer oversized record is reported as skew, not as unreadable. Parsing a truncated version declaration from its visible prefix was ruled out: it reads a newer shim as older and overwrites it.
 - `libc::sysctl` on macOS, not `sysctl(8)` or `ps(1)`: a subprocess per registration per scan at four scans a second. rustix has no sysctl binding, and sysinfo's start times are rounded on Linux and zero on the macOS fallback.
@@ -464,7 +466,7 @@ The `root-headings` scenario checks for capture-status cleanup wording only insi
 - Registration mtime as the run start: it is the one value the reader already has across a uid boundary.
 - A second row for a pid confirmed under a non-selected root was ruled out; one live invocation is one tile, and `Ambiguous` means no owner, not pick one. Letting `CaptureKey`'s derived `Ord` decide ownership was ruled out; a filename string would pick the live generation among equally confirmed registrations.
 - Resolving the owner uid to a name at render time was ruled out; the worker resolves it and grouping keys on the number.
-- Capturing `cargo tile`, `cargo port` and `cargo berth` was ruled out; the first two would run a terminal UI under `script`, and the third fires several times a second with no build to mirror.
+- `capture_requested` excludes the terminal apps (`tile`, `port`, and `handler`) and `berth`, which has no build output to mirror.
 
 **Hooks and credentials.**
 - A staged root-owned installer copy under `/tmp`, not the administrator's own binary: the account child must execute it whatever the permissions on the administrator's home, and a sticky parent stops another account replacing it.
