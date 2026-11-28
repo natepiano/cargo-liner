@@ -1,3 +1,5 @@
+pub(super) const APPLIED_FIX_TEXT_LIMIT: usize = 80;
+
 // `ANSI_BOLD` through `ANSI_DIM` supply ANSI terminal style codes.
 pub(super) const ANSI_BOLD: &str = "1";
 pub(super) const ANSI_BOLD_BLUE: &str = "1;34";

@@ -80,6 +80,7 @@ pub(super) fn build_parent_pub_use_edit_for_exports(
             end,
             replacement,
             import_group: None,
+            finding: None,
         });
     }
 

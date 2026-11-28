@@ -19,12 +19,13 @@ use crate::config::DiagnosticCode;
 use crate::config::FixKind;
 use crate::fixes::FIX_CONVERGENCE_MAX_PASSES;
 use crate::fixes::imports;
+use crate::fixes::imports::AppliedEdits;
+use crate::fixes::imports::ChainEdits;
 use crate::fixes::imports::FixSetPresence;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::fixes::subtree_reexport;
 use crate::fixes::subtree_reexport::ForwardingChains;
-use crate::reporting::AppliedFixCounts;
 use crate::reporting::CompilerFailureCause;
 use crate::reporting::MendFailure;
 use crate::reporting::Report;
@@ -36,9 +37,9 @@ use crate::rust_syntax::SourceOwnershipClassifier;
 enum ChainBatch {
     Unchanged,
     Planned {
-        fixes:  ValidatedFixSet,
-        counts: AppliedFixCounts,
-        steps:  Vec<ChainStep>,
+        fixes:   ValidatedFixSet,
+        applied: AppliedEdits,
+        steps:   Vec<ChainStep>,
     },
 }
 
@@ -230,7 +231,7 @@ impl ChainValidation {
 
 /// Written edits keep their validation result until the caller accepts or restores them.
 pub(super) struct WrittenPass {
-    pub(super) counts:     AppliedFixCounts,
+    pub(super) applied:    AppliedEdits,
     pub(super) validation: Result<RunPlan, MendFailure>,
 }
 
@@ -275,9 +276,10 @@ impl MendRunner<'_> {
             &self.chain_validation.planning_report(&planned.report),
             &self.selection.analysis_root,
         )];
-        let rewritten = first.rewritten_files()?;
+        let mut edits = ChainEdits::default();
+        let rewritten = first.rewritten_sources(&planned.sources, &mut edits)?;
         let mut files = rewritten.files;
-        let mut counts = rewritten.counts;
+        let mut applied = rewritten.applied;
         let mut extension = ChainExtension::OriginalPass;
         loop {
             let sources = ParsedSources::from(&files);
@@ -295,7 +297,7 @@ impl MendRunner<'_> {
                 &report,
                 &self.selection.analysis_root,
             ));
-            let rewritten = next.rewritten_sources(&sources)?;
+            let rewritten = next.rewritten_sources(&sources, &mut edits)?;
             if rewritten
                 .files
                 .iter()
@@ -304,11 +306,7 @@ impl MendRunner<'_> {
                 break;
             }
             files.extend(rewritten.files);
-            for tagged in next.tagged() {
-                if let Some(kind) = tagged.fix_kind {
-                    counts.record(kind);
-                }
-            }
+            applied.counts.merge(rewritten.applied.counts);
             extension = ChainExtension::AdditionalLinks;
         }
         if matches!(extension, ChainExtension::OriginalPass)
@@ -316,7 +314,8 @@ impl MendRunner<'_> {
         {
             return Ok(ChainBatch::Unchanged);
         }
-        self.protect_chain(&files, counts, &planned.sources, steps)
+        applied.fixes = edits.details(&planned.sources, &files)?;
+        self.protect_chain(&files, applied, &planned.sources, steps)
     }
 
     fn chain_pass(
@@ -356,7 +355,7 @@ impl MendRunner<'_> {
     fn protect_chain(
         &self,
         proposed_sources: &BTreeMap<PathBuf, String>,
-        counts: AppliedFixCounts,
+        applied: AppliedEdits,
         sources: &ParsedSources,
         steps: Vec<ChainStep>,
     ) -> Result<ChainBatch> {
@@ -384,6 +383,7 @@ impl MendRunner<'_> {
                     end: original.len() - tail,
                     replacement: replacement[start..replacement.len() - tail].to_string(),
                     import_group: None,
+                    finding: None,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -400,7 +400,7 @@ impl MendRunner<'_> {
         }
         Ok(ChainBatch::Planned {
             fixes: protected.fixes,
-            counts,
+            applied,
             steps,
         })
     }
@@ -415,7 +415,7 @@ impl MendRunner<'_> {
         loop {
             let ChainBatch::Planned {
                 fixes,
-                counts,
+                applied,
                 steps,
             } = self.plan_chain(planned).map_err(MendFailure::Unexpected)?
             else {
@@ -432,7 +432,7 @@ impl MendRunner<'_> {
                 Ok(mut validation) => {
                     validation.check_duration += rejected_duration;
                     return Ok(WrittenPass {
-                        counts,
+                        applied,
                         validation: Ok(validation),
                     });
                 },
@@ -462,21 +462,24 @@ impl MendRunner<'_> {
             let mut validation = self.rescan_restored_chain(planned)?;
             validation.check_duration += rejected_duration;
             return Ok(WrittenPass {
-                counts:     AppliedFixCounts::default(),
+                applied:    AppliedEdits::default(),
                 validation: Ok(validation),
             });
         }
         self.session_snapshot
             .record(&fixes)
             .map_err(MendFailure::Unexpected)?;
-        let counts = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
+        let applied = imports::apply_fixes(&fixes).map_err(MendFailure::Unexpected)?;
         let validation = self
             .validate_chain(planned, output_mode)
             .map(|mut validation| {
                 validation.check_duration += rejected_duration;
                 validation
             });
-        Ok(WrittenPass { counts, validation })
+        Ok(WrittenPass {
+            applied,
+            validation,
+        })
     }
 
     fn reject_batch(&mut self, steps: &[ChainStep], failure: &MendFailure) -> BatchRetry {
@@ -519,7 +522,7 @@ impl MendRunner<'_> {
         self.session_snapshot
             .record(&pass.fixes)
             .map_err(MendFailure::Unexpected)?;
-        let mut counts = imports::apply_fixes(&pass.fixes).map_err(MendFailure::Unexpected)?;
+        let mut applied = imports::apply_fixes(&pass.fixes).map_err(MendFailure::Unexpected)?;
         let started = Instant::now();
         let validation = match self.validate_chain(planned, output_mode) {
             Err(_) if !pass.declined_on_failure.is_empty() => {
@@ -530,7 +533,7 @@ impl MendRunner<'_> {
                 {
                     declined.extend(pass.declined_on_failure);
                 }
-                counts = AppliedFixCounts::default();
+                applied = AppliedEdits::default();
                 eprintln!(
                     "mend: chain link did not validate; keeping the previous checked sources"
                 );
@@ -550,7 +553,10 @@ impl MendRunner<'_> {
         {
             *pass_limit += 1;
         }
-        Ok(WrittenPass { counts, validation })
+        Ok(WrittenPass {
+            applied,
+            validation,
+        })
     }
 
     fn rescan_restored_chain(&self, planned: &RunPlan) -> Result<RunPlan, MendFailure> {

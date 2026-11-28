@@ -168,17 +168,22 @@ impl InBodyUseFinder<'_> {
                 conditional_attributes,
                 use_kw_start,
                 use_end,
+                use_kw.line,
                 group.as_ref(),
             ),
         }
 
-        self.fixes.push(UseFix {
-            path:         self.path.to_path_buf(),
-            start:        delete_start,
-            end:          use_end_with_nl,
-            replacement:  String::new(),
-            import_group: group,
-        });
+        self.fixes.push(
+            UseFix {
+                path:         self.path.to_path_buf(),
+                start:        delete_start,
+                end:          use_end_with_nl,
+                replacement:  String::new(),
+                import_group: group,
+                finding:      None,
+            }
+            .with_finding(DiagnosticCode::ImportsAtTop, use_kw.line),
+        );
         Ok(())
     }
 
@@ -188,6 +193,7 @@ impl InBodyUseFinder<'_> {
         conditional_attributes: &ConditionalAttributes,
         use_kw_start: usize,
         use_end: usize,
+        line: usize,
         group: Option<&ImportGroup>,
     ) {
         let indent = self.scope.indent.clone();
@@ -198,13 +204,17 @@ impl InBodyUseFinder<'_> {
         insertion.push_str(&indent);
         insertion.push_str(use_text);
         insertion.push('\n');
-        self.fixes.push(UseFix {
-            path:         self.path.to_path_buf(),
-            start:        insertion_offset,
-            end:          insertion_offset,
-            replacement:  insertion,
-            import_group: group.cloned(),
-        });
+        self.fixes.push(
+            UseFix {
+                path:         self.path.to_path_buf(),
+                start:        insertion_offset,
+                end:          insertion_offset,
+                replacement:  insertion,
+                import_group: group.cloned(),
+                finding:      None,
+            }
+            .with_finding(DiagnosticCode::ImportsAtTop, line),
+        );
     }
 }
 

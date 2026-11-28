@@ -63,7 +63,7 @@ impl MendRunner<'_> {
             BuildOutputMode::Validation
         };
         let WrittenPass {
-            counts: applied_fix_counts,
+            applied,
             validation,
         } = self.write_chain_or_single(&planned, validation_output_mode)?;
         match validation {
@@ -73,9 +73,12 @@ impl MendRunner<'_> {
                     planned.operation_mode.intent,
                     Some(&validation.report),
                     fix_scans,
-                    applied_fix_counts,
+                    applied.counts,
                 );
-                let notice = validation.function_plan.merge_notice(notice);
+                let notice = validation
+                    .function_plan
+                    .merge_notice(notice)
+                    .map(|notice| notice.with_applied_fixes(applied.fixes));
                 let warning_facts = validation.report.facts.compiler_warning_facts;
                 let report = validation.report.clone();
                 self.next_analysis = NextAnalysis::Validated(Box::new(validation));

@@ -321,6 +321,7 @@ impl GlobCallerRewriter<'_> {
                 end,
                 replacement,
                 import_group: None,
+                finding: None,
             },
             facts,
         });

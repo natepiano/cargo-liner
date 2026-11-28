@@ -54,13 +54,17 @@ pub(super) fn scan_from_report(report: &Report) -> Result<FieldVisibilityFixScan
         else {
             continue;
         };
-        use_fixes.push(UseFix {
-            path:         absolute_path,
-            start:        site.start,
-            end:          site.end_with_separator,
-            replacement:  replacement_visibility.into_source(),
-            import_group: None,
-        });
+        use_fixes.push(
+            UseFix {
+                path:         absolute_path,
+                start:        site.start,
+                end:          site.end_with_separator,
+                replacement:  replacement_visibility.into_source(),
+                import_group: None,
+                finding:      None,
+            }
+            .with_finding(finding.diagnostic_code, finding.line),
+        );
     }
     Ok(FieldVisibilityFixScan { fixes: use_fixes })
 }

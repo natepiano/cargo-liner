@@ -145,6 +145,10 @@ impl<'a> SourceLines<'a> {
         Ok((start, end))
     }
 
+    pub(in crate::fixes) fn line_at(&self, offset: usize) -> usize {
+        self.line_starts.partition_point(|start| *start <= offset)
+    }
+
     /// The byte range of 1-based `line`, trailing newline included.
     pub(in crate::fixes) fn line_span(&self, line: usize) -> Option<(usize, usize)> {
         self.checked_line_span(OneBasedLine::new(line)?)
@@ -242,6 +246,7 @@ pub(in crate::fixes) fn line_deletion(file: &Path, source: &str, range: Range<us
         end,
         replacement: String::new(),
         import_group: None,
+        finding: None,
     }
 }
 

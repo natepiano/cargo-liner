@@ -354,7 +354,7 @@ fn render_outcome(
     }
 
     if let Some(notice) = outcome.notice.as_ref() {
-        eprintln!("{}", notice.render());
+        eprintln!("{}", notice.render_with_fixes(&selection.analysis_root));
     }
 
     Ok(())

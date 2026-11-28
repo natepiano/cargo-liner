@@ -224,13 +224,20 @@ pub(super) fn process_occurrence(
                 let use_path = scope::canonicalize_inserted_use_path(scope, import_path);
                 let attributes = attributes.render(&scope.indent);
                 let use_text = format!("{}{}use {use_path};\n", attributes, scope.indent);
-                fixes.push(UseFix {
-                    path:         ctx.path.to_path_buf(),
-                    start:        scope.insertion_offset,
-                    end:          scope.insertion_offset,
-                    replacement:  use_text,
-                    import_group: Some(group),
-                });
+                fixes.push(
+                    UseFix {
+                        path:         ctx.path.to_path_buf(),
+                        start:        scope.insertion_offset,
+                        end:          scope.insertion_offset,
+                        replacement:  use_text,
+                        import_group: Some(group),
+                        finding:      None,
+                    }
+                    .with_finding(
+                        DiagnosticCode::InlinePathQualifiedType,
+                        resolved.location.start.line,
+                    ),
+                );
             }
         },
     }
@@ -274,13 +281,20 @@ fn record_occurrence(
         full_path: import_path.clone(),
     };
 
-    fixes.push(UseFix {
-        path:         ctx.path.to_path_buf(),
-        start:        resolved.location.byte_start,
-        end:          resolved.location.byte_end,
-        replacement:  occ.replacement.clone(),
-        import_group: Some(group.clone()),
-    });
+    fixes.push(
+        UseFix {
+            path:         ctx.path.to_path_buf(),
+            start:        resolved.location.byte_start,
+            end:          resolved.location.byte_end,
+            replacement:  occ.replacement.clone(),
+            import_group: Some(group.clone()),
+            finding:      None,
+        }
+        .with_finding(
+            DiagnosticCode::InlinePathQualifiedType,
+            resolved.location.start.line,
+        ),
+    );
 
     group
 }

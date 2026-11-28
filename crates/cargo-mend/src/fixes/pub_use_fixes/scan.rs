@@ -10,11 +10,14 @@ use super::parent_boundary::ParentBoundaryKey;
 use super::validated_plan;
 use super::validated_plan::ParentModuleFile;
 use super::validated_plan::ValidatedPubUsePlan;
+use crate::config::DiagnosticCode;
 use crate::fixes::facade_redirect;
 use crate::fixes::facade_redirect::SourceLines;
 use crate::fixes::imports::OwnedFix;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
+use crate::reporting::FixSite;
+use crate::reporting::FixSupport;
 use crate::reporting::Report;
 use crate::rust_syntax::FileModulePath;
 use crate::rust_syntax::ParsedSources;
@@ -34,6 +37,7 @@ struct PubUseFixFact {
     parent_module:   PathBuf,
     parent_line:     usize,
     child_module:    String,
+    finding:         FixSite,
 }
 
 struct PubUseCandidate {
@@ -43,6 +47,12 @@ struct PubUseCandidate {
     exported_name:      String,
     parent_module_path: Vec<String>,
     target_item_path:   Vec<String>,
+}
+
+#[derive(Default)]
+struct ParentExports {
+    exports: Vec<(String, String)>,
+    finding: Option<FixSite>,
 }
 
 struct PubUseAnalysis {
@@ -103,7 +113,13 @@ pub(crate) fn scan_selection(
         if rejected.is_empty() {
             break callers
                 .into_iter()
-                .map(|owned| owned.fix)
+                .map(|mut owned| {
+                    owned.fix.finding = owned
+                        .facts
+                        .first()
+                        .and_then(|&index| supported_plans[index].child_narrowing.finding.clone());
+                    owned.fix
+                })
                 .collect::<Vec<_>>();
         }
         skipped += rejected.len();
@@ -119,11 +135,12 @@ pub(crate) fn scan_selection(
     }
 
     for (parent_boundary, exports) in group_parent_pub_use_plans(&supported_plans) {
-        let use_fix = parent_boundary::build_parent_pub_use_edit_for_exports(
+        let mut use_fix = parent_boundary::build_parent_pub_use_edit_for_exports(
             &parent_boundary,
-            &exports,
+            &exports.exports,
             parsed_sources,
         )?;
+        use_fix.finding = exports.finding;
         fixes.push(use_fix);
     }
     fixes.extend(callers);
@@ -137,10 +154,36 @@ pub(crate) fn scan_selection(
 }
 
 fn collect_pub_use_fix_facts(selection: &Selection, report: &Report) -> Vec<PubUseFixFact> {
+    let root = &selection.analysis_root;
+    let findings = report
+        .findings
+        .iter()
+        .filter(|finding| finding.fix_support() == FixSupport::PubUse)
+        .filter_map(|finding| {
+            let item = finding.item.as_deref()?;
+            let name = item.rsplit_once(' ').map_or(item, |(_, name)| name);
+            Some((
+                (finding.path.as_str(), finding.line, name),
+                finding.diagnostic_code,
+            ))
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut facts = Vec::new();
     for fact in report.facts.pub_use_fix_facts.iter() {
         let child_rel = normalize_rel_path(&fact.child_path);
         let parent_rel = normalize_rel_path(&fact.parent_path);
+        let name = fact.child_item_name.as_str();
+        let child = (child_rel.as_str(), fact.child_line, name);
+        let parent = (parent_rel.as_str(), fact.parent_line, name);
+        let (relative_path, line, diagnostic_code) = findings
+            .get(&child)
+            .map(|&code| (child.0, child.1, code))
+            .or_else(|| {
+                findings
+                    .get(&parent)
+                    .map(|&code| (parent.0, parent.1, code))
+            })
+            .unwrap_or((child.0, child.1, DiagnosticCode::SuspiciousPub));
         facts.push(PubUseFixFact {
             child_file:      selection.analysis_root.join(&child_rel),
             child_line:      fact.child_line,
@@ -148,6 +191,11 @@ fn collect_pub_use_fix_facts(selection: &Selection, report: &Report) -> Vec<PubU
             parent_module:   selection.analysis_root.join(&parent_rel),
             parent_line:     fact.parent_line,
             child_module:    fact.child_module.clone(),
+            finding:         FixSite {
+                path: root.join(relative_path),
+                line,
+                diagnostic_code,
+            },
         });
     }
 
@@ -214,7 +262,9 @@ fn analyze_pub_use_candidates(
         };
         match screen_candidate(candidate, &fact.child_item_name, child_source.text())? {
             CandidateScreening::Accept(narrowable) => {
-                supported_plans.push(build_validated_plan(narrowable, parent_boundary)?);
+                let mut plan = build_validated_plan(narrowable, parent_boundary)?;
+                plan.child_narrowing.finding = Some(fact.finding.clone());
+                supported_plans.push(plan);
             },
             // `CandidateScreening::Skip` increments `skipped`: a screened-out candidate still
             // reaches the user as a skip because the finding advertised `FixSupport::PubUse`;
@@ -266,6 +316,7 @@ fn build_validated_plan(
         end:          bare_pub_keyword.end,
         replacement:  "pub(super)".to_string(),
         import_group: None,
+        finding:      None,
     };
     Ok(ValidatedPubUsePlan {
         parent_boundary:    ParentModuleFile::new(parent_boundary)?,
@@ -322,16 +373,18 @@ fn find_bare_pub_keyword(line_text: &str, line_start: usize) -> Option<BarePubKe
 
 fn group_parent_pub_use_plans(
     plans: &[ValidatedPubUsePlan],
-) -> BTreeMap<ParentBoundaryKey, Vec<(String, String)>> {
-    let mut groups = BTreeMap::new();
-    for validated_pub_use_plan in plans {
-        groups
-            .entry(validated_pub_use_plan.parent_boundary.boundary().clone())
-            .or_insert_with(Vec::new)
-            .push((
-                validated_pub_use_plan.child_module.clone(),
-                validated_pub_use_plan.exported_name.clone(),
-            ));
+) -> BTreeMap<ParentBoundaryKey, ParentExports> {
+    let mut groups = BTreeMap::<_, ParentExports>::new();
+    for plan in plans {
+        let group = groups
+            .entry(plan.parent_boundary.boundary().clone())
+            .or_default();
+        group
+            .exports
+            .push((plan.child_module.clone(), plan.exported_name.clone()));
+        if group.finding.is_none() {
+            group.finding.clone_from(&plan.child_narrowing.finding);
+        }
     }
     groups
 }
@@ -389,7 +442,7 @@ mod tests {
         assert_eq!(groups.len(), 2);
         for plan in &plans {
             assert_eq!(
-                groups[plan.parent_boundary.boundary()],
+                groups[plan.parent_boundary.boundary()].exports,
                 vec![(plan.child_module.clone(), plan.exported_name.clone())]
             );
         }

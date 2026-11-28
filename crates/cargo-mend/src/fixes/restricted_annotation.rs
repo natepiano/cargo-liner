@@ -57,6 +57,7 @@ impl VisibilityReplacement {
             end,
             replacement,
             import_group: None,
+            finding: None,
         }
     }
 }
@@ -137,7 +138,11 @@ pub(super) fn scan_from_report(report: &Report) -> Result<RestrictedAnnotationSc
         if !rewritten_sites.insert(format!("{}:{}", finding.path, site.start)) {
             continue;
         }
-        use_fixes.push(replacement.into_fix(absolute_path, site));
+        use_fixes.push(
+            replacement
+                .into_fix(absolute_path, site)
+                .with_finding(finding.diagnostic_code, finding.line),
+        );
     }
     Ok(RestrictedAnnotationScan { fixes: use_fixes })
 }

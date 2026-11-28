@@ -42,6 +42,7 @@ impl PubCrateNarrowingSite {
             end: self.end,
             replacement: "pub(crate)".to_string(),
             import_group: None,
+            finding: None,
         }
     }
 }
@@ -60,7 +61,10 @@ pub(super) fn scan_from_report(report: &Report) -> Result<NarrowPubCrateScan> {
         else {
             continue;
         };
-        fixes.push(site.into_fix(absolute_path));
+        fixes.push(
+            site.into_fix(absolute_path)
+                .with_finding(finding.diagnostic_code, finding.line),
+        );
     }
     Ok(NarrowPubCrateScan { fixes })
 }

@@ -42,6 +42,7 @@ impl UnusedPubRemovalSite {
             end: self.end,
             replacement: String::new(),
             import_group: None,
+            finding: None,
         }
     }
 }
@@ -59,7 +60,10 @@ pub(super) fn scan_from_report(report: &Report) -> Result<UnusedPubScan> {
         let Some(site) = UnusedPubRemovalSite::locate(&source, finding.line, finding.column) else {
             continue;
         };
-        use_fixes.push(site.into_fix(absolute_path));
+        use_fixes.push(
+            site.into_fix(absolute_path)
+                .with_finding(finding.diagnostic_code, finding.line),
+        );
     }
     Ok(UnusedPubScan { fixes: use_fixes })
 }

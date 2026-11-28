@@ -975,6 +975,7 @@ impl<'a> CallerRewriter<'a> {
                 end,
                 replacement,
                 import_group: None,
+                finding: None,
             },
             facts: mem::take(&mut self.edit_facts).into_iter().collect(),
         });

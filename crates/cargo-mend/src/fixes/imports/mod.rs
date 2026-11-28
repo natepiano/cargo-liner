@@ -1,3 +1,4 @@
+mod chain_edits;
 mod conditional_attributes;
 mod gate_tracking;
 mod import_condition;
@@ -7,6 +8,7 @@ mod path;
 mod scan;
 mod use_binding;
 
+pub(super) use chain_edits::ChainEdits;
 pub(super) use conditional_attributes::ConditionalAttributes;
 pub(super) use conditional_attributes::expr_attributes;
 pub(super) use conditional_attributes::is_conditional;
@@ -20,6 +22,7 @@ pub(super) use gate_tracking::item_gate_attributes;
 pub(super) use gate_tracking::pattern_attributes;
 pub(super) use gate_tracking::trait_item_attributes;
 pub(super) use gate_tracking::type_attributes;
+pub(super) use import_scan::AppliedEdits;
 pub(super) use import_scan::FixSetPresence;
 pub(super) use import_scan::ImportGroup;
 pub(super) use import_scan::ImportScan;

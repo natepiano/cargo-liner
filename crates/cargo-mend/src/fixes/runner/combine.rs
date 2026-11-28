@@ -524,6 +524,7 @@ mod tests {
             end,
             replacement: replacement.to_string(),
             import_group,
+            finding: None,
         }
     }
 

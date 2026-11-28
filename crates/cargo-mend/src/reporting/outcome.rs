@@ -2,16 +2,20 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fmt::Display;
 use std::fmt::Formatter;
+use std::fmt::Write;
 use std::num::NonZeroUsize;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::Error;
 
+use super::constants::APPLIED_FIX_TEXT_LIMIT;
 use super::constants::EXIT_CODE_WARNING;
 use super::diagnostics::CompilerWarningFacts;
 use super::diagnostics::Report;
+use crate::config::DiagnosticCode;
 use crate::config::OperationIntent;
 
 /// Whether a `--fix` pass wrote any mend edit to disk.
@@ -53,7 +57,69 @@ pub(crate) struct ExecutionOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExecutionNotice {
-    kinds: Vec<NoticeKind>,
+    kinds:         Vec<NoticeKind>,
+    applied_fixes: Vec<AppliedFix>,
+}
+
+/// The location of a finding before the source changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FixSite {
+    pub path:            PathBuf,
+    pub line:            usize,
+    pub diagnostic_code: DiagnosticCode,
+}
+
+/// One edit retained after validation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AppliedFix {
+    path:   PathBuf,
+    line:   usize,
+    kind:   AppliedFixKind,
+    change: Option<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AppliedFixKind {
+    Finding(DiagnosticCode),
+    DuplicateImport,
+}
+
+impl AppliedFix {
+    pub(crate) fn new(
+        kind: AppliedFixKind,
+        path: &Path,
+        line: usize,
+        before: &str,
+        after: &str,
+    ) -> Self {
+        let (before, after) = (before.trim(), after.trim());
+        let short = |text: &str| {
+            text.len() <= APPLIED_FIX_TEXT_LIMIT
+                && !text.contains(|character: char| character.is_control() || character == '`')
+        };
+        let change = (short(before) && short(after)).then(|| (before.to_owned(), after.to_owned()));
+        Self {
+            path: path.to_path_buf(),
+            line,
+            kind,
+            change,
+        }
+    }
+
+    fn render(&self, output: &mut String, root: &Path) {
+        let path = self.path.strip_prefix(root).unwrap_or(&self.path);
+        let path = path.to_string_lossy().replace('\\', "/");
+        let path = path.escape_debug();
+        let line = self.line;
+        let kind = match self.kind {
+            AppliedFixKind::Finding(code) => code.as_str(),
+            AppliedFixKind::DuplicateImport => "duplicate_import",
+        };
+        let _ = write!(output, "\nmend: {path}:{line}: {kind}");
+        if let Some((before, after)) = &self.change {
+            let _ = write!(output, ": `{before}` -> `{after}`");
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +187,14 @@ impl AppliedFixCounts {
             FixKind::Annotation => self.annotation += 1,
             FixKind::FieldVisibility => self.field_visibility += 1,
         }
+    }
+
+    pub(crate) const fn merge(&mut self, other: Self) {
+        self.import += other.import;
+        self.pub_removal += other.pub_removal;
+        self.narrowing += other.narrowing;
+        self.annotation += other.annotation;
+        self.field_visibility += other.field_visibility;
     }
 
     /// Edits written for `fix_kind`.
@@ -319,7 +393,25 @@ impl ExecutionNotice {
         format!("mend: {}", parts.join("; "))
     }
 
+    pub(crate) fn render_with_fixes(&self, root: &Path) -> String {
+        let mut output = self.render();
+        if !self.applied_fixes.is_empty() {
+            let canonical_root = std::fs::canonicalize(root);
+            let root = canonical_root.as_deref().unwrap_or(root);
+            for fix in &self.applied_fixes {
+                fix.render(&mut output, root);
+            }
+        }
+        output
+    }
+
+    pub(crate) fn with_applied_fixes(mut self, applied_fixes: Vec<AppliedFix>) -> Self {
+        self.applied_fixes = applied_fixes;
+        self
+    }
+
     pub(crate) fn merge(&mut self, additional: Self) {
+        self.applied_fixes.extend(additional.applied_fixes);
         for kind in additional.kinds {
             match NoticeEffect::from(&kind) {
                 NoticeEffect::Applied => self.kinds.retain(|existing| {
@@ -427,11 +519,16 @@ impl ExecutionNotice {
 }
 
 impl From<NoticeKind> for ExecutionNotice {
-    fn from(kind: NoticeKind) -> Self { Self { kinds: vec![kind] } }
+    fn from(kind: NoticeKind) -> Self { Self::from(vec![kind]) }
 }
 
 impl From<Vec<NoticeKind>> for ExecutionNotice {
-    fn from(kinds: Vec<NoticeKind>) -> Self { Self { kinds } }
+    fn from(kinds: Vec<NoticeKind>) -> Self {
+        Self {
+            kinds,
+            applied_fixes: Vec::new(),
+        }
+    }
 }
 
 impl NoticeKind {

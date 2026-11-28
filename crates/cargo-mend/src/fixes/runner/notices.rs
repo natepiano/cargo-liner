@@ -198,6 +198,7 @@ mod tests {
             end:          10,
             replacement:  String::new(),
             import_group: None,
+            finding:      None,
         }
     }
 

@@ -690,7 +690,7 @@ fn build_function_use_fix(
         byte_end
     };
     let group = Some(binding.group.clone());
-    match policy.import_plan(
+    let fix = match policy.import_plan(
         imports,
         byte_start,
         &function.module_path,
@@ -702,6 +702,7 @@ fn build_function_use_fix(
             end:          byte_end_with_newline,
             replacement:  String::new(),
             import_group: group,
+            finding:      None,
         },
         ImportRewritePlan::ReplaceWithModule => UseFix {
             path:         file_context.path.to_path_buf(),
@@ -709,8 +710,10 @@ fn build_function_use_fix(
             end:          byte_end,
             replacement:  replacement_use_with_conditional_attributes(function),
             import_group: group,
+            finding:      None,
         },
-    }
+    };
+    fix.with_finding(DiagnosticCode::PreferModuleImport, function.span_start.line)
 }
 
 fn replacement_use_with_conditional_attributes(function: &RawCandidate) -> String {
@@ -731,14 +734,21 @@ fn build_reference_fixes(
     binding
         .references
         .iter()
-        .map(|reference| UseFix {
-            path:         file_context.path.to_path_buf(),
-            start:        reference.byte_start,
-            end:          reference.byte_end,
-            replacement:  binding
-                .policy()
-                .reference(&reference.name, reference.inline_mod_depth),
-            import_group: Some(binding.group.clone()),
+        .map(|reference| {
+            UseFix {
+                path:         file_context.path.to_path_buf(),
+                start:        reference.byte_start,
+                end:          reference.byte_end,
+                replacement:  binding
+                    .policy()
+                    .reference(&reference.name, reference.inline_mod_depth),
+                import_group: Some(binding.group.clone()),
+                finding:      None,
+            }
+            .with_finding(
+                DiagnosticCode::PreferModuleImport,
+                binding.function.span_start.line,
+            )
         })
         .collect()
 }

@@ -29,6 +29,7 @@ pub(super) fn insertion_fix(
         end:          insertion.offset,
         replacement:  insertion_text(source.text(), insertion, builds),
         import_group: None,
+        finding:      None,
     })
 }
 

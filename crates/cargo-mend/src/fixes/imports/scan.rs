@@ -123,7 +123,9 @@ impl Visit<'_> for UseVisitor<'_> {
                     end: location.end(),
                     replacement,
                     import_group: None,
-                },
+                    finding: None,
+                }
+                .with_finding(candidate.diagnostic_code, start.line),
             });
         }
     }

@@ -213,26 +213,12 @@ pub(super) fn build_inline_call_findings_and_fixes(
 
         let location = InlineCallLocation::new(file_context, candidate)?;
 
-        let (message, suggestion) = inline_call_text(candidate, &rewrite);
-
-        findings.push(Finding {
-            disposition: Finding::disposition(
-                DiagnosticCode::PreferModuleImport,
-                Severity::Warning,
-                FixSupport::PreferModuleImport,
-            ),
-            diagnostic_code: DiagnosticCode::PreferModuleImport,
-            path: display_path.clone(),
-            line: candidate.full_span_start.line,
-            column: candidate.full_span_start.column + 1,
-            highlight_len: location.path.text.len().max(1),
-            source_line: location.path.span.start().source_line().to_string(),
-            item: None,
-            message,
-            suggestion: Some(suggestion),
-            related: None,
-            item_visibility: ItemVisibility::default(),
-        });
+        findings.push(inline_call_finding(
+            candidate,
+            &rewrite,
+            &location,
+            &display_path,
+        ));
 
         let group = Some(ImportGroup {
             bare_name: candidate.module_name.clone(),
@@ -240,13 +226,20 @@ pub(super) fn build_inline_call_findings_and_fixes(
         });
 
         let call_prefix = rewrite.prefix().to_string();
-        fixes.push(UseFix {
-            path:         file_context.path.to_path_buf(),
-            start:        location.prefix_start,
-            end:          location.leaf_start,
-            replacement:  call_prefix,
-            import_group: group.clone(),
-        });
+        fixes.push(
+            UseFix {
+                path:         file_context.path.to_path_buf(),
+                start:        location.prefix_start,
+                end:          location.leaf_start,
+                replacement:  call_prefix,
+                import_group: group.clone(),
+                finding:      None,
+            }
+            .with_finding(
+                DiagnosticCode::PreferModuleImport,
+                candidate.full_span_start.line,
+            ),
+        );
 
         let import_attributes = match rewrite {
             InlineCallRewrite::Parent => continue,
@@ -264,17 +257,24 @@ pub(super) fn build_inline_call_findings_and_fixes(
         }
         let offset = inline_inputs.file_insertion.offset();
         insertions.push(fixes.len());
-        fixes.push(UseFix {
-            path:         file_context.path.to_path_buf(),
-            start:        offset,
-            end:          offset,
-            replacement:  format!(
-                "{}use {};\n",
-                import_attributes.render(""),
-                candidate.module_path
+        fixes.push(
+            UseFix {
+                path:         file_context.path.to_path_buf(),
+                start:        offset,
+                end:          offset,
+                replacement:  format!(
+                    "{}use {};\n",
+                    import_attributes.render(""),
+                    candidate.module_path
+                ),
+                import_group: group,
+                finding:      None,
+            }
+            .with_finding(
+                DiagnosticCode::PreferModuleImport,
+                candidate.full_span_start.line,
             ),
-            import_group: group,
-        });
+        );
     }
 
     // `insertions` selects the smallest `UseFix::replacement`: insertions at one offset apply in
@@ -295,11 +295,13 @@ pub(super) fn build_inline_call_findings_and_fixes(
     Ok((findings, fixes))
 }
 
-fn inline_call_text(
+fn inline_call_finding(
     candidate: &InlineCallCandidate,
     rewrite: &InlineCallRewrite<'_>,
-) -> (String, String) {
-    match rewrite {
+    location: &InlineCallLocation<'_>,
+    display_path: &str,
+) -> Finding {
+    let (message, suggestion) = match rewrite {
         InlineCallRewrite::Parent => (
             format!(
                 "use `super::{}` instead of the fully-qualified path",
@@ -317,6 +319,24 @@ fn inline_call_text(
                 candidate.module_path, candidate.module_name, candidate.function_name
             ),
         ),
+    };
+    Finding {
+        disposition: Finding::disposition(
+            DiagnosticCode::PreferModuleImport,
+            Severity::Warning,
+            FixSupport::PreferModuleImport,
+        ),
+        diagnostic_code: DiagnosticCode::PreferModuleImport,
+        path: display_path.to_owned(),
+        line: candidate.full_span_start.line,
+        column: candidate.full_span_start.column + 1,
+        highlight_len: location.path.text.len().max(1),
+        source_line: location.path.span.start().source_line().to_string(),
+        item: None,
+        message,
+        suggestion: Some(suggestion),
+        related: None,
+        item_visibility: ItemVisibility::default(),
     }
 }
 

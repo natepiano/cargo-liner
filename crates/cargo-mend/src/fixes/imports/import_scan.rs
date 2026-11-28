@@ -10,9 +10,15 @@ use anyhow::Error;
 use anyhow::Result;
 use anyhow::bail;
 
+use super::ChainEdits;
+use crate::config::DiagnosticCode;
+use crate::fixes::facade_redirect::SourceLines;
+use crate::reporting::AppliedFix;
 use crate::reporting::AppliedFixCounts;
+use crate::reporting::AppliedFixKind;
 use crate::reporting::Finding;
 use crate::reporting::FixKind;
+use crate::reporting::FixSite;
 use crate::rust_syntax::ParsedSources;
 use crate::rust_syntax::SourceOwnership;
 use crate::rust_syntax::SourceOwnershipClassifier;
@@ -55,6 +61,22 @@ pub(in crate::fixes) struct UseFix {
     /// When set, this fix is part of a larger group that must be kept or
     /// dropped together. See `ImportGroup`.
     pub import_group: Option<ImportGroup>,
+    pub finding:      Option<FixSite>,
+}
+
+impl UseFix {
+    pub(in crate::fixes) fn with_finding(
+        mut self,
+        diagnostic_code: DiagnosticCode,
+        line: usize,
+    ) -> Self {
+        self.finding = Some(FixSite {
+            path: self.path.clone(),
+            line,
+            diagnostic_code,
+        });
+        self
+    }
 }
 
 /// An edit and the facts that require it. Redirect production uses indexes
@@ -91,6 +113,15 @@ pub(in crate::fixes) struct TaggedFix {
     pub fix:      UseFix,
 }
 
+impl TaggedFix {
+    fn detail_kind(&self) -> Option<AppliedFixKind> {
+        self.fix.finding.as_ref().map_or_else(
+            || self.fix_kind.map(|_| AppliedFixKind::DuplicateImport),
+            |site| Some(AppliedFixKind::Finding(site.diagnostic_code)),
+        )
+    }
+}
+
 /// Whether a `ValidatedFixSet` holds any `TaggedFix` edits for the runner to write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::fixes) enum FixSetPresence {
@@ -104,8 +135,20 @@ pub(in crate::fixes) struct ValidatedFixSet {
 }
 
 pub(in crate::fixes) struct RewrittenFiles {
-    pub files:  BTreeMap<PathBuf, String>,
+    pub files:   BTreeMap<PathBuf, String>,
+    pub applied: AppliedEdits,
+}
+
+#[derive(Default)]
+pub(in crate::fixes) struct AppliedEdits {
     pub counts: AppliedFixCounts,
+    pub fixes:  Vec<AppliedFix>,
+}
+
+enum FixDetails<'a> {
+    Omit,
+    Collect,
+    Compose(&'a mut ChainEdits),
 }
 
 impl ValidatedFixSet {
@@ -134,43 +177,79 @@ impl ValidatedFixSet {
 
     /// Use the write path for previews, so both paths apply equal byte ranges.
     pub(in crate::fixes) fn rewritten_files(&self) -> Result<RewrittenFiles> {
-        self.rewritten_sources(&crate::rust_syntax::ParsedSources::default())
+        self.rewrite(&ParsedSources::default(), FixDetails::Omit)
     }
 
     /// Compose a later chain link against the preceding proposed source text.
     pub(in crate::fixes) fn rewritten_sources(
         &self,
         sources: &ParsedSources,
+        edits: &mut ChainEdits,
+    ) -> Result<RewrittenFiles> {
+        self.rewrite(sources, FixDetails::Compose(edits))
+    }
+
+    fn rewrite(
+        &self,
+        sources: &ParsedSources,
+        mut details: FixDetails<'_>,
     ) -> Result<RewrittenFiles> {
         let mut by_file: BTreeMap<&Path, Vec<&TaggedFix>> = BTreeMap::new();
         for tagged in self.tagged() {
             by_file.entry(&tagged.fix.path).or_default().push(tagged);
         }
-        let mut counts = AppliedFixCounts::default();
+        let mut applied = AppliedEdits::default();
         let files = by_file
             .into_iter()
             .map(|(path, mut fixes)| {
-                let mut text = sources
+                let source = sources
                     .source(path)
-                    .with_context(|| format!("failed to read {}", path.display()))?
-                    .text()
-                    .to_string();
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                let original = source.text();
+                let mut text = original.to_string();
+                let lines = match details {
+                    FixDetails::Omit | FixDetails::Compose(_) => None,
+                    FixDetails::Collect => Some(SourceLines::new(original)),
+                };
+                let first = applied.fixes.len();
                 // Apply later edits first to keep earlier byte offsets valid.
                 // For equal starts, apply the wider replacement before the insertion.
                 fixes.sort_by_key(|tagged| Reverse((tagged.fix.start, tagged.fix.end)));
                 for tagged in fixes {
                     let fix = &tagged.fix;
                     if fix.end <= text.len() && fix.start <= fix.end {
-                        text.replace_range(fix.start..fix.end, &fix.replacement);
                         if let Some(kind) = tagged.fix_kind {
-                            counts.record(kind);
+                            applied.counts.record(kind);
                         }
+                        if let Some(before) = original.get(fix.start..fix.end)
+                            && before != fix.replacement
+                        {
+                            let kind = tagged.detail_kind();
+                            if let FixDetails::Compose(edits) = &mut details {
+                                edits.record(path, fix.start..fix.end, fix.replacement.len(), kind);
+                            } else if let (Some(lines), Some(kind)) = (&lines, kind) {
+                                let line = fix
+                                    .finding
+                                    .as_ref()
+                                    .filter(|site| site.path == path)
+                                    .map_or_else(|| lines.line_at(fix.start), |site| site.line);
+                                applied.fixes.push(AppliedFix::new(
+                                    kind,
+                                    path,
+                                    line,
+                                    before,
+                                    &fix.replacement,
+                                ));
+                            }
+                        }
+                        text.replace_range(fix.start..fix.end, &fix.replacement);
                     }
                 }
+                applied.fixes[first..].reverse();
                 Ok((path.to_path_buf(), text))
             })
             .collect::<Result<_>>()?;
-        Ok(RewrittenFiles { files, counts })
+        Ok(RewrittenFiles { files, applied })
     }
 
     pub(in crate::fixes) fn iter(&self) -> impl Iterator<Item = &UseFix> {
@@ -290,6 +369,9 @@ pub(super) fn canonical_fixes(
 ) -> Vec<TaggedFix> {
     for tagged in &mut fixes {
         tagged.fix.path = sources.path_key(&tagged.fix.path).into_path_buf();
+        if let Some(site) = &mut tagged.fix.finding {
+            site.path = sources.path_key(&site.path).into_path_buf();
+        }
     }
     fixes.sort_by(|left, right| {
         (
@@ -320,13 +402,13 @@ pub(super) fn canonical_fixes(
 /// Writes every fix in `fixes` and returns the edits that actually landed, per
 /// notice kind. A fix whose range no longer fits its file is skipped and
 /// counted nowhere — the run must not claim an edit it did not write.
-pub(in crate::fixes) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<AppliedFixCounts> {
-    let rewritten = fixes.rewritten_files()?;
+pub(in crate::fixes) fn apply_fixes(fixes: &ValidatedFixSet) -> Result<AppliedEdits> {
+    let rewritten = fixes.rewrite(&ParsedSources::default(), FixDetails::Collect)?;
     for (path, text) in rewritten.files {
         fs::write(&path, text).with_context(|| format!("failed to write {}", path.display()))?;
     }
 
-    Ok(rewritten.counts)
+    Ok(rewritten.applied)
 }
 
 #[cfg(test)]
@@ -356,6 +438,7 @@ mod tests {
                 end:          "pub ".len(),
                 replacement:  String::new(),
                 import_group: None,
+                finding:      None,
             })
             .into_iter()
             .collect();
@@ -380,6 +463,7 @@ mod tests {
                 end:          110,
                 replacement:  "first".to_string(),
                 import_group: None,
+                finding:      None,
             },
             UseFix {
                 path,
@@ -387,6 +471,7 @@ mod tests {
                 end: 120,
                 replacement: "second".to_string(),
                 import_group: None,
+                finding: None,
             },
         ];
 

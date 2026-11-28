@@ -675,6 +675,7 @@ impl ModuleImports {
                         end: range.end,
                         replacement,
                         import_group: None,
+                        finding: None,
                     },
                 }),
                 ImportOrigin::Proposal { edit, range } => {
@@ -1037,6 +1038,7 @@ mod tests {
                     end:          range.end,
                     replacement:  (*replacement).to_string(),
                     import_group: None,
+                    finding:      None,
                 },
             })
             .collect();
@@ -1074,6 +1076,7 @@ mod tests {
                 end: range.end,
                 replacement: replacement.to_string(),
                 import_group: None,
+                finding: None,
             },
         })
         .collect();

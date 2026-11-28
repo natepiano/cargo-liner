@@ -1573,7 +1573,7 @@ fn write_internal_facade_fixture(temp: &TempDir, subtree_use_site: &str) {
     }
 }
 
-fn apply_pub_use_fix(temp: &TempDir) {
+fn apply_pub_use_fix(temp: &TempDir) -> std::process::Output {
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix-pub-use")
         .output()
@@ -1584,16 +1584,16 @@ fn apply_pub_use_fix(temp: &TempDir) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    output
 }
 
-#[test]
-fn fix_pub_use_removes_an_internal_facade_and_repoints_its_subtree_import() {
-    let temp = tempdir().expect("create internal facade fixture dir");
-    write_internal_facade_fixture(
-        &temp,
-        "use super::Widget;\n\npub(super) fn use_widget() {\n    let _ = Widget;\n}\n",
-    );
+const SUBTREE_IMPORT: &str =
+    "use super::Widget;\n\npub(super) fn use_widget() {\n    let _ = Widget;\n}\n";
 
+#[test]
+fn internal_facade_with_a_subtree_import_offers_a_pub_use_fix() {
+    let temp = tempdir().expect("create internal facade fixture dir");
+    write_internal_facade_fixture(&temp, SUBTREE_IMPORT);
     let report = run_mend_json(&temp.path().join("Cargo.toml"));
     let finding = report
         .findings
@@ -1602,8 +1602,27 @@ fn fix_pub_use_removes_an_internal_facade_and_repoints_its_subtree_import() {
         .unwrap_or_else(|| panic!("missing internal facade finding: {report:#?}"));
     assert_eq!(finding.fix_support, FixSupport::PubUse);
     assert_eq!(report.summary.fixable_with_fix_pub_use, 1);
+}
 
-    apply_pub_use_fix(&temp);
+#[test]
+fn fix_pub_use_removes_an_internal_facade_and_repoints_its_subtree_import() {
+    let temp = tempdir().expect("create internal facade fixture dir");
+    write_internal_facade_fixture(&temp, SUBTREE_IMPORT);
+    let output = apply_pub_use_fix(&temp);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let details = stderr
+        .lines()
+        .filter(|line| line.starts_with("mend: src/tool/"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        details,
+        [
+            "mend: src/tool/inner.rs:1: internal_parent_pub_use_facade: `use super::Widget;` -> `use super::widget::Widget;`",
+            "mend: src/tool/mod.rs:4: internal_parent_pub_use_facade: `pub use widget::Widget;` -> ``",
+            "mend: src/tool/widget.rs:1: internal_parent_pub_use_facade: `pub` -> `pub(super)`",
+        ],
+        "{stderr}"
+    );
 
     let parent = fs::read_to_string(temp.path().join("src/tool/mod.rs")).expect("read parent");
     assert!(

@@ -917,9 +917,13 @@ edition = "2024"
 }
 
 #[test]
-fn fix_reports_applied_notice_after_summary() {
+fn fix_reports_each_applied_import_after_the_count() {
     let temp = tempdir().expect("create temp fixture dir");
-    pin_pub_in_path(temp.path(), PubInPath::Permitted);
+    fs::write(
+        temp.path().join("mend.toml"),
+        "[diagnostics]\nsuspicious_pub = false\nunused_pub = false\nnarrow_to_pub_crate = false\npub_use_outside_subtree = false\n[visibility]\npub_in_path = \"permitted\"\n",
+    )
+    .expect("write fixture config");
 
     fs::write(
         temp.path().join("Cargo.toml"),
@@ -939,7 +943,7 @@ edition = "2024"
     fs::write(temp.path().join("src/outer.rs"), "mod parent;\n").expect("write outer mod");
     fs::write(
         temp.path().join("src/outer/parent.rs"),
-        "mod child;\nmod consumer;\n",
+        "mod child;\nmod consumer;\nmod other;\n",
     )
     .expect("write parent mod");
     fs::write(
@@ -952,6 +956,11 @@ edition = "2024"
         "use crate::outer::parent::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
     )
     .expect("write consumer");
+    fs::write(
+        temp.path().join("src/outer/parent/other.rs"),
+        "// Import the shared type.\n\nuse crate::outer::parent::child::Thing;\n\nfn use_it(_thing: Thing) {}\n",
+    )
+    .expect("write other consumer");
 
     let output = mend_command_for(&temp.path().join("Cargo.toml"))
         .arg("--fix")
@@ -968,7 +977,19 @@ edition = "2024"
     let stderr = String::from_utf8(output.stderr).expect("decode stderr");
 
     assert!(stdout.contains("summary:"));
-    assert!(stderr.contains("mend: applied 1 import fix(es)"));
+    let lines: Vec<_> = stderr.lines().collect();
+    let count_position = lines
+        .iter()
+        .position(|line| line.starts_with("mend: applied 2 import fix(es)"))
+        .unwrap_or_else(|| panic!("expected the notice for two import fixes:\n{stderr}"));
+    assert_eq!(
+        &lines[count_position + 1..],
+        [
+            "mend: src/outer/parent/consumer.rs:1: shorten_local_crate_import: `use crate::outer::parent::child::Thing;` -> `use super::child::Thing;`",
+            "mend: src/outer/parent/other.rs:3: shorten_local_crate_import: `use crate::outer::parent::child::Thing;` -> `use super::child::Thing;`",
+        ],
+        "{stderr}"
+    );
 }
 
 #[test]

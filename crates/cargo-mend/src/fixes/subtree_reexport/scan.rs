@@ -28,6 +28,7 @@ use crate::fixes::imports::OwnedFix;
 use crate::fixes::imports::UseFix;
 use crate::fixes::imports::ValidatedFixSet;
 use crate::reporting::AncestorReexport;
+use crate::reporting::FixSite;
 use crate::reporting::FixSupport;
 use crate::reporting::Report;
 use crate::reporting::SubtreeReexportFixFact;
@@ -185,7 +186,20 @@ pub(in crate::fixes) fn scan_authored_selection(
         .len()
         - sites(&excluded);
     skipped += sites(&excluded);
-    let mut fixes = fixes.into_iter().map(|owned| owned.fix).collect::<Vec<_>>();
+    let mut fixes = fixes
+        .into_iter()
+        .map(|mut owned| {
+            owned.fix.finding = owned.facts.first().map(|&index| {
+                let fact = facts[index];
+                FixSite {
+                    path:            root.join(&fact.use_path),
+                    line:            fact.use_line,
+                    diagnostic_code: DiagnosticCode::PubUseOutsideSubtree,
+                }
+            });
+            owned.fix
+        })
+        .collect::<Vec<_>>();
     facade_redirect::dedup_fixes(&mut fixes);
     match ValidatedFixSet::try_from((fixes, sources)) {
         Ok(fixes) => Ok(SubtreeReexportScan { fixes, skipped }),

@@ -90,30 +90,11 @@ fn assert_fixed_without_warnings(root: &Path, expected: &[(&str, &str)]) {
 /// The assertions of [`assert_fixed`]; returns the stderr of the passing
 /// `cargo check --all-targets`.
 fn fixed_check_stderr(root: &Path, expected: &[(&str, &str)]) -> String {
-    fixed_check_stderr_after(root, expected, || {
-        let mut command = mend_command_for(&root.join("Cargo.toml"));
-        command.args(["--fix", "--json"]);
-        report_from_mend_output(&run_fix_output(&mut command))
-    })
-}
-
-fn fixed_check_stderr_after(
-    root: &Path,
-    expected: &[(&str, &str)],
-    fix: impl FnOnce() -> Report,
-) -> String {
-    let mut sources = rust_sources(root);
-    for (relative, contents) in expected {
-        sources.insert(PathBuf::from(relative), (*contents).to_string());
-    }
-    let report = fix();
-    assert_eq!(rust_sources(root), sources, "fixed sources");
-    let left = report
-        .findings
-        .iter()
-        .filter(|finding| SETTLED_CODES.contains(&finding.code))
-        .collect::<Vec<_>>();
-    assert!(left.is_empty(), "the fixed crate still reports: {left:#?}");
+    let sources = expected_fixed_sources(root, expected);
+    let mut command = mend_command_for(&root.join("Cargo.toml"));
+    command.args(["--fix", "--json"]);
+    let report = report_from_mend_output(&run_fix_output(&mut command));
+    assert_fixed_sources_and_findings(root, &sources, &report);
 
     let check = cargo_command()
         .arg("check")
@@ -129,6 +110,28 @@ fn fixed_check_stderr_after(
         "the fixed crate does not build:\n{stderr}"
     );
     stderr
+}
+
+fn expected_fixed_sources(root: &Path, expected: &[(&str, &str)]) -> BTreeMap<PathBuf, String> {
+    let mut sources = rust_sources(root);
+    for (relative, contents) in expected {
+        sources.insert(PathBuf::from(relative), (*contents).to_string());
+    }
+    sources
+}
+
+fn assert_fixed_sources_and_findings(
+    root: &Path,
+    expected: &BTreeMap<PathBuf, String>,
+    report: &Report,
+) {
+    assert_eq!(&rust_sources(root), expected, "fixed sources");
+    let left = report
+        .findings
+        .iter()
+        .filter(|finding| SETTLED_CODES.contains(&finding.code))
+        .collect::<Vec<_>>();
+    assert!(left.is_empty(), "the fixed crate still reports: {left:#?}");
 }
 
 fn write_sibling_function_fixture(root: &Path, caller_header: &str) {
@@ -910,21 +913,12 @@ fn write_reexport_chain_fixture(root: &Path, crate_root_header: &str) {
 }
 
 /// Four private forwarding links converge in one validated batch.
-/// A generated crate root stops the chain at the last authored module.
 #[test]
 fn reexport_chain_collapses_in_one_run() {
-    std::thread::scope(|scope| {
-        let authored = scope.spawn(assert_authored_chain_collapses);
-        assert_generated_root_stops_chain();
-        authored.join().expect("verify the authored chain");
-    });
-}
-
-fn assert_authored_chain_collapses() {
     let temp = tempdir().expect("create authored chain fixture");
     let root = temp.path();
     write_reexport_chain_fixture(root, "");
-    fixed_check_stderr_after(
+    let expected = expected_fixed_sources(
         root,
         &[
             (
@@ -936,11 +930,28 @@ fn assert_authored_chain_collapses() {
             ("src/orbit_cam/controls/bindings/mod.rs", "mod preset;\n"),
             ("src/orbit_cam/controls/bindings/preset.rs", ""),
         ],
-        || fix_chain_with_check_budget(root),
     );
+    let output = fix_chain_with_check_budget(root);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let bindings = stderr
+        .lines()
+        .filter(|line| line.starts_with("mend: src/orbit_cam/controls/bindings/mod.rs:"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        bindings,
+        [
+            "mend: src/orbit_cam/controls/bindings/mod.rs:3: pub_use_outside_subtree: `pub use preset::Gain;` -> ``"
+        ],
+        "{stderr}"
+    );
+    let report = report_from_mend_output(&output);
+    assert_eq!(report.summary.errors, 0);
+    assert_fixed_sources_and_findings(root, &expected, &report);
 }
 
-fn assert_generated_root_stops_chain() {
+/// A generated root keeps the last authored forwarding link.
+#[test]
+fn generated_root_stops_the_reexport_chain() {
     let temp = tempdir().expect("create generated chain fixture");
     let root = temp.path();
     write_reexport_chain_fixture(root, "// @generated\n");
@@ -1080,7 +1091,7 @@ fn failed_chain_link_keeps_an_independent_chain() {
 }
 
 /// Count the initial check and the batch validation for four forwarding links.
-fn fix_chain_with_check_budget(root: &Path) -> Report {
+fn fix_chain_with_check_budget(root: &Path) -> std::process::Output {
     let mut command = mend_command_for(&root.join("Cargo.toml"));
     command.args(["--fix", "--json"]);
     #[cfg(unix)]
@@ -1120,10 +1131,10 @@ fn fix_chain_with_check_budget(root: &Path) -> Report {
             metadata_starts, 1,
             "the workspace inventory must be resolved once"
         );
-        report_from_mend_output(&output)
+        output
     }
     #[cfg(not(unix))]
-    report_from_mend_output(&run_fix_output(&mut command))
+    run_fix_output(&mut command)
 }
 
 /// A caller in another file reaching the owner module through a `use ... as`

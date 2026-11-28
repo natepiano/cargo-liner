@@ -325,6 +325,7 @@ fn fix_for_rewrite(
                 end: range.end,
                 replacement,
                 import_group: None,
+                finding: None,
             }
         },
     }
