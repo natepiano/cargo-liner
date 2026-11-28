@@ -320,8 +320,8 @@ impl ModuleMap {
             path_keys:    Rc::clone(&sources.path_keys),
             declarations: FxHashMap::default(),
         };
-        for crate_root in crate_roots {
-            merged.absorb(Self::for_crate_root(crate_root, sources));
+        for (crate_root_id, crate_root) in crate_roots.iter().enumerate() {
+            merged.absorb(Self::walk_crate_root(crate_root, crate_root_id, sources));
         }
         merged
     }
@@ -329,8 +329,13 @@ impl ModuleMap {
     /// Resolve every file reachable from the one crate root `crate_root`,
     /// which may sit anywhere: `src/lib.rs`, `src/bin/tool.rs`, `tests/it.rs`.
     pub(crate) fn for_crate_root(crate_root: &Path, sources: &ParsedSources) -> Self {
+        Self::walk_crate_root(crate_root, 0, sources)
+    }
+
+    fn walk_crate_root(crate_root: &Path, crate_root_id: usize, sources: &ParsedSources) -> Self {
         let mut walk = ModuleWalk {
             sources,
+            crate_root_id,
             declarations: FxHashMap::default(),
             visiting: FxHashSet::default(),
         };
@@ -394,11 +399,36 @@ impl ModuleMap {
         &'a self,
         module_path: &'a [String],
     ) -> impl Iterator<Item = (&'a Path, &'a [String])> {
+        self.matching_ancestors(module_path, |_| true)
+    }
+
+    /// Find ancestors in the one crate that declares `file`.
+    /// A shared source file has no single crate root for name resolution.
+    pub(crate) fn module_ancestors_in_owning_crate<'a>(
+        &'a self,
+        file: &Path,
+        module_path: &'a [String],
+    ) -> impl Iterator<Item = (&'a Path, &'a [String])> {
+        let crate_root = self
+            .declarations
+            .get(&self.path_keys.key(file))
+            .and_then(|declared| declared.mounts.unique_crate_root());
+        self.matching_ancestors(module_path, move |mount| {
+            crate_root.is_some_and(|id| mount.crate_roots.contains(&id))
+        })
+    }
+
+    fn matching_ancestors<'a>(
+        &'a self,
+        module_path: &'a [String],
+        includes: impl Fn(&DeclaredMount) -> bool + Copy + 'a,
+    ) -> impl Iterator<Item = (&'a Path, &'a [String])> {
         self.declarations.iter().flat_map(move |(file, declared)| {
-            std::iter::once(&declared.mounts.first)
-                .chain(&declared.mounts.additional)
-                .filter(move |mount| module_path.starts_with(mount))
-                .map(move |mount| (file.as_path(), mount.as_slice()))
+            declared
+                .mounts
+                .iter()
+                .filter(move |mount| module_path.starts_with(&mount.module_path) && includes(mount))
+                .map(move |mount| (file.as_path(), mount.module_path.as_slice()))
         })
     }
 
@@ -435,23 +465,53 @@ impl ModuleMap {
     }
 }
 
+struct DeclaredMount {
+    module_path: Vec<String>,
+    crate_roots: BTreeSet<usize>,
+}
+
+impl DeclaredMount {
+    fn new(module_path: Vec<String>, crate_root_id: usize) -> Self {
+        Self {
+            module_path,
+            crate_roots: BTreeSet::from([crate_root_id]),
+        }
+    }
+}
+
 /// A declared file always has a first mount, so it cannot disappear from iteration or
 /// fall back to its directory layout because its declaration entry was empty.
 struct DeclaredMounts {
-    first:      Vec<String>,
-    additional: Vec<Vec<String>>,
+    first:      DeclaredMount,
+    additional: Vec<DeclaredMount>,
 }
 
 impl DeclaredMounts {
-    fn insert(&mut self, module_path: Vec<String>) {
-        if module_path != self.first && !self.additional.contains(&module_path) {
-            self.additional.push(module_path);
+    fn insert(&mut self, mount: DeclaredMount) {
+        if let Some(existing) = std::iter::once(&mut self.first)
+            .chain(&mut self.additional)
+            .find(|existing| existing.module_path == mount.module_path)
+        {
+            existing.crate_roots.extend(mount.crate_roots);
+        } else {
+            self.additional.push(mount);
         }
+    }
+
+    fn iter(&self) -> impl Iterator<Item = &DeclaredMount> {
+        std::iter::once(&self.first).chain(&self.additional)
+    }
+
+    fn unique_crate_root(&self) -> Option<usize> {
+        if !self.additional.is_empty() || self.first.crate_roots.len() != 1 {
+            return None;
+        }
+        self.first.crate_roots.first().copied()
     }
 
     fn module_path(&self) -> FileModulePath {
         if self.additional.is_empty() {
-            FileModulePath::Known(self.first.clone())
+            FileModulePath::Known(self.first.module_path.clone())
         } else {
             FileModulePath::SeveralParents
         }
@@ -487,8 +547,8 @@ impl DeclaredFile {
         self.paths.extend(other.paths);
         self.builds = self.builds.merge(other.builds);
         self.mounts.insert(other.mounts.first);
-        for module_path in other.mounts.additional {
-            self.mounts.insert(module_path);
+        for mount in other.mounts.additional {
+            self.mounts.insert(mount);
         }
     }
 }
@@ -501,11 +561,12 @@ struct Declared {
 }
 
 struct ModuleWalk<'a> {
-    sources:      &'a ParsedSources,
-    declarations: FxHashMap<SourcePathKey, DeclaredFile>,
+    sources:       &'a ParsedSources,
+    crate_root_id: usize,
+    declarations:  FxHashMap<SourcePathKey, DeclaredFile>,
     /// The `(file, module path)` pairs already being walked, so a `#[path]`
     /// cycle terminates while a file declared at two paths still records both.
-    visiting:     FxHashSet<(SourcePathKey, Vec<String>)>,
+    visiting:      FxHashSet<(SourcePathKey, Vec<String>)>,
 }
 
 impl ModuleWalk<'_> {
@@ -516,7 +577,10 @@ impl ModuleWalk<'_> {
                 entry.insert(DeclaredFile {
                     paths:  BTreeSet::from([file.to_path_buf()]),
                     mounts: DeclaredMounts {
-                        first:      module.module_path.clone(),
+                        first:      DeclaredMount::new(
+                            module.module_path.clone(),
+                            self.crate_root_id,
+                        ),
                         additional: Vec::new(),
                     },
                     builds: module.builds,
@@ -526,11 +590,10 @@ impl ModuleWalk<'_> {
                 let declared = entry.get_mut();
                 declared.paths.insert(file.to_path_buf());
                 declared.builds = declared.builds.merge(module.builds);
-                if module.module_path != declared.mounts.first
-                    && !declared.mounts.additional.contains(&module.module_path)
-                {
-                    declared.mounts.additional.push(module.module_path.clone());
-                }
+                declared.mounts.insert(DeclaredMount::new(
+                    module.module_path.clone(),
+                    self.crate_root_id,
+                ));
             },
         }
     }
@@ -729,9 +792,10 @@ mod tests {
     fn declarations_keep_the_first_mount_including_the_empty_crate_root_path() {
         let sources = ParsedSources::default();
         let mut walk = super::ModuleWalk {
-            sources:      &sources,
-            declarations: rustc_hash::FxHashMap::default(),
-            visiting:     rustc_hash::FxHashSet::default(),
+            sources:       &sources,
+            crate_root_id: 0,
+            declarations:  rustc_hash::FxHashMap::default(),
+            visiting:      rustc_hash::FxHashSet::default(),
         };
         let file = Path::new("/repo/src/shared.rs");
         let root = super::Declared {
@@ -758,8 +822,12 @@ mod tests {
             .declarations
             .get_mut(&sources.path_key(file))
             .expect("declared root");
-        declared.mounts.insert(vec!["second".to_string()]);
-        declared.mounts.insert(vec!["second".to_string()]);
+        declared
+            .mounts
+            .insert(super::DeclaredMount::new(vec!["second".to_string()], 0));
+        declared
+            .mounts
+            .insert(super::DeclaredMount::new(vec!["second".to_string()], 0));
         assert_eq!(declared.mounts.additional.len(), 1);
         assert_eq!(
             map.declared_files().collect::<Vec<_>>(),

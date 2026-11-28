@@ -7,6 +7,7 @@ use anyhow::Context;
 use anyhow::Result;
 use proc_macro2::LineColumn;
 
+use super::macro_targets::MacroTargets;
 use super::scope;
 use super::scope::EnclosingModule;
 use super::scope::ScopeInfo;
@@ -31,10 +32,11 @@ pub(super) struct OccurrenceResolutionContext<'a> {
 /// Processing is available only after resolving paths and analyzing collision names.
 /// The private collision set prevents resolution from supplying provisional empty state.
 pub(super) struct OccurrenceContext<'a> {
-    path:            &'a Path,
-    display_path:    &'a str,
-    scopes:          &'a [ScopeInfo],
-    collision_names: BTreeSet<String>,
+    path:               &'a Path,
+    display_path:       &'a str,
+    scopes:             &'a [ScopeInfo],
+    collision_names:    BTreeSet<String>,
+    equivalent_imports: BTreeSet<ImportKey>,
 }
 
 impl<'a> OccurrenceResolutionContext<'a> {
@@ -42,30 +44,46 @@ impl<'a> OccurrenceResolutionContext<'a> {
         self,
         path: &'a Path,
         display_path: &'a str,
-        occurrences: &[InlinePathOccurrence],
         resolved: &[ResolvedOccurrence<'_>],
         bare_type_names: &BTreeSet<String>,
+        macro_targets: &MacroTargets<'_, '_>,
     ) -> OccurrenceContext<'a> {
-        let resolved_import_paths = resolved
-            .iter()
-            .map(|item| item.import_path.clone())
-            .collect::<Vec<_>>();
         let existing_imports = self
             .scopes
             .iter()
             .flat_map(|scope| scope.existing_imports.keys().cloned())
             .collect();
-        let collision_names = find_collision_names(
-            occurrences,
-            &resolved_import_paths,
-            bare_type_names,
-            &existing_imports,
-        );
+        let mut collision_names =
+            find_collision_names(resolved, bare_type_names, &existing_imports);
+        let mut checked_macro_imports = BTreeSet::new();
+        let mut equivalent_imports = BTreeSet::new();
+        for occurrence in resolved {
+            let name = &occurrence.occurrence.import_name;
+            let EnclosingModule::Found(id) = occurrence.enclosing_module else {
+                continue;
+            };
+            let insertion_scope = &self.scopes[id];
+            let import = &occurrence.import_path;
+            if !macro_targets.names.contains_key(name)
+                || collision_names.contains(name)
+                || insertion_scope.existing_imports.contains_key(import)
+                || insertion_scope.existing_reexport_names.contains_key(name)
+                || !checked_macro_imports.insert((id, import))
+            {
+                continue;
+            }
+            if macro_targets.has_same_import(&insertion_scope.module_path, name, import) {
+                equivalent_imports.insert((id, import.clone()));
+            } else if !macro_targets.keeps_bindings(self.scopes, insertion_scope, name, import) {
+                collision_names.insert(name.clone());
+            }
+        }
         OccurrenceContext {
             path,
             display_path,
             scopes: self.scopes,
             collision_names,
+            equivalent_imports,
         }
     }
 }
@@ -205,7 +223,13 @@ pub(super) fn process_occurrence(
             scope,
             attributes,
         } => {
-            if scope.has_private_import_conflict(&occ.import_name, import_path) {
+            if scope.declared_names.contains(&occ.import_name) {
+                return;
+            }
+            let has_equivalent_import = ctx.equivalent_imports.contains(&(id, import_path.clone()));
+            if !has_equivalent_import
+                && scope.has_private_import_conflict(&occ.import_name, import_path)
+            {
                 return;
             }
             // A gated binding must cover the occurrence before it can replace the path.
@@ -217,7 +241,8 @@ pub(super) fn process_occurrence(
                 return;
             }
             let group = record_occurrence(ctx, resolved, findings, fixes);
-            if !scope.existing_imports.contains_key(import_path)
+            if !has_equivalent_import
+                && !scope.existing_imports.contains_key(import_path)
                 && !scope.existing_reexport_names.contains_key(&occ.import_name)
                 && inserted_use_paths.insert((id, import_path.clone()))
             {
@@ -478,8 +503,7 @@ fn absolutize_import_path(
 /// bindings, and detecting that here keeps the findings out of the report
 /// instead of advertising fixes the combining layer would silently drop.
 fn find_collision_names(
-    occurrences: &[InlinePathOccurrence],
-    resolved_import_paths: &[String],
+    resolved: &[ResolvedOccurrence<'_>],
     bare_type_names: &BTreeSet<String>,
     existing_imports: &BTreeSet<String>,
 ) -> BTreeSet<String> {
@@ -488,11 +512,11 @@ fn find_collision_names(
     // If more than one distinct path maps to the same import name, the
     // imports would collide — skip them all.
     let mut name_to_paths: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
-    for (occ, resolved) in occurrences.iter().zip(resolved_import_paths) {
+    for occurrence in resolved {
         name_to_paths
-            .entry(&occ.import_name)
+            .entry(&occurrence.occurrence.import_name)
             .or_default()
-            .insert(resolved.as_str());
+            .insert(occurrence.import_path.as_str());
     }
 
     let mut collisions = BTreeSet::new();
@@ -520,6 +544,7 @@ mod tests {
 
     use super::ImportAttributePlan;
     use super::ImportResolution;
+    use super::MacroTargets;
     use super::OccurrenceLocation;
     use super::OccurrenceResolutionContext;
     use super::absolutize_import_path;
@@ -528,6 +553,7 @@ mod tests {
     use crate::fixes::imports::ConditionalAttributes;
     use crate::fixes::imports::ImportSource;
     use crate::fixes::inline_path_qualified_type::visitor::InlinePathOccurrence;
+    use crate::rust_syntax::ParsedSources;
 
     #[test]
     fn resolution_preserves_explicit_anchors_and_expands_imported_modules() {
@@ -571,12 +597,22 @@ mod tests {
         let mut fixes = Vec::new();
         let source = ImportSource::new(text);
         let resolved = resolve_occurrence(&occurrence, &ctx, &source)?;
+        let directory = tempfile::tempdir()?;
+        let parsed_sources = ParsedSources::default();
+        let module_map = parsed_sources.module_map(directory.path());
+        let macro_targets = MacroTargets {
+            names:          &BTreeMap::new(),
+            module_map:     &module_map,
+            source_file:    Path::new("src/lib.rs"),
+            parsed_sources: &parsed_sources,
+            source:         &source,
+        };
         let blocked = OccurrenceResolutionContext { scopes: &[] }.analyze_collisions(
             Path::new("src/lib.rs"),
             "src/lib.rs",
-            std::slice::from_ref(&occurrence),
             std::slice::from_ref(&resolved),
             &BTreeSet::from(["Widget".to_string()]),
+            &macro_targets,
         );
         process_occurrence(
             &resolved,
@@ -594,9 +630,9 @@ mod tests {
         let ctx = ctx.analyze_collisions(
             Path::new("src/lib.rs"),
             "src/lib.rs",
-            std::slice::from_ref(&occurrence),
             std::slice::from_ref(&resolved),
             &BTreeSet::new(),
+            &macro_targets,
         );
         process_occurrence(
             &resolved,

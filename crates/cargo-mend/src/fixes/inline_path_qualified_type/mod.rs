@@ -1,4 +1,6 @@
 mod block_bindings;
+mod macro_bindings;
+mod macro_targets;
 mod offsets;
 mod process;
 mod scan;

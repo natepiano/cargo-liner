@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use syn::Attribute;
 use syn::Block;
 use syn::Expr;
+use syn::ExprMacro;
 use syn::ForeignItem;
 use syn::Ident;
 use syn::Item;
@@ -10,11 +11,13 @@ use syn::Meta;
 use syn::MetaList;
 use syn::Path;
 use syn::Stmt;
+use syn::StmtMacro;
 use syn::Token;
 use syn::ext::IdentExt;
 use syn::parse::Parser;
 use syn::punctuated::Punctuated;
 
+use super::scope;
 use crate::fixes::imports;
 use crate::fixes::imports::UseBinding;
 
@@ -105,12 +108,20 @@ const BUILT_IN_ATTRIBUTES: BuiltInAttributes = BuiltInAttributes {
 };
 
 impl BlockBindings {
-    pub(super) fn collect(block: &Block) -> Self {
+    pub(super) fn collect(block: &Block, binds_no_name: impl Fn(&Path) -> bool) -> Self {
         let mut names = BTreeSet::new();
         for statement in &block.stmts {
             let item = match statement {
                 Stmt::Item(item) => item,
-                Stmt::Macro(_) | Stmt::Expr(Expr::Macro(_), _) => return Self::Unknown,
+                Stmt::Macro(StmtMacro { attrs, mac, .. })
+                | Stmt::Expr(Expr::Macro(ExprMacro { attrs, mac }), _) => {
+                    if attribute_binding(attrs) == BlockBinding::MayBind
+                        || !binds_no_name(&mac.path)
+                    {
+                        return Self::Unknown;
+                    }
+                    continue;
+                },
                 _ => continue,
             };
             if attribute_binding(imports::item_attributes(item)) == BlockBinding::MayBind {
@@ -136,12 +147,6 @@ impl BlockBindings {
                     }
                     continue;
                 },
-                Item::Const(item) => &item.ident,
-                Item::Enum(item) => &item.ident,
-                Item::ExternCrate(item) => {
-                    item.rename.as_ref().map_or(&item.ident, |(_, name)| name)
-                },
-                Item::Fn(item) => &item.sig.ident,
                 Item::ForeignMod(item) => {
                     let Self::Named(foreign_names) = Self::foreign(&item.items) else {
                         return Self::Unknown;
@@ -155,14 +160,12 @@ impl BlockBindings {
                     continue;
                 },
                 Item::Macro(_) | Item::Verbatim(_) => return Self::Unknown,
-                Item::Mod(item) => &item.ident,
-                Item::Static(item) => &item.ident,
-                Item::Struct(item) => &item.ident,
-                Item::Trait(item) => &item.ident,
-                Item::TraitAlias(item) => &item.ident,
-                Item::Type(item) => &item.ident,
-                Item::Union(item) => &item.ident,
-                _ => continue,
+                _ => {
+                    let Some(name) = scope::declared_item_name(item) else {
+                        continue;
+                    };
+                    name
+                },
             };
             names.insert(name.unraw().to_string());
         }
@@ -306,7 +309,7 @@ mod tests {
         ] {
             let block: Block = syn::parse_str(source)?;
             let first_segment: Ident = syn::parse_str("std")?;
-            let scopes = [BlockBindings::collect(&block)];
+            let scopes = [BlockBindings::collect(&block, |_| false)];
             assert!(
                 BlockBindings::lookup(&scopes, &first_segment) == BlockBinding::Absent,
                 "Expected no binding for {first_segment} in {source}"
@@ -337,7 +340,7 @@ mod tests {
         ] {
             let block: Block = syn::parse_str(source)?;
             let first_segment: Ident = syn::parse_str(first_segment)?;
-            let scopes = [BlockBindings::collect(&block)];
+            let scopes = [BlockBindings::collect(&block, |_| false)];
             assert!(
                 BlockBindings::lookup(&scopes, &first_segment) == BlockBinding::MayBind,
                 "Expected a possible binding for {first_segment} in {source}"

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use proc_macro2::LineColumn;
@@ -12,7 +13,6 @@ use syn::Generics;
 use syn::Ident;
 use syn::ItemImpl;
 use syn::ItemMod;
-use syn::ItemStatic;
 use syn::ItemUse;
 use syn::Macro;
 use syn::PatStruct;
@@ -26,6 +26,9 @@ use syn::visit::Visit;
 
 use super::block_bindings::BlockBinding;
 use super::block_bindings::BlockBindings;
+use super::macro_bindings::MacroBindings;
+use super::macro_bindings::MacroImports;
+use super::macro_targets::MacroNameUse;
 use crate::fixes::imports;
 use crate::fixes::imports::ConditionalAttributes;
 use crate::fixes::imports::GateSource;
@@ -117,30 +120,6 @@ impl BareNameFootprint {
     }
 }
 
-#[derive(Clone, Copy)]
-enum ModuleNesting {
-    FileRoot,
-    Nested { depth: usize },
-}
-
-impl ModuleNesting {
-    const fn depth(self) -> usize {
-        match self {
-            Self::FileRoot => 0,
-            Self::Nested { depth } => depth,
-        }
-    }
-}
-
-impl From<usize> for ModuleNesting {
-    fn from(depth: usize) -> Self {
-        match depth {
-            0 => Self::FileRoot,
-            _ => Self::Nested { depth },
-        }
-    }
-}
-
 pub(super) struct InlinePathOccurrence {
     /// The original fully-qualified path as written (e.g.
     /// `crate::project::RustProject::Package`).
@@ -163,22 +142,13 @@ pub(super) struct InlinePathOccurrence {
 pub(super) struct InlinePathVisitor {
     pub(super) occurrences:            Vec<InlinePathOccurrence>,
     pub(super) bare_type_names:        BTreeSet<String>,
-    pub(super) mod_depth:              usize,
+    pub(super) macro_type_names:       BTreeMap<String, Vec<MacroNameUse>>,
     /// `check_path` checks type and const parameters in the enclosing scopes.
     pub(super) generic_scopes:         Vec<BTreeSet<String>>,
     pub(super) conditional_attributes: ConditionalAttributes,
 }
 
 impl InlinePathVisitor {
-    fn register_root_name(&mut self, name: &Ident) {
-        match ModuleNesting::from(self.mod_depth) {
-            ModuleNesting::FileRoot => {
-                self.bare_type_names.insert(name.to_string());
-            },
-            ModuleNesting::Nested { .. } => {},
-        }
-    }
-
     fn push_generics(&mut self, generics: &Generics) {
         let mut params = BTreeSet::new();
         for param in &generics.params {
@@ -337,14 +307,26 @@ impl InlinePathVisitor {
             BareNameFootprint::SelfReference => {},
         }
     }
+}
 
+/// A traversal borrowing the file scan's checked index for all gate extraction.
+struct GatedInlinePaths<'visit, 'source> {
+    visitor:        &'visit mut InlinePathVisitor,
+    source:         &'visit ImportSource<'source>,
+    block_scopes:   Vec<BlockBindings>,
+    module_site:    ModuleSite,
+    macro_bindings: MacroBindings,
+    macro_imports:  MacroImports,
+}
+
+impl GatedInlinePaths<'_, '_> {
     /// Register each `PascalCase` identifier that starts a path in a macro body, nested
     /// groups included. `syn` does not parse the body, so `record_bare_name_footprint` never
     /// sees `Foo` in `assert_eq!(Foo::X, 1)`. An import of `Foo` would hide the `Foo` the body
     /// uses. Like `record_bare_name_footprint`, it skips a later path segment or a member: the
     /// `Foo` in `crate::other::Foo::X` or `value.Foo` does not resolve through scope. The `Foo`
     /// in `self::Foo::X` does, so a path-start `self` keeps the next identifier a path start.
-    fn record_macro_footprint(&mut self, tokens: TokenStream) {
+    fn record_macro_footprint(&mut self, tokens: TokenStream, name_use: MacroNameUse) {
         let mut preceding = PrecedingMacroToken::Other;
         for token in tokens {
             preceding = match token {
@@ -357,7 +339,20 @@ impl InlinePathVisitor {
                         match (PathAnchor::from(name.as_str()), is_pascal_case(&name)) {
                             (PathAnchor::SelfMod, _) => PrecedingMacroToken::SelfModule,
                             (_, IdentifierCase::Pascal) => {
-                                self.bare_type_names.insert(name);
+                                let name_use = if self.visitor.generic_binding(&ident)
+                                    == GenericBinding::Active
+                                    || BlockBindings::lookup(&self.block_scopes, &ident)
+                                        == BlockBinding::MayBind
+                                {
+                                    MacroNameUse::Opaque
+                                } else {
+                                    name_use
+                                };
+                                self.visitor
+                                    .macro_type_names
+                                    .entry(name)
+                                    .or_default()
+                                    .push(name_use);
                                 PrecedingMacroToken::Other
                             },
                             (_, IdentifierCase::NonPascal) => PrecedingMacroToken::Other,
@@ -369,24 +364,14 @@ impl InlinePathVisitor {
                 },
                 TokenTree::Punct(punct) => preceding.after_punct(punct.as_char()),
                 TokenTree::Group(group) => {
-                    self.record_macro_footprint(group.stream());
+                    self.record_macro_footprint(group.stream(), name_use);
                     PrecedingMacroToken::Other
                 },
                 TokenTree::Literal(_) => PrecedingMacroToken::Other,
             };
         }
     }
-}
 
-/// A traversal borrowing the file scan's checked index for all gate extraction.
-struct GatedInlinePaths<'visit, 'source> {
-    visitor:      &'visit mut InlinePathVisitor,
-    source:       &'visit ImportSource<'source>,
-    block_scopes: Vec<BlockBindings>,
-    module_site:  ModuleSite,
-}
-
-impl GatedInlinePaths<'_, '_> {
     fn in_generic_scope(&mut self, generics: &Generics, visit: impl FnOnce(&mut Self)) {
         self.visitor.push_generics(generics);
         visit(self);
@@ -408,6 +393,8 @@ impl InlinePathVisitor {
             source,
             block_scopes: Vec::new(),
             module_site: ModuleSite::ImportScope,
+            macro_bindings: MacroBindings::collect(node),
+            macro_imports: MacroImports::collect(&node.items),
         }
         .visit_file(node);
     }
@@ -415,10 +402,9 @@ impl InlinePathVisitor {
 
 // Keep each owner's generic parameters in scope throughout its subtree.
 macro_rules! visit_generic_items {
-    ($($method:ident($node:ident: $item:ident) => $generics:expr $(, $root_name:expr)?;)+) => {
+    ($($method:ident($node:ident: $item:ident) => $generics:expr;)+) => {
         $(
             fn $method(&mut self, $node: &syn::$item) {
-                $(self.visitor.register_root_name($root_name);)?
                 self.in_generic_scope($generics, |visitor| visit::$method(visitor, $node));
             }
         )+
@@ -429,14 +415,14 @@ impl Visit<'_> for GatedInlinePaths<'_, '_> {
     imports::gate_tracking_visit!();
 
     visit_generic_items! {
-        visit_item_const(node: ItemConst) => &node.generics, &node.ident;
-        visit_item_enum(node: ItemEnum) => &node.generics, &node.ident;
-        visit_item_fn(node: ItemFn) => &node.sig.generics, &node.sig.ident;
-        visit_item_struct(node: ItemStruct) => &node.generics, &node.ident;
-        visit_item_trait(node: ItemTrait) => &node.generics, &node.ident;
-        visit_item_trait_alias(node: ItemTraitAlias) => &node.generics, &node.ident;
-        visit_item_type(node: ItemType) => &node.generics, &node.ident;
-        visit_item_union(node: ItemUnion) => &node.generics, &node.ident;
+        visit_item_const(node: ItemConst) => &node.generics;
+        visit_item_enum(node: ItemEnum) => &node.generics;
+        visit_item_fn(node: ItemFn) => &node.sig.generics;
+        visit_item_struct(node: ItemStruct) => &node.generics;
+        visit_item_trait(node: ItemTrait) => &node.generics;
+        visit_item_trait_alias(node: ItemTraitAlias) => &node.generics;
+        visit_item_type(node: ItemType) => &node.generics;
+        visit_item_union(node: ItemUnion) => &node.generics;
         visit_foreign_item_fn(node: ForeignItemFn) => &node.sig.generics;
         visit_foreign_item_type(node: ForeignItemType) => &node.generics;
         visit_impl_item_const(node: ImplItemConst) => &node.generics;
@@ -448,7 +434,10 @@ impl Visit<'_> for GatedInlinePaths<'_, '_> {
     }
 
     fn visit_block(&mut self, node: &Block) {
-        self.block_scopes.push(BlockBindings::collect(node));
+        let block_bindings = BlockBindings::collect(node, |path| {
+            self.macro_bindings.binds_no_name(path, &self.macro_imports)
+        });
+        self.block_scopes.push(block_bindings);
         visit::visit_block(self, node);
         self.block_scopes.pop();
     }
@@ -500,21 +489,31 @@ impl Visit<'_> for GatedInlinePaths<'_, '_> {
         if !self.block_scopes.is_empty() {
             self.module_site = ModuleSite::BlockLocalModule;
         }
-        let nesting = ModuleNesting::from(self.visitor.mod_depth);
-        self.visitor.mod_depth = nesting.depth() + 1;
+        let macro_imports = std::mem::replace(
+            &mut self.macro_imports,
+            node.content
+                .as_ref()
+                .map_or_else(MacroImports::default, |(_, items)| {
+                    MacroImports::collect(items)
+                }),
+        );
         visit::visit_item_mod(self, node);
-        self.visitor.mod_depth = nesting.depth();
+        self.macro_imports = macro_imports;
         self.module_site = module_site;
     }
 
     fn visit_macro(&mut self, node: &Macro) {
-        self.visitor.record_macro_footprint(node.tokens.clone());
+        let name_use = if matches!(self.module_site, ModuleSite::ImportScope)
+            && self
+                .macro_bindings
+                .binds_no_name(&node.path, &self.macro_imports)
+        {
+            MacroNameUse::InModule(node.path.span().start())
+        } else {
+            MacroNameUse::Opaque
+        };
+        self.record_macro_footprint(node.tokens.clone(), name_use);
         visit::visit_macro(self, node);
-    }
-
-    fn visit_item_static(&mut self, node: &ItemStatic) {
-        self.visitor.register_root_name(&node.ident);
-        visit::visit_item_static(self, node);
     }
 
     fn visit_item_impl(&mut self, node: &ItemImpl) {
@@ -550,6 +549,7 @@ pub(super) fn is_pascal_case(name: &str) -> IdentifierCase {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::collections::BTreeSet;
 
     use anyhow::Context;
@@ -580,7 +580,7 @@ mod tests {
         let mut visitor = InlinePathVisitor {
             occurrences:            Vec::new(),
             bare_type_names:        BTreeSet::new(),
-            mod_depth:              0,
+            macro_type_names:       BTreeMap::new(),
             generic_scopes:         Vec::new(),
             conditional_attributes: ConditionalAttributes::default(),
         };
@@ -663,26 +663,6 @@ mod tests {
         );
         assert!(visitor.bare_type_names.contains("Type"));
         assert!(!visitor.bare_type_names.contains("Self"));
-        Ok(())
-    }
-
-    #[test]
-    fn root_registration_resumes_after_nested_modules() -> syn::Result<()> {
-        let visitor = inspect(concat!(
-            "struct Root; mod child { struct Nested; mod deeper { enum Deep {} } } ",
-            "enum After {} type Alias = u8; trait Trait {} fn function() {} ",
-            "const VALUE: u8 = 0; static STATIC: u8 = 0;",
-        ))?;
-        assert_eq!(visitor.mod_depth, 0);
-        assert_eq!(
-            visitor.bare_type_names,
-            BTreeSet::from_iter(
-                [
-                    "Root", "After", "Alias", "Trait", "function", "VALUE", "STATIC"
-                ]
-                .map(str::to_string)
-            )
-        );
         Ok(())
     }
 

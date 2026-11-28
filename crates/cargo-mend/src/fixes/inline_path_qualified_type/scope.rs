@@ -5,9 +5,11 @@ use std::iter::Skip;
 use std::vec::IntoIter;
 
 use anyhow::Result;
+use syn::Ident;
 use syn::Item;
 use syn::ItemUse;
 use syn::Visibility;
+use syn::ext::IdentExt as _;
 use syn::spanned::Spanned;
 
 use super::offsets;
@@ -23,6 +25,7 @@ pub(super) struct ScopeInfo {
     pub(super) insertion_offset:        usize,
     pub(super) indent:                  String,
     pub(super) module_path:             Vec<String>,
+    pub(super) declared_names:          BTreeSet<String>,
     /// Import path of each existing `use` binding, mapped to the cfg gates of
     /// every `use` item that binds it.
     pub(super) existing_imports:        BTreeMap<String, BTreeSet<ConditionalAttributes>>,
@@ -141,6 +144,23 @@ impl ScopeImports {
     }
 }
 
+pub(super) fn declared_item_name(item: &Item) -> Option<&Ident> {
+    match item {
+        Item::Const(item) => Some(&item.ident),
+        Item::Enum(item) => Some(&item.ident),
+        Item::ExternCrate(item) => Some(item.rename.as_ref().map_or(&item.ident, |(_, name)| name)),
+        Item::Fn(item) => Some(&item.sig.ident),
+        Item::Mod(item) => Some(&item.ident),
+        Item::Static(item) => Some(&item.ident),
+        Item::Struct(item) => Some(&item.ident),
+        Item::Trait(item) => Some(&item.ident),
+        Item::TraitAlias(item) => Some(&item.ident),
+        Item::Type(item) => Some(&item.ident),
+        Item::Union(item) => Some(&item.ident),
+        _ => None,
+    }
+}
+
 pub(super) fn collect_scopes(
     items: &[Item],
     span: ScopeSpan,
@@ -149,6 +169,7 @@ pub(super) fn collect_scopes(
     source: &ImportSource<'_>,
 ) -> Result<()> {
     let mut scope_imports = ScopeImports::default();
+    let mut declared_names = BTreeSet::new();
     let mut last_use_start = None;
     let mut last_use_end = None;
     let mut first_item_start = None;
@@ -156,6 +177,9 @@ pub(super) fn collect_scopes(
     for item in items {
         let item_start = offsets::offset(source, item.span().start())?;
         first_item_start.get_or_insert(item_start);
+        if let Some(name) = declared_item_name(item) {
+            declared_names.insert(name.unraw().to_string());
+        }
 
         if let Item::Use(item_use) = item {
             scope_imports.record(source, item_use);
@@ -180,6 +204,7 @@ pub(super) fn collect_scopes(
         insertion_offset,
         indent,
         module_path: module_path.to_vec(),
+        declared_names,
         existing_imports: scope_imports.existing_imports,
         private_imports: scope_imports.private_imports,
         import_attributes: scope_imports.import_attributes,
@@ -347,6 +372,35 @@ mod tests {
             &source,
         )?;
         Ok(scopes)
+    }
+
+    #[test]
+    fn module_declarations_stay_in_their_own_scope() -> anyhow::Result<()> {
+        let scopes = scopes(concat!(
+            "struct Root; mod child { struct Nested; mod deeper { enum Deep {} } } ",
+            "enum After {} type Alias = u8; trait Trait {} fn function() {} ",
+            "const VALUE: u8 = 0; static STATIC: u8 = 0;",
+        ))?;
+        for (scope, names) in [
+            (
+                &scopes[0],
+                &[
+                    "After", "Alias", "Root", "STATIC", "Trait", "VALUE", "child", "function",
+                ][..],
+            ),
+            (&scopes[1], &["Nested", "deeper"][..]),
+            (&scopes[2], &["Deep"][..]),
+        ] {
+            assert_eq!(
+                scope
+                    .declared_names
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                names,
+            );
+        }
+        Ok(())
     }
 
     #[test]

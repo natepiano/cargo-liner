@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -6,6 +7,7 @@ use anyhow::Context;
 use anyhow::Result;
 use walkdir::WalkDir;
 
+use super::macro_targets::MacroTargets;
 use super::process;
 use super::process::OccurrenceResolutionContext;
 use super::scope;
@@ -102,7 +104,7 @@ fn scan_file(
     let mut visitor = InlinePathVisitor {
         occurrences:            Vec::new(),
         bare_type_names:        BTreeSet::new(),
-        mod_depth:              0,
+        macro_type_names:       BTreeMap::new(),
         generic_scopes:         Vec::new(),
         conditional_attributes: ConditionalAttributes::default(),
     };
@@ -131,9 +133,15 @@ fn scan_file(
     let ctx = resolve_ctx.analyze_collisions(
         path,
         &display_path,
-        &visitor.occurrences,
         &resolved,
         &visitor.bare_type_names,
+        &MacroTargets {
+            names: &visitor.macro_type_names,
+            module_map,
+            source_file: path,
+            parsed_sources,
+            source: &indexed,
+        },
     );
     let import_attribute_plan = process::plan_import_attributes(&resolved);
 
@@ -159,12 +167,15 @@ mod tests {
     use std::process::Command;
     use std::process::Output;
 
+    use anyhow::Context as _;
     use anyhow::anyhow;
     use tempfile::TempDir;
 
     use crate::config::DiagnosticCode;
     use crate::fixes::imports;
     use crate::fixes::imports::ImportSource;
+    use crate::fixes::imports::UseFix;
+    use crate::reporting::Finding;
     use crate::reporting::Report;
     use crate::rust_syntax::ParsedSources;
     use crate::selection::Selection;
@@ -173,6 +184,18 @@ mod tests {
     const ABSOLUTE_SHADOWED_SOURCE: &str = "use other::std;\nfn f(_: ::std::time::Duration) {}\n";
     const ABSOLUTE_DURATION_PATH: &str = "::std::time::Duration";
     const ABSOLUTE_DURATION_IMPORT: &str = "use ::std::time::Duration;";
+    const EXTERNAL_MACRO_SOURCE: &str = "
+        fn timeout(_: std::time::Duration) {}
+
+        mod tests {
+            use std::time::Duration;
+
+            #[test]
+            fn duration() {
+                assert_eq!(Duration::from_secs(1).as_secs(), 1);
+            }
+        }
+    ";
 
     #[test]
     fn absolute_paths_keep_external_identity_and_complete_highlight() -> anyhow::Result<()> {
@@ -220,6 +243,234 @@ mod tests {
             assert!(findings.is_empty());
             assert!(fixes.is_empty());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn assertion_keeps_the_inline_type_finding_and_fix() -> anyhow::Result<()> {
+        for (import, statement) in [
+            ("", "assert!(true);"),
+            ("", "std::debug_assert_eq!(1, 1);"),
+            ("", "log::info!(\"ready\");"),
+            ("use tracing::trace;", "trace!(\"ready\");"),
+        ] {
+            let source = format!(
+                "
+            {import}
+            #[test]
+            fn timeout() {{
+                {statement}
+                let _timeout: std::time::Duration = Default::default();
+            }}
+        "
+            );
+            assert_inline_type_fix(
+                &[("lib.rs", &source)],
+                "lib.rs",
+                "use std::time::Duration;",
+                "Duration",
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn macro_that_imports_a_module_keeps_the_qualified_type() -> anyhow::Result<()> {
+        for name in ["import_clock", "assert"] {
+            let source = format!(
+                "
+            macro_rules! {name} {{
+                () => {{ use std::time as clock; }};
+            }}
+            fn timeout() {{
+                {name}!();
+                let _timeout: clock::Duration = Default::default();
+            }}
+        "
+            );
+            let (findings, fixes) = scan_inline_type_fixture(&[("lib.rs", &source)], "lib.rs")?;
+            assert!(findings.is_empty(), "{source}");
+            assert!(fixes.is_empty(), "{source}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn assertion_with_a_reexport_keeps_the_import_of_the_same_type() -> anyhow::Result<()> {
+        let library = "
+            mod tooltip {
+                mod declaration {
+                    #[derive(Debug, PartialEq)]
+                    pub(super) enum TooltipPhase { Visible }
+                }
+                use declaration::TooltipPhase;
+                mod placement { mod screen; }
+            }
+        ";
+        let screen = "
+            fn resolve(_: super::super::declaration::TooltipPhase) {}
+
+            #[cfg(test)]
+            mod tests {
+                use crate::tooltip::TooltipPhase;
+
+                #[test]
+                fn visibility() {
+                    assert_eq!(TooltipPhase::Visible, TooltipPhase::Visible);
+                }
+            }
+        ";
+        let screen_path = "tooltip/placement/screen.rs";
+        assert_inline_type_fix(
+            &[("lib.rs", library), (screen_path, screen)],
+            screen_path,
+            "use crate::tooltip::declaration::TooltipPhase;",
+            "TooltipPhase",
+        )
+    }
+
+    #[test]
+    fn inline_module_declaration_blocks_a_duplicate_import() -> anyhow::Result<()> {
+        let source = "
+            mod other { pub(super) struct Widget; }
+
+            mod tests {
+                struct Widget;
+
+                #[test]
+                fn fixture() {
+                    assert!(true);
+                    let _: crate::other::Widget;
+                }
+            }
+
+            mod consumer {
+                fn accept(_: crate::other::Widget) {}
+            }
+        ";
+        assert_inline_type_fix(
+            &[("lib.rs", source)],
+            "lib.rs",
+            "use crate::other::Widget;",
+            "Widget",
+        )
+    }
+
+    #[test]
+    fn macro_uses_the_same_external_type_in_a_child_module() -> anyhow::Result<()> {
+        assert_inline_type_fix(
+            &[("lib.rs", EXTERNAL_MACRO_SOURCE)],
+            "lib.rs",
+            "use std::time::Duration;",
+            "Duration",
+        )
+    }
+
+    #[test]
+    fn macro_uses_the_owning_library_root_beside_a_binary() -> anyhow::Result<()> {
+        assert_inline_type_fix(
+            &[
+                ("lib.rs", EXTERNAL_MACRO_SOURCE),
+                ("main.rs", "fn main() {}"),
+            ],
+            "lib.rs",
+            "use std::time::Duration;",
+            "Duration",
+        )
+    }
+
+    #[test]
+    fn macro_uses_the_same_type_through_a_parent_glob() -> anyhow::Result<()> {
+        let types = "
+            pub(super) struct Widget;
+            impl Widget { pub(super) const VALUE: u8 = 1; }
+        ";
+        let source = "
+            mod types;
+            use types::Widget;
+
+            mod tests {
+                use super::*;
+
+                #[test]
+                fn widget() {
+                    let _: super::types::Widget;
+                    assert_eq!(Widget::VALUE, 1);
+                }
+            }
+        ";
+        assert_inline_type_fix(
+            &[("lib.rs", source), ("types.rs", types)],
+            "lib.rs",
+            "use super::types::Widget;",
+            "Widget",
+        )
+    }
+
+    #[test]
+    fn macro_uses_a_documented_type_with_derives_through_a_parent_glob() -> anyhow::Result<()> {
+        let source = "
+            mod parent {
+                /// A widget.
+                #[derive(Debug, PartialEq)]
+                pub(crate) struct Widget;
+
+                mod tests {
+                    use super::*;
+
+                    #[test]
+                    fn widget() {
+                        let _: crate::parent::Widget;
+                        assert_eq!(Widget, Widget);
+                    }
+                }
+            }
+        ";
+        assert_inline_type_fix(
+            &[("lib.rs", source)],
+            "lib.rs",
+            "use crate::parent::Widget;",
+            "Widget",
+        )
+    }
+
+    fn scan_inline_type_fixture(
+        fixture_sources: &[(&str, &str)],
+        scan_path: &str,
+    ) -> anyhow::Result<(Vec<Finding>, Vec<UseFix>)> {
+        let directory = tempfile::tempdir()?;
+        for (relative_path, text) in fixture_sources {
+            let path = directory.path().join(relative_path);
+            fs::create_dir_all(path.parent().context("fixture file has no parent")?)?;
+            fs::write(path, text)?;
+        }
+        let path = directory.path().join(scan_path);
+        let sources = ParsedSources::default();
+        let module_map = sources.module_map(directory.path());
+        super::scan_file(
+            directory.path(),
+            directory.path(),
+            &path,
+            &module_map,
+            &sources,
+        )
+    }
+
+    fn assert_inline_type_fix(
+        fixture_sources: &[(&str, &str)],
+        scan_path: &str,
+        import: &str,
+        name: &str,
+    ) -> anyhow::Result<()> {
+        let (findings, fixes) = scan_inline_type_fixture(fixture_sources, scan_path)?;
+        assert_eq!(findings.len(), 1, "{scan_path}");
+        assert_eq!(
+            findings[0].diagnostic_code,
+            DiagnosticCode::InlinePathQualifiedType
+        );
+        assert_eq!(fixes.len(), 2, "{scan_path}");
+        assert!(fixes.iter().any(|fix| fix.replacement.trim() == import));
+        assert!(fixes.iter().any(|fix| fix.replacement == name));
         Ok(())
     }
 
