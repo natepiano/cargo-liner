@@ -384,6 +384,9 @@ READER_EXIT_SECONDS = wait_seconds / 2
 READER_KILLED_EXIT_SECONDS = wait_seconds / 10
 READER_STOP_SECONDS = wait_seconds / 2
 WRITER_KILLED_EXIT_SECONDS = wait_seconds / 10
+OWNERSHIP_EXIT_SECONDS = 5
+# Leave time to kill the recorded groups before the hard stop.
+OWNERSHIP_CLEANUP_SECONDS = HARD_STOP_GRACE_SECONDS / 2
 scenario_deadline_seconds = (float(deadline_arguments[0]) if deadline_arguments
                              else SCENARIO_DEADLINE_SECONDS)
 home = root / 'home'
@@ -2314,23 +2317,36 @@ def assert_scenario_releases_resources(exit_path: str) -> None:
                 victim.kill()
             else:
                 _ = os.write(release_write, b'R')
-            _, error = victim.communicate(timeout=5)
+            _, error = victim.communicate(timeout=OWNERSHIP_EXIT_SECONDS)
             expected = {'pass': 0, 'failure': 1, 'timeout': 1, 'sigkill': -signal.SIGKILL}[exit_path]
             assert victim.returncode == expected, (exit_path, victim.returncode, error)
             alive = [pid for pid, _group in live_group_members(set(groups))]
             assert not alive and not Path(directory).exists(), (
                 exit_path, 'live group members', alive, 'folder remains', Path(directory).exists())
         finally:
-            lifetime.close()
-            os.close(release_write)
-            if victim.poll() is None:
-                victim.kill()
-                _ = victim.communicate()
-            for group in groups:
-                try:
-                    os.killpg(group, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+            earlier_error = sys.exception()
+            try:
+                lifetime.close()
+                os.close(release_write)
+                if killed_process == 'caller' and victim.poll() is None:
+                    victim.kill()
+                # Wait for the owner to close its output pipes after cleanup.
+                _ = victim.communicate(timeout=OWNERSHIP_CLEANUP_SECONDS)
+            except subprocess.TimeoutExpired as cleanup_timeout:
+                required(victim.stdout, 'scenario has no readiness pipe').close()
+                required(victim.stderr, 'scenario has no error pipe').close()
+                cause = f'{exit_path} ({killed_process}): the owner did not finish cleanup'
+                if killed_process == 'scenario':
+                    cause += f' (owner PID {victim.pid})'
+                if earlier_error is None:
+                    raise TimeoutError(cause) from cleanup_timeout
+                earlier_error.add_note(cause)
+            finally:
+                for group in groups:
+                    try:
+                        os.killpg(group, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     if len(killed_processes) == 1:
         check_exit(killed_processes[0])
