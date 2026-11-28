@@ -1,6 +1,8 @@
 //! Word presses use the painted grid and preserve row actions.
 
 use std::path::Path;
+#[cfg(target_os = "macos")]
+use std::path::PathBuf;
 
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -12,6 +14,8 @@ use notify::event::RenameMode;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::layout::Position;
+#[cfg(target_os = "macos")]
+use tempfile::TempDir;
 use tui_pane::Repaint;
 use tui_pane::TerminalApp;
 use tui_pane::TileView;
@@ -36,6 +40,7 @@ pub(super) type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 const WIDTH: u16 = 200;
 const HEIGHT: u16 = 70;
 const ACCOUNT: &str = "claude1";
+const CONFIG_REPLACEMENTS: usize = 16;
 
 pub(super) fn session(pid: u32, name: &str, work: &str) -> TestResult<AgentRow> {
     Ok(serde_json::from_value(serde_json::json!({
@@ -882,19 +887,134 @@ fn config_reader_reports_an_atomic_replacement_after_a_rename_event() -> TestRes
 }
 
 #[test]
-#[cfg_attr(target_os = "macos", ignore = "FSEvents can exceed the test deadline")]
-fn config_watcher_reports_startup_and_atomic_replacement() -> TestResult {
+fn config_watcher_reports_each_atomic_replacement_and_a_later_in_place_write() -> TestResult {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("config.toml");
     replace_emphasis(&path, "subtle")?;
     let updates = WordHighlightUpdates::spawn(path.clone());
+    check_config_replacements(&updates, &path, CONFIG_REPLACEMENTS)?;
+
+    std::fs::write(&path, "[word_highlight]\nemphasis = 'clear'\n")?;
+    assert!(matches!(
+        updates.receive_for_test("in-place write after the final replacement")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Clear)
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn config_watcher_reports_each_replacement_of_a_symlink_target() -> TestResult {
+    let config = LinkedConfig::new()?;
+    let updates = WordHighlightUpdates::spawn(config.path.clone());
+    check_config_replacements(&updates, &config.target, CONFIG_REPLACEMENTS)
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn config_watcher_rearms_after_its_symlink_target_returns() -> TestResult {
+    let config = LinkedConfig::new()?;
+    let updates = WordHighlightUpdates::spawn(config.path.clone());
+    assert!(matches!(
+        updates.receive_for_test("linked config startup")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Subtle)
+    ));
+
+    let parked = config.target.with_file_name("parked.toml");
+    std::fs::rename(&config.target, &parked)?;
+    assert!(matches!(
+        updates.receive_for_test("linked target moved aside")?,
+        WordHighlightUpdate::Invalid(_)
+    ));
+
+    std::fs::rename(&parked, &config.target)?;
+    assert!(matches!(
+        updates.receive_for_test("linked target restored")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Subtle)
+    ));
+
+    std::fs::write(&config.target, "[word_highlight]\nemphasis = 'strong'\n")?;
+    assert!(matches!(
+        updates.receive_for_test("in-place write after linked target restored")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Strong)
+    ));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+struct LinkedConfig {
+    path:       PathBuf,
+    target:     PathBuf,
+    _directory: TempDir,
+}
+
+#[cfg(target_os = "macos")]
+impl LinkedConfig {
+    fn new() -> TestResult<Self> {
+        let directory = tempfile::tempdir()?;
+        let config_directory = directory.path().join("settings");
+        std::fs::create_dir(&config_directory)?;
+        let path = config_directory.join("config.toml");
+        let target = directory.path().join("shared.toml");
+        replace_emphasis(&target, "subtle")?;
+        std::os::unix::fs::symlink("../shared.toml", &path)?;
+        Ok(Self {
+            path,
+            target,
+            _directory: directory,
+        })
+    }
+}
+
+fn check_config_replacements(
+    updates: &WordHighlightUpdates,
+    path: &Path,
+    replacements: usize,
+) -> TestResult {
     assert!(matches!(
         updates.receive_for_test("watcher startup with subtle emphasis")?,
         WordHighlightUpdate::Valid(WordHighlightEmphasis::Subtle)
     ));
+    let cases = [
+        ("strong", WordHighlightEmphasis::Strong),
+        ("subtle", WordHighlightEmphasis::Subtle),
+    ];
+    for (index, (value, expected)) in cases.into_iter().cycle().take(replacements).enumerate() {
+        replace_emphasis(path, value)?;
+        let step = format!("atomic replacement {} with {value} emphasis", index + 1);
+        let received = updates.receive_for_test(&step)?;
+        assert!(
+            matches!(received, WordHighlightUpdate::Valid(emphasis) if emphasis == expected),
+            "{step}: received {received:?}"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn config_watcher_recovers_after_its_directory_moves() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let config_directory = directory.path().join("cargo-handler");
+    let path = config_directory.join("config.toml");
+    std::fs::create_dir(&config_directory)?;
+    replace_emphasis(&path, "subtle")?;
+    let updates = WordHighlightUpdates::spawn(path.clone());
+    assert!(matches!(
+        updates.receive_for_test("watcher startup before directory move")?,
+        WordHighlightUpdate::Valid(WordHighlightEmphasis::Subtle)
+    ));
+
+    std::fs::rename(&config_directory, directory.path().join("previous"))?;
+    assert!(matches!(
+        updates.receive_for_test("configuration directory moved")?,
+        WordHighlightUpdate::Invalid(_)
+    ));
+
+    std::fs::create_dir(&config_directory)?;
     replace_emphasis(&path, "strong")?;
     assert!(matches!(
-        updates.receive_for_test("watcher replacement with strong emphasis")?,
+        updates.receive_for_test("configuration directory restored")?,
         WordHighlightUpdate::Valid(WordHighlightEmphasis::Strong)
     ));
     Ok(())

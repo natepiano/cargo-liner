@@ -44,5 +44,7 @@ tempfile            = { workspace = true }
 tui_pane            = { workspace = true, features = ["contrast-test"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# Watch the config file and its directory without changing the shared notify backend.
+kqueue = { workspace = true }
 # Safe typed per-process libproc reads retain precise births, current names and cwd.
 libproc = "0.14.11"

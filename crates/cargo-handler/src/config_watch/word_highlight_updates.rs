@@ -2,7 +2,10 @@
 //! terminal loop.
 
 use std::fs;
+use std::io;
 use std::io::ErrorKind;
+#[cfg(target_os = "macos")]
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::mpsc;
@@ -14,10 +17,15 @@ use std::thread::JoinHandle;
 #[cfg(test)]
 use std::time::Duration;
 
+#[cfg(any(not(target_os = "macos"), test))]
 use notify::Event;
+#[cfg(not(target_os = "macos"))]
 use notify::RecursiveMode;
+#[cfg(not(target_os = "macos"))]
 use notify::Watcher;
 
+#[cfg(target_os = "macos")]
+use super::macos;
 use crate::config::Config;
 use crate::config::WordHighlightEmphasis;
 
@@ -28,7 +36,8 @@ pub(crate) enum WordHighlightUpdate {
     Invalid(String),
 }
 
-pub(crate) enum ConfigFileEvent {
+#[cfg(not(target_os = "macos"))]
+enum ConfigFileEvent {
     Filesystem(notify::Result<Event>),
     Stop,
 }
@@ -40,15 +49,19 @@ pub(crate) enum WordHighlightUpdates {
     Disabled,
     Watching {
         updates: Receiver<WordHighlightUpdate>,
-        stop:    Sender<ConfigFileEvent>,
-        reader:  ConfigReaderThread,
+        reader:  Option<ConfigReaderThread>,
     },
 }
 
-/// `ConfigReaderThread` records whether the reader still requires a join.
-pub(crate) enum ConfigReaderThread {
-    Running(JoinHandle<()>),
-    Joined,
+#[cfg(target_os = "macos")]
+type ConfigReaderStop = UnixStream;
+#[cfg(not(target_os = "macos"))]
+type ConfigReaderStop = Sender<ConfigFileEvent>;
+
+/// `ConfigReaderThread` owns the reader and the endpoint that stops it.
+pub(crate) struct ConfigReaderThread {
+    stop:   ConfigReaderStop,
+    handle: JoinHandle<()>,
 }
 
 #[cfg(test)]
@@ -58,19 +71,14 @@ impl WordHighlightUpdates {
     /// `WordHighlightUpdates::spawn` watches the directory across atomic file replacements.
     pub(crate) fn spawn(path: PathBuf) -> Self {
         let (sender, updates) = mpsc::channel();
-        let (stop, events) = mpsc::channel();
-        let notifications = stop.clone();
-        let reader = thread::spawn(move || {
-            let result = read_changes(&path, notifications, &events, &sender);
-            if let Err(error) = result {
-                let _ = sender.send(WordHighlightUpdate::Invalid(error));
-            }
-        });
-        Self::Watching {
-            updates,
-            stop,
-            reader: ConfigReaderThread::Running(reader),
-        }
+        let reader = ConfigReaderThread::spawn(path, &sender).map_or_else(
+            |error| {
+                let _ = sender.send(WordHighlightUpdate::Invalid(error.to_string()));
+                None
+            },
+            Some,
+        );
+        Self::Watching { updates, reader }
     }
 
     /// `WordHighlightUpdates::try_recv` reads completed updates without filesystem access or a
@@ -98,14 +106,44 @@ impl WordHighlightUpdates {
 
 impl Drop for WordHighlightUpdates {
     fn drop(&mut self) {
-        if let Self::Watching { stop, reader, .. } = self {
-            let _ = stop.send(ConfigFileEvent::Stop);
-            if let ConfigReaderThread::Running(handle) =
-                std::mem::replace(reader, ConfigReaderThread::Joined)
-            {
-                let _ = handle.join();
-            }
+        if let Self::Watching { reader, .. } = self
+            && let Some(reader) = reader.take()
+        {
+            reader.stop();
         }
+    }
+}
+
+impl ConfigReaderThread {
+    fn spawn(path: PathBuf, sender: &Sender<WordHighlightUpdate>) -> io::Result<Self> {
+        #[cfg(target_os = "macos")]
+        let (stop, changes) = UnixStream::pair()?;
+        #[cfg(not(target_os = "macos"))]
+        let (stop, events) = mpsc::channel();
+        #[cfg(not(target_os = "macos"))]
+        let changes = (stop.clone(), events);
+        let sender = sender.clone();
+        let handle = thread::Builder::new().spawn(move || {
+            #[cfg(target_os = "macos")]
+            let result = {
+                let mut reading = ConfigFileReading::default();
+                macos::watch_changes(&path, &changes, || reading.publish(&path, &sender))
+                    .map_err(|error| format!("{}: {error}", path.display()))
+            };
+            #[cfg(not(target_os = "macos"))]
+            let result = read_changes(&path, changes, &sender);
+            if let Err(error) = result {
+                let _ = sender.send(WordHighlightUpdate::Invalid(error));
+            }
+        })?;
+        Ok(Self { stop, handle })
+    }
+
+    fn stop(self) {
+        #[cfg(not(target_os = "macos"))]
+        let _ = self.stop.send(ConfigFileEvent::Stop);
+        drop(self.stop);
+        let _ = self.handle.join();
     }
 }
 
@@ -148,6 +186,7 @@ impl ConfigFileReading {
         let _ = sender.send(update);
     }
 
+    #[cfg(any(not(target_os = "macos"), test))]
     fn handle_event(
         &mut self,
         path: &Path,
@@ -213,27 +252,29 @@ impl ConfigFileReadFixture {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
+fn watch_directory(path: &Path) -> Option<&Path> {
+    path.ancestors().skip(1).find(|ancestor| ancestor.is_dir())
+}
+
+#[cfg(not(target_os = "macos"))]
 fn read_changes(
     path: &Path,
-    notifications: Sender<ConfigFileEvent>,
-    events: &Receiver<ConfigFileEvent>,
+    changes: (Sender<ConfigFileEvent>, Receiver<ConfigFileEvent>),
     sender: &Sender<WordHighlightUpdate>,
 ) -> Result<(), String> {
+    let (notifications, events) = changes;
     let mut watcher = notify::recommended_watcher(move |event| {
         let _ = notifications.send(ConfigFileEvent::Filesystem(event));
     })
     .map_err(|error| error.to_string())?;
     let directory = || {
-        path.ancestors()
-            .skip(1)
-            .find(|ancestor| ancestor.is_dir())
-            .map(Path::to_path_buf)
-            .ok_or_else(|| {
-                format!(
-                    "{} has no available configuration directory",
-                    path.display()
-                )
-            })
+        watch_directory(path).map(Path::to_path_buf).ok_or_else(|| {
+            format!(
+                "{} has no available configuration directory",
+                path.display()
+            )
+        })
     };
     let mut source_directory = directory()?;
     watcher
