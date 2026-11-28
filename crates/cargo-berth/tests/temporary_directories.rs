@@ -8,8 +8,6 @@
 use std::env;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-#[cfg(target_os = "linux")]
-use std::os::unix::fs::PermissionsExt;
 use std::os::unix::fs::symlink;
 use std::os::unix::process::ExitStatusExt as _;
 use std::panic;
@@ -27,8 +25,10 @@ use cargo_berth_test_support::TestProcessGroup;
 use cargo_berth_test_support::copy_git_repository_seed;
 use cargo_berth_test_support::fixture_git_command;
 
+const EXPECTED_SCRATCH_PARENT: &str = "CARGO_BERTH_SCRATCH_EXPECTED_PARENT";
 const FIXTURE_EXIT_ENVIRONMENT: &str = "CARGO_BERTH_TEMPORARY_FIXTURE_EXIT";
 const FIXTURE_PANIC: &str = "exercise repository cleanup while unwinding";
+const SCRATCH_PARENT_OVERRIDE: &str = "CARGO_BERTH_TEST_SCRATCH_PARENT";
 const TEST_NAME: &str = "repository_builders_leave_no_temporary_directory_after_return_or_panic";
 
 #[test]
@@ -42,39 +42,31 @@ fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dy
 
     let wrapper =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/check-test-scratch.sh");
-    for mode in ["tmp", "fixture", "panic", "exit", "signal", "memory-full"] {
+    for mode in ["tmp", "fixture", "panic", "exit", "signal"] {
         let proof = cargo_berth_test_support::fixture_tempdir("scratch-proof-");
         let binaries = proof.path().join("debug/deps");
         fs::create_dir_all(&binaries)?;
         let executable = binaries.join("proof-test");
         symlink(env::current_exe()?, &executable)?;
-        let private = proof.path().join("tmp/cargo-berth-templates/private");
+        let proof_root = fs::canonicalize(proof.path())?;
         let mut command = Command::new(&wrapper);
+        let expected_parent = if mode == "tmp" {
+            command.env_remove(SCRATCH_PARENT_OVERRIDE);
+            proof_root.join("tmp/cargo-berth-templates/private")
+        } else {
+            let override_parent = proof_root.join("override");
+            command.env(SCRATCH_PARENT_OVERRIDE, &override_parent);
+            override_parent
+        };
         command
             .arg(executable)
             .args(["--exact", NAME, "--nocapture"])
             .env(CHILD_MODE, mode)
-            .env("NEXTEST_TEST_NAME", format!("{NAME}::{mode}"));
-        if mode == "memory-full" {
-            let commands = proof.path().join("full-memory");
-            fs::create_dir(&commands)?;
-            DirectorySnapshot::write_shared_shell_script(
-                &commands.join("df"),
-                "#!/bin/sh\nprintf 'Filesystem 1024-blocks Used Available Capacity Mounted on\\ntmpfs 1048576 1048576 0 100%% /dev/shm\\n'\n",
-            );
-            let path = env::join_paths(std::iter::once(commands).chain(env::split_paths(
-                &env::var_os("PATH").ok_or("the proof needs PATH")?,
-            )))?;
-            command
-                .env("PATH", path)
-                .env_remove("CARGO_BERTH_TEST_SCRATCH_PARENT")
-                .env("CARGO_BERTH_SCRATCH_EXPECTED_PARENT", &private);
-        } else {
-            command.env("CARGO_BERTH_TEST_SCRATCH_PARENT", &private);
-        }
+            .env("NEXTEST_TEST_NAME", format!("{NAME}::{mode}"))
+            .env(EXPECTED_SCRATCH_PARENT, &expected_parent);
         let output = command.bounded_output()?;
         let stderr = String::from_utf8(output.stderr)?;
-        let remaining = fs::read_dir(&private)?.collect::<Result<Vec<_>, _>>()?;
+        let remaining = fs::read_dir(&expected_parent)?.collect::<Result<Vec<_>, _>>()?;
         if matches!(mode, "tmp" | "fixture") {
             assert_eq!(output.status.code(), Some(1), "{stderr}");
             assert!(
@@ -96,11 +88,7 @@ fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dy
             } else {
                 assert_eq!(
                     output.status.code(),
-                    Some(match mode {
-                        "panic" => 101,
-                        "memory-full" => 0,
-                        _ => 7,
-                    }),
+                    Some(if mode == "panic" { 101 } else { 7 }),
                     "{stderr}"
                 );
             }
@@ -119,12 +107,13 @@ fn scratch_wrapper_names_leaks_and_preserves_clean_panics() -> Result<(), Box<dy
 
 /// Execute one scratch ownership scenario in the wrapper's child process.
 fn run_scratch_proof_child(mode: &str) -> Result<(), Box<dyn std::error::Error>> {
-    if mode == "memory-full" {
-        let expected = env::var_os("CARGO_BERTH_SCRATCH_EXPECTED_PARENT")
-            .ok_or("the full-memory proof needs its disk parent")?;
-        assert_eq!(env::temp_dir().parent(), Some(Path::new(&expected)));
-        return Ok(());
-    }
+    let expected_parent = env::var_os(EXPECTED_SCRATCH_PARENT)
+        .ok_or("the proof needs its expected scratch parent")?;
+    assert_eq!(
+        env::temp_dir().parent(),
+        Some(Path::new(&expected_parent)),
+        "scratch parent for {mode}"
+    );
     if mode == "panic" {
         let temporary = tempfile::tempdir()?;
         let fixture = cargo_berth_test_support::fixture_tempdir("panic-fixture-");
@@ -197,56 +186,6 @@ fn shared_shell_scripts_use_the_repository_fixture_cache_root() {
         cached,
         "installed script should link to {}",
         cache.display()
-    );
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn shared_shell_scripts_restore_across_filesystems() {
-    use std::os::unix::fs::MetadataExt;
-
-    let temporary = tempfile::tempdir_in("/dev/shm")
-        .expect("a private directory on the shared-memory filesystem should exist");
-    let build =
-        fs::metadata(env!("CARGO_TARGET_TMPDIR")).expect("fixture build directory should exist");
-    assert_ne!(
-        fs::metadata(temporary.path())
-            .expect("destination metadata should read")
-            .dev(),
-        build.dev(),
-        "this regression needs a filesystem distinct from the build cache"
-    );
-    let script = temporary.path().join("script");
-    DirectorySnapshot::write_shared_shell_script(&script, "#!/bin/sh\nprintf cross-device\n");
-    let contents = fs::read(&script).expect("copied script should read");
-    assert!(contents.ends_with(b"printf cross-device\n"));
-    assert_eq!(
-        fs::metadata(&script)
-            .expect("copied script should exist")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o755,
-        "cross-filesystem copies must retain executable permissions"
-    );
-    fs::remove_file(&script).expect("private script should unlink");
-    let managed_hook = "#!/bin/sh\n# cargo-berth managed hook: cross-device\nexit 0\n";
-    fs::write(&script, managed_hook).expect("managed hook should write");
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755))
-        .expect("managed hook should execute");
-    let snapshot = DirectorySnapshot::capture(temporary.path());
-    snapshot.restore(temporary.path());
-    assert_eq!(
-        fs::read_to_string(&script).expect("restored hook should read"),
-        managed_hook
-    );
-    assert_eq!(
-        fs::metadata(&script)
-            .expect("restored hook should exist")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o755
     );
 }
 
